@@ -1,8 +1,10 @@
 # Einheitliche Zeilenenden: LF im Repo, .bat zwingend CRLF (cmd.exe verlangt das)
 * text=auto eol=lf
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
+# .bat mit CRLF einchecken und NICHT normalisieren (auch ZIP-Downloads behalten CRLF)
+*.bat -text
+*.cmd -text
+*.ps1 -text
+*.sh text eol=lf
 *.png binary
 *.jpg binary
 *.pdf binary
