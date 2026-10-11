@@ -1,0 +1,22 @@
+# Abhängigkeiten & Build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Nutzerdaten, Test-/Temp-Daten, Caches (bleiben im Projektordner)
+data/
+.tmp/
+.cache/
+hotspot.config.json
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
