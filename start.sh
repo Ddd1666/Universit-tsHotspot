@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")"
 export npm_config_cache="$PWD/.cache/npm"
 export electron_config_cache="$PWD/.cache/electron"
+export NODE_COMPILE_CACHE="$PWD/.cache/node-compile"
 export npm_config_update_notifier=false
 
 if ! command -v node >/dev/null 2>&1; then

@@ -58,6 +58,8 @@ export class IngestService {
     bus: EventBus;
     library: Library;
     onChunksStored: () => void;
+    /** alte Chunks einer Quelle wurden ersetzt (erneute Verarbeitung) -> Vektor-Cache verwerfen */
+    onChunksReplaced: () => void;
     onQueueChange: () => void;
     log: (msg: string, extra?: unknown) => void;
   };
@@ -219,8 +221,9 @@ export class IngestService {
     const stored = tx(db, () => {
       const exists = db.prepare("SELECT 1 FROM sources WHERE id = ? AND status = 'processing'").get(sourceId);
       if (!exists) return false; // zwischenzeitlich gelöscht/abgebrochen
-      db.prepare('DELETE FROM embeddings WHERE source_id = ?').run(sourceId);
+      const old = db.prepare('DELETE FROM embeddings WHERE source_id = ?').run(sourceId);
       db.prepare('DELETE FROM chunks WHERE source_id = ?').run(sourceId);
+      if (Number(old.changes) > 0) this.deps.onChunksReplaced();
       const ins = db.prepare(
         `INSERT INTO chunks(source_id, ord, text, heading, loc_kind, loc_start, loc_end, loc_label, token_est, embed_state)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,

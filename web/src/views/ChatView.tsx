@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
-import { fileUrl, get, patch, post } from '../api';
+import { fileUrl, get, patch, post, type ApiError } from '../api';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { ViewHeader } from '../components/ViewHeader';
@@ -324,11 +324,12 @@ export function ChatView({ chatId }: { chatId: number | null }) {
         setSession(r.session);
         setMessages(r.messages);
         streams.clear(id);
-      } catch {
-        if (currentChat.current === id) {
+      } catch (err) {
+        if (currentChat.current !== id) return;
+        if ((err as ApiError).status === 404) {
           toast(t('chats.notFound'), 'error');
           navigate('#/chat');
-        }
+        } else toast((err as Error).message, 'error');
       }
     },
     [navigate, toast, t],

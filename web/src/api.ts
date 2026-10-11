@@ -47,7 +47,12 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     }
   }
   const text = await res.text();
-  const data = text ? (JSON.parse(text) as unknown) : null;
+  let data: unknown;
+  try {
+    data = text ? (JSON.parse(text) as unknown) : null;
+  } catch {
+    data = { error: 'invalid_response', message: text.slice(0, 200) };
+  }
   if (!res.ok) {
     const d = (data ?? {}) as { error?: string; message?: string };
     throw new ApiError(res.status, d.error ?? 'error', d.message ?? `HTTP ${res.status}`);
@@ -84,7 +89,13 @@ export function connectEvents(): void {
     });
   }
   source.addEventListener('hello', () => connListeners.forEach((l) => l(true)));
-  source.onerror = () => connListeners.forEach((l) => l(false));
+  source.onerror = () => {
+    connListeners.forEach((l) => l(false));
+    // Server neu gestartet? Dann ist das Token ungültig -> Seite neu laden
+    void fetch('/api/health', { headers: { 'x-hotspot-token': TOKEN } })
+      .then((r) => r.status === 401 && handleAuthFailure())
+      .catch(() => {});
+  };
 }
 
 export function onHubEvent(l: Listener): () => void {

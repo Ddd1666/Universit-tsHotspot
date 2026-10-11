@@ -13,6 +13,7 @@ rem ---------------------------------------------------------------------
 
 set "npm_config_cache=%~dp0.cache\npm"
 set "electron_config_cache=%~dp0.cache\electron"
+set "NODE_COMPILE_CACHE=%~dp0.cache\node-compile"
 set "npm_config_update_notifier=false"
 set "npm_config_fund=false"
 set "npm_config_audit=false"

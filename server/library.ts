@@ -227,7 +227,10 @@ export class Library {
       this.db.prepare('DELETE FROM sources WHERE id IN (SELECT value FROM json_each(?))').run(list);
     });
     this.vectors.invalidate();
-    for (const r of all) await this.blobs.delete(r.sha256);
+    for (const r of all) {
+      // gleicher Inhalt könnte inzwischen erneut importiert worden sein -> Datei dann behalten
+      if (!this.findBySha(r.sha256)) await this.blobs.delete(r.sha256);
+    }
     for (const r of all) this.bus.emit({ type: 'source-deleted', id: r.id });
     this.bus.emit({ type: 'subjects' });
     return all.length;

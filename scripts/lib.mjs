@@ -38,6 +38,7 @@ export function ensureWebBuild({ force = false } = {}) {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--logLevel', 'warn'], {
     cwd: ROOT,
     stdio: 'inherit',
+    env: { ...process.env, ...localCacheEnv() },
   });
   if (r.status !== 0) {
     console.error('Build der Web-Oberfläche fehlgeschlagen.');
@@ -45,10 +46,19 @@ export function ensureWebBuild({ force = false } = {}) {
   }
 }
 
-/** Downloads/Caches von npm/Electron im Projektordner halten (nichts außerhalb schreiben). */
+/**
+ * Caches/Temp-Dateien von npm, Electron/Chromium und Node-Compile-Cache (Vite) im Projektordner halten,
+ * damit auf dem Rechner nichts außerhalb von Projekt- und Datenordner geschrieben wird.
+ */
 export function localCacheEnv() {
+  const tmp = path.join(ROOT, '.cache', 'tmp');
+  fs.mkdirSync(tmp, { recursive: true });
   return {
     npm_config_cache: path.join(ROOT, '.cache', 'npm'),
     electron_config_cache: path.join(ROOT, '.cache', 'electron'),
+    NODE_COMPILE_CACHE: path.join(ROOT, '.cache', 'node-compile'),
+    TMP: tmp,
+    TEMP: tmp,
+    TMPDIR: tmp,
   };
 }

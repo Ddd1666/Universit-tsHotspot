@@ -164,6 +164,17 @@ describe('Fehlerfälle ohne Absturz', () => {
     expect(events.find((e) => e.event === 'error')!.data.message).toMatch(/mock failure/);
   });
 
+  it('Chat wird während des Streamings gelöscht -> kein Absturz', async () => {
+    const s = (await app.api<Session>('POST', '/api/chats', { scope: { mode: 'none' } })).data;
+    const pending = app.stream(`/api/chats/${s.id}/messages`, { content: 'Eine längere Frage zum Löschen während der Antwort' });
+    await waitFor(() => app.hotspot.services.db.prepare("SELECT 1 FROM chat_messages WHERE session_id = ? AND status = 'streaming'").get(s.id));
+    expect((await app.api('DELETE', `/api/chats/${s.id}`)).status).toBe(200);
+    const events = await pending;
+    expect(events.at(-1)!.event).toMatch(/done|error/);
+    expect((await app.api('GET', '/api/health')).status).toBe(200);
+    expect((await app.api('GET', `/api/chats/${s.id}`)).status).toBe(404);
+  });
+
   it('leere oder zu lange Nachrichten werden abgelehnt', async () => {
     const s = (await app.api<Session>('POST', '/api/chats', {})).data;
     expect((await app.stream(`/api/chats/${s.id}/messages`, { content: '' }))[0]!.event).toBe('http-error');

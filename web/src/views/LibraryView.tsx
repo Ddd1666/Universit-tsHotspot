@@ -346,7 +346,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
                     <span className="source-stat muted small">
                       {s.chunkCount > 0 ? (
                         <>
-                          {t('lib.chunks', { n: s.chunkCount })}
+                          {s.chunkCount === 1 ? t('lib.chunk1') : t('lib.chunks', { n: s.chunkCount })}
                           <span className="mini-bar" aria-label={t('lib.vectors', { done: s.embeddedCount, total: s.chunkCount })}>
                             <span style={{ width: `${Math.round((s.embeddedCount / s.chunkCount) * 100)}%` }} />
                           </span>

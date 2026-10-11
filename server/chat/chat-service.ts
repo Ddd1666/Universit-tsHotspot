@@ -220,8 +220,10 @@ export class ChatService {
     return (this.deps.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id').all(sessionId) as unknown as MessageRow[]).map(toMessage);
   }
 
-  private message(id: number): MessageDTO {
-    return toMessage(this.deps.db.prepare('SELECT * FROM chat_messages WHERE id = ?').get(id) as unknown as MessageRow);
+  /** null, falls die Nachricht (z. B. durch Löschen des Chats während des Streamings) nicht mehr existiert. */
+  private message(id: number): MessageDTO | null {
+    const row = this.deps.db.prepare('SELECT * FROM chat_messages WHERE id = ?').get(id) as MessageRow | undefined;
+    return row ? toMessage(row) : null;
   }
 
   /** Wartet auf laufende Auto-Titel (Tests / sauberes Beenden). */
@@ -353,7 +355,7 @@ export class ChatService {
       } else {
         const e = err instanceof OllamaError ? err : new OllamaError('http', (err as Error).message);
         const msg = finish('error', { code: e.code, message: e.message });
-        sink.send('error', { code: e.code, message: e.message, message_id: msg.id });
+        sink.send('error', { code: e.code, message: e.message, message_id: msg?.id ?? null });
         this.deps.log('Chat-Fehler', e.message);
       }
     } finally {

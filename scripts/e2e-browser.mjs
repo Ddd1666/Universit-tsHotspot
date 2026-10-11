@@ -105,7 +105,7 @@ try {
     }, null, { timeout: 30_000 });
     await page.locator('.source-row', { hasText: 'aufgabe1.md' }).waitFor();
     await page.waitForFunction(() => document.querySelectorAll('.source-row').length >= 8, null, { timeout: 15_000 });
-    await page.waitForTimeout(1800); // Vektor-Fortschritt
+    await page.waitForTimeout(2800); // Vektor-Fortschritt, Import-Liste klappt ein
     await shot('02-bibliothek-import.png');
   });
 

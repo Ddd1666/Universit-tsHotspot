@@ -101,6 +101,7 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
     bus,
     library,
     onChunksStored: () => embed.notify(),
+    onChunksReplaced: () => vectors.invalidate(),
     onQueueChange: notifyQueue,
     log,
   });
