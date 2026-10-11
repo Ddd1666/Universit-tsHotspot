@@ -1,0 +1,126 @@
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+
+/**
+ * Markdown -> sicheres HTML. Modell-Ausgaben und Dokumentinhalte sind NICHT vertrauenswürdig:
+ * alles läuft durch DOMPurify (Skripte, Event-Handler, javascript:-Links, externe Bilder werden entfernt).
+ * Zitate [n] werden danach per DOM-API als Buttons eingesetzt (kein String-HTML).
+ */
+
+type Katex = { renderToString(tex: string, opts: Record<string, unknown>): string };
+let katex: Katex | null = null;
+let katexPromise: Promise<void> | null = null;
+
+/** KaTeX wird nur bei Bedarf geladen (hält das Start-Bundle klein). */
+export function ensureKatex(): Promise<void> {
+  if (katex) return Promise.resolve();
+  if (!katexPromise) {
+    katexPromise = Promise.all([import('katex'), import('katex/dist/katex.min.css')]).then(([mod]) => {
+      katex = (mod as unknown as { default: Katex }).default;
+    });
+  }
+  return katexPromise;
+}
+
+export function katexLoaded(): boolean {
+  return katex !== null;
+}
+
+export function hasMath(src: string): boolean {
+  return /\$\$|\\\[|\\\(|\$[^\s$][^$\n]*\$/.test(src);
+}
+
+let hooksInstalled = false;
+function installHooks(): void {
+  if (hooksInstalled) return;
+  hooksInstalled = true;
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    const el = node as Element;
+    if (el.tagName === 'A') {
+      const href = el.getAttribute('href') ?? '';
+      if (!/^(https?:|mailto:)/i.test(href)) el.removeAttribute('href');
+      el.setAttribute('target', '_blank');
+      el.setAttribute('rel', 'noopener noreferrer nofollow');
+    }
+    if (el.tagName === 'IMG') {
+      // keine externen Bilder (Tracking / Netzwerkzugriffe), nur eingebettete Rasterbilder
+      const src = el.getAttribute('src') ?? '';
+      if (!/^data:image\/(png|jpe?g|gif|webp);/i.test(src)) el.remove();
+    }
+  });
+}
+
+const CODE_SPLIT = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]+`)/g;
+const MATH_RE = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<![\\$\w])\$(?![\s$])([^\n$]+?)(?<!\s)\$(?![\w$])/g;
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+function renderMath(tex: string, display: boolean): string {
+  if (!katex) return escapeHtml(display ? `$$${tex}$$` : `$${tex}$`);
+  try {
+    return katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'htmlAndMathml', trust: false, strict: 'ignore', maxSize: 50, maxExpand: 500 });
+  } catch {
+    return escapeHtml(tex);
+  }
+}
+
+export function sanitizeHtml(html: string): string {
+  installHooks();
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true, mathMl: true, svg: true },
+    FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select', 'option', 'iframe', 'object', 'embed', 'frame', 'link', 'meta', 'base'],
+    FORBID_ATTR: ['srcset', 'action', 'formaction', 'xlink:href'],
+    ALLOW_DATA_ATTR: false,
+  });
+}
+
+/** [n]-Zitate (1..maxCite) in Textknoten durch Buttons ersetzen – nicht in Code/Links. */
+function insertCitations(html: string, maxCite: number): string {
+  if (maxCite <= 0 || !/\[\d{1,3}\]/.test(html)) return html;
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
+  const targets: Text[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (/\[\d{1,3}\]/.test(n.nodeValue ?? '') && !(n.parentElement?.closest('code, pre, a, .katex'))) targets.push(n as Text);
+  }
+  for (const textNode of targets) {
+    const parts = (textNode.nodeValue ?? '').split(/(\[\d{1,3}\])/);
+    const frag = document.createDocumentFragment();
+    for (const part of parts) {
+      const m = /^\[(\d{1,3})\]$/.exec(part);
+      const num = m ? Number(m[1]) : 0;
+      if (m && num >= 1 && num <= maxCite) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cite';
+        btn.setAttribute('data-cite', String(num));
+        btn.textContent = String(num);
+        frag.appendChild(btn);
+      } else if (part) frag.appendChild(document.createTextNode(part));
+    }
+    textNode.replaceWith(frag);
+  }
+  return tpl.innerHTML;
+}
+
+export function renderMarkdown(src: string, opts: { maxCite?: number } = {}): string {
+  const math: string[] = [];
+  const prepared = src
+    .split(CODE_SPLIT)
+    .map((seg, i) => {
+      if (i % 2 === 1) return seg; // Code bleibt unverändert
+      return seg.replace(MATH_RE, (_m, d1: string, d2: string, i1: string, i2: string) => {
+        const display = d1 !== undefined || d2 !== undefined;
+        const tex = (d1 ?? d2 ?? i1 ?? i2 ?? '').trim();
+        math.push(renderMath(tex, display));
+        return `@@MATH${math.length - 1}@@`;
+      });
+    })
+    .join('');
+  let html = marked.parse(prepared, { gfm: true, breaks: false, async: false }) as string;
+  if (math.length) html = html.replace(/@@MATH(\d+)@@/g, (_m, n: string) => math[Number(n)] ?? '');
+  return insertCitations(sanitizeHtml(html), opts.maxCite ?? 0);
+}

@@ -91,7 +91,7 @@ export class Library {
     return this.db
       .prepare(
         `SELECT sub.id, sub.name, sub.color, sub.created_at AS createdAt,
-          (SELECT count(*) FROM sources s WHERE s.subject_id = sub.id AND s.parent_id IS NULL) AS sourceCount
+          (SELECT count(*) FROM sources s WHERE s.subject_id = sub.id) AS sourceCount
          FROM subjects sub ORDER BY sub.name COLLATE NOCASE`,
       )
       .all() as unknown as Subject[];
