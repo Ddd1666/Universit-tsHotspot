@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { formatBytes } from '../lib/format';
 import { isItemFinished, type ImportItem } from '../lib/importer';
 import { useApp } from '../store';
@@ -25,20 +25,61 @@ function itemState(i: ImportItem, t: ReturnType<typeof useApp>['t']): { label: s
   }
 }
 
-/** Schwebendes Import-Panel mit Fortschritt pro Datei (bleibt beim Ansichtswechsel sichtbar). */
+/** Kompakte Fortschrittsanzeige in der Seitenleiste (sichtbar in allen Ansichten). */
+export function ImportMini() {
+  const { importer, t, navigate } = useApp();
+  const snap = useSyncExternalStore(importer.subscribe, importer.getSnapshot);
+  const total = snap.items.length;
+  const finished = snap.items.filter(isItemFinished).length;
+  if (!total || finished === total) return null;
+  return (
+    <button className="import-mini" onClick={() => navigate('#/library')}>
+      <span className="row">
+        <span className="spinner tiny" aria-hidden="true" />
+        <strong>{t('import.title')}</strong>
+        <span className="muted">
+          {finished}/{total}
+        </span>
+      </span>
+      <span className="progress thin" role="progressbar" aria-valuenow={Math.round((finished / total) * 100)} aria-valuemin={0} aria-valuemax={100}>
+        <span style={{ width: `${Math.round((finished / total) * 100)}%` }} />
+      </span>
+    </button>
+  );
+}
+
+/** Import-Panel in der Bibliothek mit Fortschritt pro Datei; klappt nach erfolgreichem Abschluss ein. */
 export function ImportPanel() {
   const { importer, t } = useApp();
   const snap = useSyncExternalStore(importer.subscribe, importer.getSnapshot);
-  if (!snap.items.length) return null;
-  const done = snap.items.filter((i) => i.status !== 'waiting' && i.status !== 'uploading').length;
+  const [expanded, setExpanded] = useState(true);
+  const total = snap.items.length;
   const finished = snap.items.filter(isItemFinished).length;
-  const pct = Math.round((finished / snap.items.length) * 100);
+  const failed = snap.items.filter((i) => i.status === 'error' || i.serverStatus === 'error').length;
+  const allDone = total > 0 && finished === total;
+
+  useEffect(() => {
+    if (snap.active) setExpanded(true);
+  }, [snap.active]);
+  useEffect(() => {
+    if (!allDone || failed) return;
+    // Erfolgreich abgeschlossen: Liste einklappen (Ergebnis steht in der Quellenliste)
+    const collapse = setTimeout(() => setExpanded(false), 2500);
+    return () => clearTimeout(collapse);
+  }, [allDone, failed]);
+
+  if (!total) return null;
+  const done = snap.items.filter((i) => i.status !== 'waiting' && i.status !== 'uploading').length;
+  const pct = Math.round((finished / total) * 100);
   return (
-    <section className="import-panel glass" aria-label={t('import.title')}>
+    <section className={`import-panel glass ${expanded ? '' : 'collapsed'}`} aria-label={t('import.title')}>
       <header>
-        <Icon name="upload" />
-        <strong>{t('import.title')}</strong>
-        <span className="muted small">{t('import.progress', { done, total: snap.items.length })}</span>
+        <button className="import-toggle" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>
+          <Icon name={allDone ? (failed ? 'alert' : 'check') : 'upload'} />
+          <strong>{t('import.title')}</strong>
+          <span className="muted small">{t('import.progress', { done, total })}</span>
+          {failed > 0 && <span className="badge err">{failed}</span>}
+        </button>
         <span className="spacer" />
         {snap.active ? (
           <button className="btn small danger" onClick={() => importer.cancel()}>
@@ -46,9 +87,11 @@ export function ImportPanel() {
           </button>
         ) : (
           <>
-            <button className="btn small ghost" onClick={() => importer.clearFinished()}>
-              {t('import.clear')}
-            </button>
+            {expanded && (
+              <button className="btn small ghost" onClick={() => importer.clearFinished()}>
+                {t('import.clear')}
+              </button>
+            )}
             <button className="icon-btn small" onClick={() => importer.clearAll()} aria-label={t('import.close')}>
               <Icon name="close" size={14} />
             </button>
@@ -58,7 +101,7 @@ export function ImportPanel() {
       <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
         <span style={{ width: `${pct}%` }} />
       </div>
-      {snap.skippedHidden > 0 && <p className="muted small pad-x">{t('import.skippedHidden', { n: snap.skippedHidden })}</p>}
+      {expanded && snap.skippedHidden > 0 && <p className="muted small pad-x">{t('import.skippedHidden', { n: snap.skippedHidden })}</p>}
       <ul className="import-list">
         {snap.items.slice(-200).map((i) => {
           const st = itemState(i, t);

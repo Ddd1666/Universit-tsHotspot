@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { del, get, patch, post } from '../api';
 import { Icon } from '../components/Icon';
+import { ImportPanel } from '../components/ImportPanel';
 import { KindIcon, SourceDrawer, StatusBadge, statusDetailText } from '../components/SourceBits';
 import { ViewHeader } from '../components/ViewHeader';
 import { formatBytes, formatDate, SUBJECT_COLORS } from '../lib/format';
@@ -275,6 +276,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
       <div className="library">
         <SubjectList current={subject} />
         <section className="source-col" aria-label={title}>
+          <ImportPanel />
           <div
             className={`dropzone ${dragOver ? 'over' : ''} ${empty ? 'big' : ''}`}
             onDragOver={(e) => {

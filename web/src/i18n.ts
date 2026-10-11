@@ -145,6 +145,7 @@ const de = {
   'import.error': 'Fehler',
   'import.cancelled': 'abgebrochen',
   'import.skippedHidden': '{n} versteckte/System-Dateien übersprungen',
+  'import.started': 'Import gestartet: {n} Datei(en) – Fortschritt in der Bibliothek',
 
   'search.title': 'Suche',
   'search.placeholder': 'Begriff, Frage oder Stichwort …',
@@ -399,6 +400,7 @@ const en: Dict = {
   'import.error': 'error',
   'import.cancelled': 'cancelled',
   'import.skippedHidden': '{n} hidden/system files skipped',
+  'import.started': 'Import started: {n} file(s) – progress in the library',
 
   'search.title': 'Search',
   'search.placeholder': 'Term, question or keyword …',

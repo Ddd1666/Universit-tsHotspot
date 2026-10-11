@@ -18,6 +18,11 @@ export default tseslint.config(
     },
   },
   {
+    // Playwright-Callbacks laufen im Browser
+    files: ['scripts/e2e-browser.mjs'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
+  {
     files: ['web/src/**/*.{ts,tsx}'],
     languageOptions: { globals: { ...globals.browser } },
     plugins: { 'react-hooks': reactHooks },

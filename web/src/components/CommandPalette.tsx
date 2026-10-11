@@ -81,7 +81,11 @@ export function CommandPalette() {
       .map((x) => x.i)
       .slice(0, query ? 40 : 14);
     if (query) {
-      ranked.unshift({ id: 'q', group: t('nav.search'), label: t('cmd.search', { q: query }), icon: 'search', run: () => navigate(`#/search?q=${encodeURIComponent(query)}`) });
+      const searchItem: Item = { id: 'q', group: t('nav.search'), label: t('cmd.search', { q: query }), icon: 'search', run: () => navigate(`#/search?q=${encodeURIComponent(query)}`) };
+      // Gute Treffer zuerst, sonst direkt "In Unterlagen suchen"
+      const strong = ranked.length > 0 && score(ranked[0]!.label, query) >= 2;
+      if (strong) ranked.push(searchItem);
+      else ranked.unshift(searchItem);
     }
     return ranked;
   }, [q, t, chats, subjects, settings, navigate, updateSettings, sidebarOpen, setSidebarOpen]);
@@ -114,6 +118,7 @@ export function CommandPalette() {
   };
 
   let lastGroup = '';
+  const showHeaders = !q.trim();
   return (
     <div className="overlay palette-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="palette glass" role="dialog" aria-modal="true" aria-label="Command Palette" onKeyDown={onKey}>
@@ -121,6 +126,7 @@ export function CommandPalette() {
           <Icon name="command" />
           <input
             ref={inputRef}
+            autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={t('cmd.placeholder')}
@@ -134,7 +140,7 @@ export function CommandPalette() {
         <div className="palette-list" id="palette-list" role="listbox" ref={listRef}>
           {items.length === 0 && <p className="muted pad">{t('cmd.empty')}</p>}
           {items.map((it, idx) => {
-            const header = it.group !== lastGroup ? it.group : null;
+            const header = showHeaders && it.group !== lastGroup ? it.group : null;
             lastGroup = it.group;
             return (
               <div key={it.id}>
@@ -153,6 +159,7 @@ export function CommandPalette() {
                 >
                   <Icon name={it.icon} />
                   <span>{it.label}</span>
+                  {!showHeaders && <small className="palette-hint">{it.group}</small>}
                 </div>
               </div>
             );

@@ -4,6 +4,7 @@ import { dayBucket, formatTime } from '../lib/format';
 import { useApp } from '../store';
 import type { ChatSession } from '../types';
 import { Icon } from './Icon';
+import { ImportMini } from './ImportPanel';
 
 function OllamaPill() {
   const { ollama, queue, t, navigate } = useApp();
@@ -43,6 +44,15 @@ export function Sidebar() {
       ctrl.abort();
     };
   }, [q]);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && window.innerWidth <= 900 && !document.querySelector('.overlay')) setSidebarOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sidebarOpen, setSidebarOpen]);
 
   const list = results ?? chats;
   const groups = useMemo(() => {
@@ -186,6 +196,7 @@ export function Sidebar() {
           ))}
         </div>
 
+        <ImportMini />
         <footer className="sidebar-footer">
           <OllamaPill />
           <button className="kbd-hint" onClick={() => setPaletteOpen(true)}>

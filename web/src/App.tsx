@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { CommandPalette } from './components/CommandPalette';
 import { Dialog } from './components/Dialog';
 import { Icon } from './components/Icon';
-import { ImportPanel } from './components/ImportPanel';
 import { Sidebar } from './components/Sidebar';
 import { Toasts } from './components/Toasts';
 import { collectDropped } from './lib/importer';
@@ -13,7 +12,7 @@ import { SearchView } from './views/SearchView';
 import { SettingsView } from './views/SettingsView';
 
 export function App() {
-  const { route, sidebarOpen, importer, importTarget, subjects, t } = useApp();
+  const { route, sidebarOpen, importer, importTarget, subjects, t, toast } = useApp();
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
 
@@ -41,7 +40,12 @@ export function App() {
     const onDrop = (e: DragEvent) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
-      if (e.dataTransfer) void collectDropped(e.dataTransfer).then((files) => files.length && importer.add(files, importTarget));
+      if (!e.dataTransfer) return;
+      void collectDropped(e.dataTransfer).then((files) => {
+        if (!files.length) return;
+        importer.add(files, importTarget);
+        toast(t('import.started', { n: files.length }), 'info');
+      });
     };
     window.addEventListener('dragenter', onEnter);
     window.addEventListener('dragleave', onLeave);
@@ -55,7 +59,7 @@ export function App() {
       window.removeEventListener('drop', onDropCapture, true);
       window.removeEventListener('drop', onDrop);
     };
-  }, [importer, importTarget]);
+  }, [importer, importTarget, toast, t]);
 
   const targetName = importTarget ? (subjects.find((s) => s.id === importTarget)?.name ?? '') : t('lib.noSubject');
 
@@ -72,7 +76,6 @@ export function App() {
         {route.view === 'search' && <SearchView initialQuery={route.q} />}
         {route.view === 'settings' && <SettingsView />}
       </main>
-      <ImportPanel />
       <CommandPalette />
       <Dialog />
       <Toasts />

@@ -190,6 +190,14 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
   }, []);
 
   useEffect(() => {
+    // Wechsel auf schmales Fenster: Seitenleiste als Overlay schließen (nicht speichern)
+    const mq = window.matchMedia('(max-width: 900px)');
+    const onMq = () => mq.matches && setSidebarOpenState(false);
+    mq.addEventListener('change', onMq);
+    return () => mq.removeEventListener('change', onMq);
+  }, []);
+
+  useEffect(() => {
     const onHash = () => setRoute(parseRoute(location.hash));
     window.addEventListener('hashchange', onHash);
     connectEvents();

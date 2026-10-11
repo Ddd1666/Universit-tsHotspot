@@ -302,5 +302,6 @@ export class IngestService {
       zip.close();
     }
     db.prepare("UPDATE sources SET status = 'archive', status_detail = ?, processed_at = ? WHERE id = ?").run(JSON.stringify(summary), Date.now(), row.id);
+    bus.emit({ type: 'subjects' }); // Zähler aktualisieren
   }
 }
