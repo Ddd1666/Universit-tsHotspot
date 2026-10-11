@@ -192,9 +192,35 @@ function stripComments(html: string): string {
   }
 }
 
-/** Inhalt von script/style/… entfernen; nicht geschlossene Elemente schneiden den Rest ab (linear). */
+/**
+ * Inhalt von script/style/head/… entfernen (linear). Fehlt das End-Tag, verhält es sich wie im Browser:
+ * script/style verschlucken den Rest der Datei, `<head>` endet beim `<body>`, bei allen anderen wird nur das
+ * Start-Tag übersprungen – der Text bleibt erhalten.
+ */
 function stripRawElements(html: string): string {
-  const openRe = /<(script|style|noscript|template|svg|head)(?=[\s>/])/gi;
+  const openRe = /<(script|style|noscript|template|svg|title|head)(?=[\s>/])/gi;
+  // Cache: nächstes End-Tag je Element (null: keins mehr) – jede Stelle wird höchstens einmal durchsucht (linear)
+  const closeAt = new Map<string, { at: number; end: number } | null>();
+  const findClose = (name: string, from: number): { at: number; end: number } | null => {
+    const cached = closeAt.get(name);
+    if (cached === null || (cached && cached.at >= from)) return cached;
+    const re = new RegExp(`</${name}\\s*>`, 'gi');
+    re.lastIndex = from;
+    const c = re.exec(html);
+    const found = c ? { at: c.index, end: c.index + c[0].length } : null;
+    closeAt.set(name, found);
+    return found;
+  };
+  let bodyAt: number | undefined;
+  const findBody = (from: number): number => {
+    if (bodyAt === undefined || (bodyAt !== -1 && bodyAt < from)) {
+      const b = /<body(?=[\s>/])/gi;
+      b.lastIndex = from;
+      bodyAt = b.exec(html)?.index ?? -1;
+    }
+    return bodyAt;
+  };
+  let gtAt = -2; // Cache für das nächste '>' (-1: keins mehr)
   let out = '';
   let i = 0;
   for (;;) {
@@ -202,11 +228,28 @@ function stripRawElements(html: string): string {
     const m = openRe.exec(html);
     if (!m) return out + html.slice(i);
     out += html.slice(i, m.index) + ' ';
-    const closeRe = new RegExp(`</${m[1]}\\s*>`, 'gi');
-    closeRe.lastIndex = m.index + m[0].length;
-    const c = closeRe.exec(html);
-    if (!c) return out;
-    i = c.index + c[0].length;
+    const name = m[1]!.toLowerCase();
+    const afterOpen = m.index + m[0].length;
+    const close = findClose(name, afterOpen);
+    if (name === 'head') {
+      // <head> endet am </head> – oder spätestens beim <body> (fehlendes/verspätetes </head>)
+      const body = findBody(afterOpen);
+      if (close && (body === -1 || close.at < body)) i = close.end;
+      else if (body !== -1) i = body;
+      else i = skipStartTag(afterOpen);
+      continue;
+    }
+    if (close) {
+      i = close.end;
+      continue;
+    }
+    if (name === 'script' || name === 'style') return out; // verschlucken wie im Browser den Rest
+    i = skipStartTag(afterOpen); // nur das Start-Tag überspringen, Text bleibt
+  }
+
+  function skipStartTag(afterOpen: number): number {
+    if (gtAt !== -1 && gtAt < afterOpen) gtAt = html.indexOf('>', afterOpen);
+    return gtAt === -1 ? afterOpen : gtAt + 1;
   }
 }
 
@@ -248,6 +291,11 @@ export function htmlToBlocks(html: string): { blocks: TextBlock[]; title?: strin
     if (nextGt === -1) {
       addText(body.slice(lt)); // kein weiteres Tag möglich
       break;
+    }
+    const next = body.charCodeAt(lt + 1);
+    if (next === 33 /* ! */ || next === 63 /* ? */) {
+      i = nextGt + 1; // <!doctype …>, <?xml …?> – kein Text
+      continue;
     }
     const m = /^\/?([a-zA-Z][\w-]{0,40})/.exec(body.slice(lt + 1, Math.min(nextGt, lt + 50)));
     if (!m) {

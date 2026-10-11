@@ -14,11 +14,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 node scripts/check-node.mjs
 
-if ! node scripts/check-deps.mjs; then
-  echo "Abhaengigkeiten werden installiert/aktualisiert ..."
-  npm ci --no-audit --no-fund
-  node scripts/check-deps.mjs --write
-fi
+# npm ci nur bei geaenderter package-lock.json und nur mit erreichbarer Registry (sonst bisheriger Stand)
+node scripts/ensure-deps.mjs
 
 if [ "$1" = "browser" ]; then
   exec node scripts/start.mjs --browser --open

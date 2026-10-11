@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readZipParts } from '../zip.ts';
 import { tokenize } from '../xml.ts';
-import type { Extractor, ExtractResult, TextBlock } from '../types.ts';
+import { codedError, type Extractor, type ExtractResult, type TextBlock } from '../types.ts';
 
 /* ---------------------------------------------------------------- Hilfen */
 
@@ -166,7 +166,7 @@ export const docxExtractor: Extractor = {
   async extract(input, limits) {
     const parts = await readZipParts(input.path, (n) => n === 'word/document.xml' || n === 'word/styles.xml', limits.maxPartBytes);
     const doc = str(parts.get('word/document.xml'));
-    if (!doc) throw new Error('DOCX ohne word/document.xml (beschädigt?)');
+    if (!doc) throw codedError('DOCX ohne word/document.xml (beschädigt?)', 'office_corrupt');
     return parseDocx(doc, str(parts.get('word/styles.xml')));
   },
 };
@@ -247,7 +247,7 @@ export const pptxExtractor: Extractor = {
       limits.maxPartBytes,
     );
     const pres = str(parts.get('ppt/presentation.xml'));
-    if (!pres) throw new Error('PPTX ohne ppt/presentation.xml (beschädigt?)');
+    if (!pres) throw codedError('PPTX ohne ppt/presentation.xml (beschädigt?)', 'office_corrupt');
     const rels = parseRels(str(parts.get('ppt/_rels/presentation.xml.rels')), 'ppt');
     const order: string[] = [];
     for (const t of tokenize(pres)) {
@@ -429,7 +429,7 @@ export const xlsxExtractor: Extractor = {
       limits.maxPartBytes,
     );
     const wb = str(parts.get('xl/workbook.xml'));
-    if (!wb) throw new Error('XLSX ohne xl/workbook.xml (beschädigt?)');
+    if (!wb) throw codedError('XLSX ohne xl/workbook.xml (beschädigt?)', 'office_corrupt');
     const rels = parseRels(str(parts.get('xl/_rels/workbook.xml.rels')), 'xl');
     const shared = parseSharedStrings(str(parts.get('xl/sharedStrings.xml')));
     const sheets: { name: string; target: string }[] = [];
@@ -568,7 +568,7 @@ export const odfExtractor: Extractor = {
   async extract(input, limits) {
     const parts = await readZipParts(input.path, (n) => n === 'content.xml', limits.maxPartBytes);
     const content = str(parts.get('content.xml'));
-    if (!content) throw new Error('OpenDocument ohne content.xml (beschädigt?)');
+    if (!content) throw codedError('OpenDocument ohne content.xml (beschädigt?)', 'office_corrupt');
     return parseOdfContent(content, input.kind as 'odt' | 'odp' | 'ods', limits.maxCells);
   },
 };

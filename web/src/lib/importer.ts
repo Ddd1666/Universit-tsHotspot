@@ -15,7 +15,8 @@ export interface ImportItem {
   sourceId?: number;
   serverStatus?: Source['status'];
   serverDetail?: string | null;
-  error?: string;
+  /** Fehler mit Code – die Oberfläche übersetzt ihn (apiErrorText) */
+  error?: { code?: string; message: string; detail?: string };
 }
 
 export interface ImportSnapshot {
@@ -99,8 +100,8 @@ export class ImportManager {
             serverDetail: r.source.statusDetail,
           });
         })
-        .catch((err: Error & { code?: string }) => {
-          this.updateItem(job.key, { status: err.code === 'aborted' ? 'cancelled' : 'error', error: err.message });
+        .catch((err: Error & { code?: string; detail?: string }) => {
+          this.updateItem(job.key, { status: err.code === 'aborted' ? 'cancelled' : 'error', error: { code: err.code, message: err.message, detail: err.detail } });
         })
         .finally(() => {
           this.uploads.delete(job.key);

@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import { getDocumentProxy } from 'unpdf';
-import type { Extractor, TextBlock } from '../types.ts';
+import { codedError, type Extractor, type TextBlock } from '../types.ts';
 
 interface PdfTextItem {
   str: string;
@@ -68,8 +68,8 @@ export const pdfExtractor: Extractor = {
       pdf = await getDocumentProxy(data, { disableFontFace: true, useSystemFonts: false, stopAtErrors: false, verbosity: 0 });
     } catch (err) {
       const name = (err as { name?: string }).name;
-      if (name === 'PasswordException') throw Object.assign(new Error('PDF ist passwortgeschützt', { cause: err }), { code: 'pdf_encrypted' });
-      throw Object.assign(new Error(`PDF nicht lesbar: ${(err as Error).message}`, { cause: err }), { code: 'pdf_invalid' });
+      if (name === 'PasswordException') throw codedError('PDF ist passwortgeschützt', 'pdf_encrypted', err);
+      throw codedError(`PDF nicht lesbar: ${(err as Error).message}`, 'pdf_invalid', err);
     }
     const blocks: TextBlock[] = [];
     const warnings: string[] = [];

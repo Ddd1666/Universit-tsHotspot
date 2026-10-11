@@ -1,5 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { formatBytes } from '../lib/format';
+import { apiErrorText } from '../lib/errors';
+import { sourceBadge } from '../lib/status';
 import { isItemFinished, type ImportItem } from '../lib/importer';
 import { useApp } from '../store';
 import { Icon } from './Icon';
@@ -13,14 +15,14 @@ function itemState(i: ImportItem, t: ReturnType<typeof useApp>['t']): { label: s
     case 'duplicate':
       return { label: t('import.duplicate'), cls: 'warn' };
     case 'error':
-      return { label: `${t('import.error')}: ${i.error ?? ''}`, cls: 'err' };
+      return { label: `${t('import.error')}: ${i.error ? apiErrorText(t, i.error) : ''}`, cls: 'err' };
     case 'cancelled':
       return { label: t('import.cancelled'), cls: 'muted' };
     case 'stored': {
       const s = i.serverStatus;
       if (!s) return { label: t('import.stored'), cls: 'ok' };
-      const label = t(`status.${s}` as 'status.ready');
-      return { label, cls: s === 'error' ? 'err' : s === 'ready' || s === 'archive' ? 'ok' : s === 'unsupported' ? 'warn' : 'accent' };
+      const b = sourceBadge({ status: s, statusDetail: i.serverDetail ?? null, chunkCount: 0, embeddedCount: 0 });
+      return { label: t(b.key), cls: s === 'unsupported' ? 'warn' : b.cls };
     }
   }
 }
@@ -50,7 +52,7 @@ export function ImportMini() {
 
 /** Import-Panel in der Bibliothek mit Fortschritt pro Datei; klappt nach erfolgreichem Abschluss ein. */
 export function ImportPanel() {
-  const { importer, t } = useApp();
+  const { importer, t, lang } = useApp();
   const snap = useSyncExternalStore(importer.subscribe, importer.getSnapshot);
   const [expanded, setExpanded] = useState(true);
   const total = snap.items.length;
@@ -110,7 +112,7 @@ export function ImportPanel() {
               <span className="import-name" title={i.relPath ?? i.name}>
                 {i.name}
               </span>
-              <span className="muted small">{formatBytes(i.size)}</span>
+              <span className="muted small">{formatBytes(i.size, lang)}</span>
               <span className={`import-state ${st.cls}`}>{st.label}</span>
               {i.status === 'uploading' && (
                 <div className="progress thin">

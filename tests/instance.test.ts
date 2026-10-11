@@ -80,6 +80,7 @@ describe('Instanz-Sperre (zweiter Start)', () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain('läuft bereits');
     expect(r.out).toContain(`127.0.0.1:${first.port}`);
+    expect(r.out).toContain(path.join(dataDir, 'hotspot.lock')); // Hinweis, welche Datei man notfalls löscht
     expect((await first.api('GET', '/api/health')).status).toBe(200);
   });
 
@@ -112,3 +113,105 @@ describe('Instanz-Sperre (zweiter Start)', () => {
     await waitFor(() => true);
   });
 });
+
+/** PID eines gerade beendeten Prozesses (garantiert tot) */
+async function deadPid(): Promise<number> {
+  const c = spawn(process.execPath, ['-e', '']);
+  await new Promise((r) => c.on('exit', r));
+  return c.pid!;
+}
+
+async function freePort(): Promise<number> {
+  const srv = net.createServer();
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const port = (srv.address() as net.AddressInfo).port;
+  await new Promise((r) => srv.close(r));
+  return port;
+}
+
+const writeLock = (dataDir: string, info: object) => {
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'hotspot.lock'), JSON.stringify(info));
+};
+
+describe('Instanz-Sperre: PID-Wiederverwendung und gleichzeitige Starts', () => {
+  it('lebende fremde PID (wiederverwendet), aber toter Port -> Sperre wird übernommen', async () => {
+    const dataDir = tmpDir('pidreuse');
+    // process.ppid lebt sicher, ist aber kein Uni-Hotspot; auf dem Port lauscht nichts
+    writeLock(dataDir, { pid: process.ppid, port: await freePort(), startedAt: Date.now() - 3_600_000 });
+    const app = await startTestApp({ dataDir });
+    apps.push(app);
+    const lock = JSON.parse(fs.readFileSync(path.join(dataDir, 'hotspot.lock'), 'utf8')) as { pid: number; port: number };
+    expect(lock).toMatchObject({ pid: process.pid, port: app.port });
+  });
+
+  it('lebende fremde PID, auf dem Port antwortet ein anderes Programm -> Sperre wird übernommen', async () => {
+    const other = (await import('node:http')).createServer((_q, res) => res.end('ok'));
+    await new Promise<void>((r) => other.listen(0, '127.0.0.1', r));
+    try {
+      const dataDir = tmpDir('otherapp');
+      writeLock(dataDir, { pid: process.ppid, port: (other.address() as net.AddressInfo).port, startedAt: 0 });
+      const app = await startTestApp({ dataDir });
+      apps.push(app);
+      expect(JSON.parse(fs.readFileSync(path.join(dataDir, 'hotspot.lock'), 'utf8')).pid).toBe(process.pid);
+    } finally {
+      other.close();
+    }
+  });
+
+  it('lebende PID und auf dem Port antwortet wirklich ein Uni-Hotspot -> "läuft bereits" mit Pfad der Sperrdatei', async () => {
+    const running = await startTestApp();
+    apps.push(running);
+    const dataDir = tmpDir('really');
+    writeLock(dataDir, { pid: process.ppid, port: running.port, startedAt: 0 });
+    const err = await startTestApp({ dataDir }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AlreadyRunningError);
+    expect((err as AlreadyRunningError).lockFile).toBe(path.join(dataDir, 'hotspot.lock'));
+    expect((err as AlreadyRunningError).port).toBe(running.port);
+  });
+
+  it('zwei bis vier gleichzeitige Starts nach einem Absturz: genau einer übernimmt die Sperre', async () => {
+    const lockModule = path.join(PROJECT_ROOT, 'server', 'lock.ts');
+    const code = `
+      const { acquireLock, AlreadyRunningError } = await import(${JSON.stringify(lockModule)});
+      const http = await import('node:http');
+      // antwortet wie ein Uni-Hotspot ohne Token
+      const srv = http.createServer((q, r) => { r.statusCode = 401; r.end('{"error":"invalid_token"}'); });
+      await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+      // alle Prozesse starten den Versuch zum selben Zeitpunkt (echter Wettlauf)
+      const at = Number(process.argv[2]);
+      while (Date.now() < at) {}
+      try {
+        const l = await acquireLock(process.argv[1]);
+        l.setPort(srv.address().port);
+        console.log('OK');
+        setTimeout(() => process.exit(0), 1500);
+      } catch (e) {
+        console.log(e instanceof AlreadyRunningError ? 'BUSY' : 'ERR ' + e.message);
+        process.exit(0);
+      }`;
+    for (const n of [2, 4, 4, 4]) {
+      const dataDir = tmpDir('race');
+      writeLock(dataDir, { pid: await deadPid(), port: await freePort(), startedAt: 0 });
+      const at = String(Date.now() + 1500);
+      const outs = await Promise.all(
+        Array.from({ length: n }, () =>
+          new Promise<string>((resolve) => {
+            const c = spawn(process.execPath, ['--input-type=module', '-e', code, dataDir, at], { stdio: ['ignore', 'pipe', 'pipe'] });
+            let out = '';
+            c.stdout.on('data', (d) => (out += d));
+            c.stderr.on('data', (d) => (out += d));
+            c.on('exit', () => resolve(out.trim()));
+          }),
+        ),
+      );
+      expect(outs.filter((o) => o === 'OK'), outs.join(' | ')).toHaveLength(1);
+      expect(outs.filter((o) => o === 'BUSY')).toHaveLength(n - 1);
+      expect(fs.readdirSync(dataDir).filter((f) => f.includes('.tmp') || f.endsWith('.takeover'))).toEqual([]);
+    }
+  }, 60_000);
+});
+

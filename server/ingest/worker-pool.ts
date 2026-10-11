@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { runExtraction, type ExtractOutput } from './extract-run.ts';
-import type { ExtractInput, ExtractLimits } from './types.ts';
+import { codedError, type ExtractInput, type ExtractLimits } from './types.ts';
 
 export class CancelledError extends Error {
   constructor() {
@@ -79,7 +79,7 @@ export class ExtractionPool {
       void s.worker.terminate();
       settle?.reject(err);
     };
-    const coded = (message: string, code?: unknown) => Object.assign(new Error(message), typeof code === 'string' ? { code } : {});
+    const coded = (message: string, code?: unknown) => (typeof code === 'string' ? codedError(message, code) : new Error(message));
     const onMessage = (msg: { id: number; ok: boolean; result?: ExtractOutput; error?: string; code?: unknown }) => {
       if (msg.id !== id) return;
       cleanup();

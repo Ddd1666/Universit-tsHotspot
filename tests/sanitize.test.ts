@@ -87,3 +87,45 @@ describe('Markdown-Rendering mit XSS-Schutz', () => {
     ]);
   });
 });
+
+describe('Markdown: Schutz vor quadratischer Laufzeit (unausgeglichene Hervorhebungen)', () => {
+  const timed = (src: string) => {
+    const t = performance.now();
+    const html = renderMarkdown(src);
+    return { ms: performance.now() - t, html };
+  };
+
+  it('"*a " × 13 000 (vorher ~16 s im UI-Thread) und viele solche Absätze rendern schnell', () => {
+    for (const src of [
+      '*a '.repeat(13_000),
+      '_a '.repeat(13_000),
+      '~a '.repeat(13_000),
+      Array.from({ length: 20 }, () => '*a '.repeat(1000)).join('\n\n'),
+      Array.from({ length: 200 }, () => '*a '.repeat(100) + '`c`').join(' '), // über Inline-Code verteilt
+      '- ' + Array.from({ length: 3000 }, () => '**a').join(' '),
+    ]) {
+      const r = timed(src);
+      expect(r.ms, src.slice(0, 20)).toBeLessThan(1500); // vorher 2–16 s; gemessen ~90 ms (Puffer für Last)
+      expect(dom(r.html).textContent).toContain('a');
+    }
+    // Text bleibt sichtbar (nur ohne Hervorhebung)
+    expect(dom(timed('*a '.repeat(2000)).html).textContent!.match(/\*a/g)).toHaveLength(2000);
+  });
+
+  it('normales Markdown bleibt unverändert: Hervorhebungen, lange Listen mit Fettdruck, Code mit Sternen', () => {
+    const d = dom(renderMarkdown('Das ist **fett** und *kursiv* und ~~weg~~.'));
+    expect(d.querySelector('strong')!.textContent).toBe('fett');
+    expect(d.querySelector('em')!.textContent).toBe('kursiv');
+    expect(d.querySelector('del')).not.toBeNull();
+    const list = Array.from({ length: 120 }, (_, i) => `- **Begriff ${i}**: Erklärung mit *Betonung*`).join('\n');
+    const l = dom(renderMarkdown(list));
+    expect(l.querySelectorAll('li')).toHaveLength(120);
+    expect(l.querySelectorAll('strong')).toHaveLength(120);
+    const code = dom(renderMarkdown('```\n' + '*'.repeat(5000) + '\n```\n\nText `' + '_'.repeat(400) + '`'));
+    expect(code.querySelector('pre code')!.textContent).toBe('*'.repeat(5000) + '\n');
+    expect(code.querySelectorAll('code')[1]!.textContent).toBe('_'.repeat(400));
+    // Listenzeichen bleibt Liste, auch wenn der Punkt maskiert wird
+    const risky = dom(renderMarkdown('* ' + '*a '.repeat(500)));
+    expect(risky.querySelectorAll('li')).toHaveLength(1);
+  });
+});

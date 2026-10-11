@@ -54,6 +54,8 @@ export class IngestService {
   private loops: Promise<void>[] = [];
   private wakers = new Set<() => void>();
   private active = new Map<number, { cancel: () => void; batchId: string | null; name: string }>();
+  /** vom Nutzer abgebrochene/gelöschte Jobs (im Unterschied zum Abbruch durch Beenden der App) */
+  private userCancelled = new Set<number>();
   private readonly deps: {
     db: DB;
     blobs: BlobStore;
@@ -71,7 +73,7 @@ export class IngestService {
   constructor(deps: IngestService['deps']) {
     this.deps = deps;
     deps.library.beforeDelete = (ids) => {
-      for (const id of ids) this.active.get(id)?.cancel();
+      for (const id of ids) this.cancelActive(id);
     };
   }
 
@@ -91,6 +93,14 @@ export class IngestService {
     for (const w of this.wakers) w();
     await Promise.all(this.loops);
     this.loops = [];
+  }
+
+  private cancelActive(id: number): boolean {
+    const a = this.active.get(id);
+    if (!a) return false;
+    this.userCancelled.add(id);
+    a.cancel();
+    return true;
   }
 
   private wake(): void {
@@ -135,11 +145,8 @@ export class IngestService {
     const rows = db.prepare("SELECT id FROM sources WHERE batch_id = ? AND status = 'queued'").all(batchId) as { id: number }[];
     db.prepare("UPDATE sources SET status = 'cancelled', status_detail = NULL WHERE batch_id = ? AND status = 'queued'").run(batchId);
     let n = rows.length;
-    for (const [, a] of this.active) {
-      if (a.batchId === batchId) {
-        a.cancel();
-        n++;
-      }
+    for (const [id, a] of this.active) {
+      if (a.batchId === batchId && this.cancelActive(id)) n++;
     }
     for (const r of rows) bus.emit({ type: 'source', source: library.getSource(r.id) });
     this.deps.onQueueChange();
@@ -188,17 +195,37 @@ export class IngestService {
         if (row.kind === 'zip') await this.expandZip(row);
         else await this.extract(row);
       } catch (err) {
-        const cancelled = err instanceof CancelledError;
-        if (!cancelled) this.deps.log(`Verarbeitung fehlgeschlagen: ${row.name}`, (err as Error).message);
-        // Bekannte Fehler als Code speichern (Oberfläche übersetzt), sonst die Meldung
-        const code = (err as { code?: unknown }).code;
-        const detail = typeof code === 'string' && /^[a-z_]+$/.test(code) ? code : (err as Error).message.slice(0, 500);
-        this.setStatus(row.id, cancelled ? 'cancelled' : 'error', cancelled ? null : detail);
+        if (this.stopped && !this.userCancelled.has(row.id)) {
+          // App wird regulär beendet: Datei NICHT als abgebrochen markieren, sondern beim nächsten Start neu verarbeiten
+          this.requeueInterrupted(row);
+        } else {
+          const cancelled = err instanceof CancelledError;
+          if (!cancelled) this.deps.log(`Verarbeitung fehlgeschlagen: ${row.name}`, (err as Error).message);
+          // Bekannte Fehler als Code speichern (Oberfläche übersetzt), sonst die Meldung
+          const code = (err as { code?: unknown }).code;
+          const detail = typeof code === 'string' && /^[a-z_]+$/.test(code) ? code : (err as Error).message.slice(0, 500);
+          this.setStatus(row.id, cancelled ? 'cancelled' : 'error', cancelled ? null : detail);
+        }
       } finally {
         this.active.delete(row.id);
+        this.userCancelled.delete(row.id);
         this.emitSource(row.id);
         this.deps.onQueueChange();
       }
+    }
+  }
+
+  /** Beim Beenden unterbrochene Datei: Teilzustand verwerfen und wieder einreihen. */
+  private requeueInterrupted(row: SourceRow): void {
+    try {
+      tx(this.deps.db, () => {
+        // halb geschriebene Chunks entfernen (Embeddings folgen per ON DELETE CASCADE); fertige ZIP-Einträge bleiben eigene Quellen
+        if (row.kind !== 'zip') this.deps.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(row.id);
+        this.deps.db.prepare("UPDATE sources SET status = 'queued', status_detail = NULL, chunk_count = 0 WHERE id = ? AND status = 'processing'").run(row.id);
+      });
+      this.deps.log(`Beim Beenden unterbrochen, wird beim nächsten Start neu verarbeitet: ${row.name}`);
+    } catch {
+      /* DB evtl. schon geschlossen – start() reiht 'processing' ohnehin wieder ein */
     }
   }
 

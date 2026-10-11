@@ -373,7 +373,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
                         t('common.none')
                       )}
                     </span>
-                    <span className="source-size muted small">{formatBytes(s.size)}</span>
+                    <span className="source-size muted small">{formatBytes(s.size, lang)}</span>
                     <span className="source-date muted small">{formatDate(s.importedAt, lang)}</span>
                     <div className="source-actions">
                       {(s.status === 'error' || s.status === 'cancelled') && (

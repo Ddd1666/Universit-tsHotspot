@@ -5,7 +5,7 @@ import { DEFAULT_EXTRACT_LIMITS, type ExtractInput, type SourceKind } from '../s
 import { findExtractor } from '../server/ingest/extractors/registry.ts';
 import { pdfExtractor, itemsToParagraphs } from '../server/ingest/extractors/pdf.ts';
 import { docxExtractor, pptxExtractor, xlsxExtractor, odfExtractor } from '../server/ingest/extractors/office.ts';
-import { csvExtractor, htmlExtractor, textExtractor, parseCsv } from '../server/ingest/extractors/plain.ts';
+import { csvExtractor, htmlExtractor, htmlToBlocks, textExtractor, parseCsv } from '../server/ingest/extractors/plain.ts';
 import { decodeText } from '../server/ingest/text-decode.ts';
 import { makeDocx, makeOdt, makePdf, makePptx, makeXlsx } from './fixtures.ts';
 import { tmpDir, writeTmp } from './helpers.ts';
@@ -203,6 +203,28 @@ describe('Text, Markdown, HTML, Code, JSON, ODF', () => {
     expect(text).toContain('Inhalt & mehr');
     expect(text).not.toContain('alert');
     expect(r.blocks.find((b) => b.text === 'Inhalt & mehr')!.heading).toBe('Thema');
+  });
+
+  it('HTML ohne End-Tags (head/svg/template/noscript) verliert den Text nicht; offenes script/style schneidet nur den Rest ab', () => {
+    const texts = (html: string) => htmlToBlocks(html).blocks.map((b) => b.text);
+    // früher: nur "<!doctype html>" übrig
+    expect(texts('<!doctype html><html><head><title>x<body><p>Inhalt</p>')).toEqual(['Inhalt']);
+    expect(texts('<?xml version="1.0"?><!DOCTYPE html><p>XHTML</p>')).toEqual(['XHTML']);
+    expect(texts('<html><head><meta charset=utf-8><title>T</title><p>Ohne body-Tag</p>')).toEqual(['Ohne body-Tag']);
+    expect(texts('<head><title>T</title><body><p>Text</p></head><p>Mehr</p>')).toEqual(['Text', 'Mehr']); // verspätetes </head>
+    expect(texts('<p>Vorher</p><svg width=10><circle r=2><p>Nach dem SVG</p>')).toEqual(['Vorher', 'Nach dem SVG']);
+    expect(texts('<template id=t><p>Vorlage</p><p>Weiter</p>')).toEqual(['Vorlage', 'Weiter']);
+    expect(texts('<noscript><p>Bitte JS aktivieren</p><p>Text</p>')).toEqual(['Bitte JS aktivieren', 'Text']);
+    expect(texts('<p>Sichtbar</p><script>var x = "<p>kein Text</p>";')).toEqual(['Sichtbar']);
+    expect(texts('<p>Sichtbar</p><style>p { color: red }')).toEqual(['Sichtbar']);
+    // geschlossene Elemente werden weiterhin komplett entfernt
+    expect(texts('<head><title>T</title><style>x</style></head><svg><text>Achse</text></svg><p>Body</p>')).toEqual(['Body']);
+    // präparierte Eingaben bleiben linear
+    for (const html of ['<svg '.repeat(100_000), '<head>'.repeat(60_000) + '<p>x', '<template>'.repeat(60_000) + 'y', '<head><svg'.repeat(50_000), '<head><body>'.repeat(40_000) + '</head>', '<svg>'.repeat(60_000) + '</svg>']) {
+      const t = performance.now();
+      htmlToBlocks(html);
+      expect(performance.now() - t, html.slice(0, 12)).toBeLessThan(1500);
+    }
   });
 
   it('Code, JSON und Jupyter-Notebooks werden als Text indexiert', async () => {

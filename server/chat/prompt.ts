@@ -107,8 +107,10 @@ export interface PromptBuild {
 }
 
 /**
- * Prompt innerhalb von num_ctx: Antwortreserve, System-Prompt, Frage, Quellen (≈70 % des Rests), dann so viel
- * Verlauf wie passt (neueste zuerst). Zitatnummern früherer Antworten werden im Verlauf entfernt.
+ * Prompt innerhalb von num_ctx: Antwortreserve, System-Prompt und Frage fest; Quellen bekommen den Rest bis
+ * höchstens 70 % von num_ctx – abzüglich einer kleinen Reserve für den jüngsten Verlauf (Folgefragen, ≤ 15 %).
+ * Der Verlauf füllt danach auf, was übrig ist (neueste zuerst). Zitatnummern früherer Antworten werden entfernt.
+ * Wie viele Treffer hineinpassen, entscheidet das Budget: bei kurzen Abschnitten (Folien) entsprechend mehr.
  */
 export function buildPrompt(input: { history: HistoryMessage[]; question: string; hits: SearchHit[] | null; numCtx: number }): PromptBuild {
   const withSources = input.hits !== null;
@@ -117,12 +119,22 @@ export function buildPrompt(input: { history: HistoryMessage[]; question: string
   const fixed = estimateTokens(system) + estimateTokens(input.question) + 64;
   let available = Math.max(256, input.numCtx - reservedAnswer - fixed);
 
+  const past = input.history.map((m) => {
+    let content = m.role === 'assistant' ? m.content.replace(/\[\d+\]/g, '') : m.content;
+    if (content.length > 6000) content = content.slice(0, 6000) + ' …';
+    return { role: m.role, content, cost: estimateTokens(content) + 4 };
+  });
+
   let citations: Citation[] = [];
   let userContent = input.question;
   let contextTokens = 0;
   if (withSources) {
-    // Quellen: ~70 % des verfügbaren Rests, höchstens aber 70 % von num_ctx
-    const contextBudget = Math.min(Math.floor(available * 0.7), Math.floor(input.numCtx * 0.7));
+    const historyReserve = Math.min(
+      past.reduce((sum, m) => sum + m.cost, 0),
+      Math.floor(input.numCtx * 0.15),
+    );
+    // 16 Token für die <documents>-Hülle
+    const contextBudget = Math.max(0, Math.min(available - historyReserve, Math.floor(input.numCtx * 0.7)) - 16);
     const { block, citations: c } = buildDocumentsBlock(input.hits!, contextBudget);
     citations = c;
     contextTokens = estimateTokens(block);
@@ -132,14 +144,11 @@ export function buildPrompt(input: { history: HistoryMessage[]; question: string
 
   const history: ChatMessage[] = [];
   let historyTokens = 0;
-  for (let i = input.history.length - 1; i >= 0; i--) {
-    const m = input.history[i]!;
-    let content = m.role === 'assistant' ? m.content.replace(/\[\d+\]/g, '') : m.content;
-    if (content.length > 6000) content = content.slice(0, 6000) + ' …';
-    const cost = estimateTokens(content) + 4;
-    if (historyTokens + cost > available) break;
-    history.unshift({ role: m.role, content });
-    historyTokens += cost;
+  for (let i = past.length - 1; i >= 0; i--) {
+    const m = past[i]!;
+    if (historyTokens + m.cost > available) break;
+    history.unshift({ role: m.role, content: m.content });
+    historyTokens += m.cost;
   }
 
   return {

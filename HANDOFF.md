@@ -2,8 +2,8 @@
 
 Für einen Claude-Chat, der dem Nutzer bei der lokalen Installation hilft. Zielrechner: Windows, Ryzen 7 5800H, 16 GB RAM,
 RTX 3060 Laptop (6 GB VRAM), Ollama installiert (`http://127.0.0.1:11434`). Der Nutzer hat das Repo heruntergeladen (Git oder ZIP).
-Hintergrund: Phase 1 (inkl. Korrekturrunde 1) wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet (120 Unit-/Integrationstests,
-10× hintereinander grün, + Browser-E2E mit 19 Schritten).
+Hintergrund: Phase 1 (inkl. Korrekturrunden 1 und 2) wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet
+(148 Unit-/Integrationstests, 30× hintereinander grün, + Browser-E2E mit 19 Schritten).
 Auf dem Laptop zählt der Test gegen **echtes** Ollama.
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen
@@ -51,12 +51,14 @@ $env:electron_config_cache = "$PWD\.cache\electron"   # Electron-Download im Pro
 $env:NODE_COMPILE_CACHE    = "$PWD\.cache\node-compile" # Vite/tsc-Compile-Cache nicht nach %TEMP%
 npm.cmd ci --no-audit --no-fund           # exakt nach package-lock.json; keine nativen Kompilierungen nötig
 node scripts\check-deps.mjs --write       # Marker setzen, damit start.bat nicht erneut installiert
-npm.cmd test                              # optional: 120 Tests mit Mock-Ollama, schreibt nur nach .\.tmp\tests (wird danach geleert)
+npm.cmd test                              # optional: 148 Tests mit Mock-Ollama, schreibt nur nach .\.tmp\tests (wird danach geleert)
 npm.cmd run build                         # Web-Oberfläche bauen (dist\web)
 ```
 
-Alternativ erledigt **`start.bat`** das selbst: es vergleicht den SHA-256 von `package-lock.json` mit `node_modules\.hotspot-lock-hash`
-und führt `npm ci` nur beim ersten Start oder nach einem Update (geänderte Lock-Datei) aus.
+Alternativ erledigt **`start.bat`** das selbst (`scripts\ensure-deps.mjs`): es vergleicht den SHA-256 von `package-lock.json` mit
+`node_modules\.hotspot-lock-hash` und führt `npm ci` nur beim ersten Start oder nach einem Update (geänderte Lock-Datei) aus –
+und nur, wenn `npm ping` die Registry erreicht. **Update braucht Internet:** ohne Netz wird nichts gelöscht; ist eine lauffähige
+Installation vorhanden, startet die App mit dem bisherigen Stand („Update braucht Internet“), sonst bricht die Erstinstallation mit Hinweis ab.
 
 Erwartung: `npm ci` ohne Compiler-/node-gyp-Meldungen (Laufzeit nutzt das eingebaute `node:sqlite`; Build-Tools `rolldown`/`lightningcss`
 kommen als vorkompilierte `win32-x64-msvc`-Pakete).
@@ -98,6 +100,10 @@ Checkliste (Ergebnis jeweils notieren):
 - [ ] **Beenden mit Strg+C** im Konsolenfenster des Browser-Modus („Batchvorgang abbrechen? J“) → danach darf
       `%USERPROFILE%\Uni-Hotspot-Daten\hotspot.lock` nicht mehr existieren; Neustart ohne Fehlermeldung. (Windows-Signalverhalten
       wurde in der Cloud nicht getestet.)
+- [ ] **Beenden während eines Imports:** eine große Datei (z. B. PDF mit vielen Seiten) oder ZIP importieren und die App beenden, solange
+      sie noch „in Arbeit“ ist → nach dem Neustart wird die Datei automatisch neu eingereiht und fertig verarbeitet (nicht „abgebrochen“).
+- [ ] **Update ohne Internet** (optional): WLAN aus, in `package-lock.json` nichts ändern → normaler Start. Nur wenn ein Update ansteht:
+      Meldung „Update braucht Internet“, App startet trotzdem mit dem bisherigen Stand.
 
 ## 4. Bekannte Windows-Risiken & Abhilfe
 
@@ -112,7 +118,9 @@ Checkliste (Ergebnis jeweils notieren):
 | Pfade | Umlaute/Leerzeichen im Benutzernamen, OneDrive | Datenordner liegt bewusst nicht in „Dokumente“ (OneDrive); Pfade werden mit Node-`path` gebildet; bei Problemen `HOTSPOT_DATA_DIR` auf z. B. `C:\UniHotspotDaten` setzen (nur für die Sitzung: `$env:HOTSPOT_DATA_DIR=...`) |
 | Virenscanner sperrt neue Dateien | sporadisch `EPERM/EBUSY` beim Import | eingebaute Wiederholung; sonst Import erneut starten (Quelle → „Erneut verarbeiten“) |
 | Port 4317 belegt (anderes Programm) | „Port 4317 ist belegt (anderes Programm)“ ohne Stacktrace | `$env:HOTSPOT_PORT="4318"; .\start.bat browser` |
-| App läuft schon | „Uni-Hotspot läuft bereits auf …“ | kein Fehler – vorhandenes Fenster/Browser-Tab nutzen. Nach einem Absturz wird eine verwaiste `hotspot.lock` automatisch übernommen (PID-Prüfung) |
+| App läuft schon | „Uni-Hotspot läuft bereits auf …“ (mit Pfad der Sperrdatei) | kein Fehler – vorhandenes Fenster/Browser-Tab nutzen. Nach einem Absturz wird eine verwaiste `hotspot.lock` automatisch übernommen (lebende PID **und** antwortender Uni-Hotspot auf dem eingetragenen Port nötig, sonst verwaist – auch bei wiederverwendeter PID) |
+| „läuft bereits“, obwohl sicher nichts läuft | Meldung erscheint bei jedem Start | prüfen: kein Uni-Hotspot-Fenster/Konsolenfenster offen, `http://127.0.0.1:<Port>` nicht erreichbar → dann `hotspot.lock` im Datenordner (Pfad steht in der Meldung) **manuell löschen** und neu starten – nur mit Zustimmung des Nutzers |
+| Update ohne Internet | „Update braucht Internet“ | kein Fehler: App läuft mit dem bisherigen Stand; Update beim nächsten Start mit Internet |
 | ZIP nicht entpackt / OneDrive / Downloads | `npm ci` scheitert mit `EPERM`/`EBUSY`, Start aus `…\Temp\…` | Ordner vollständig entpacken und nach `%USERPROFILE%\Uni-Hotspot` legen (s. Abschnitt 1) |
 | Firewall-Dialog | Windows fragt nach Netzwerkzugriff | sollte nicht erscheinen (nur 127.0.0.1); falls doch: „Abbrechen“ – Freigabe ist nicht nötig |
 

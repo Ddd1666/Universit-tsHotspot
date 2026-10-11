@@ -30,7 +30,8 @@ export const DEFAULT_SETTINGS: Settings = {
   numCtx: 8192,
   temperature: 0.3,
   thinking: true,
-  retrievalTopK: 8,
+  // höchstens so viele Treffer; wie viele davon in den Prompt passen, entscheidet das Kontext-Budget (num_ctx)
+  retrievalTopK: 24,
   maxFileSizeMB: 200,
   zipMaxEntries: 2000,
   zipMaxTotalMB: 1024,

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { fileUrl, get } from '../api';
 import { apiErrorText } from '../lib/errors';
 import { formatBytes, formatDate, kindIcon, locLabel } from '../lib/format';
+import { sourceBadge } from '../lib/status';
 import { useApp } from '../store';
 import type { ChunkPreview, Source } from '../types';
 import { Icon } from './Icon';
@@ -9,13 +10,12 @@ import { Icon } from './Icon';
 export function StatusBadge({ source }: { source: Source }) {
   const { t } = useApp();
   const s = source.status;
-  const pendingVectors = s === 'ready' && source.chunkCount > 0 && source.embeddedCount < source.chunkCount;
-  const cls = s === 'ready' ? (pendingVectors ? 'warn' : 'ok') : s === 'error' ? 'err' : s === 'unsupported' || s === 'cancelled' ? 'muted' : s === 'archive' ? 'ok' : 'accent';
+  const { key, cls } = sourceBadge(source);
   const detail = statusDetailText(source, t);
   return (
     <span className={`badge ${cls}`} title={detail || undefined}>
       {(s === 'processing' || s === 'queued') && <span className="spinner tiny" aria-hidden="true" />}
-      {pendingVectors ? t('status.embedPending') : t(`status.${s}` as 'status.ready')}
+      {t(key)}
     </span>
   );
 }
@@ -111,7 +111,7 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
               {s.kind.toUpperCase()} <span className="muted">· {s.mime}</span>
             </dd>
             <dt>{t('lib.size')}</dt>
-            <dd>{formatBytes(s.size)}</dd>
+            <dd>{formatBytes(s.size, lang)}</dd>
             <dt>{t('lib.imported')}</dt>
             <dd>{formatDate(s.importedAt, lang)}</dd>
             <dt>Status</dt>

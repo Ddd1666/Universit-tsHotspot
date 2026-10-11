@@ -36,20 +36,13 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem Abhaengigkeiten nur (neu) installieren, wenn package-lock.json sich geaendert hat (z. B. nach einem Update)
-node scripts\check-deps.mjs
+rem Abhaengigkeiten nur (neu) installieren, wenn package-lock.json sich geaendert hat (z. B. nach einem Update).
+rem Vorher wird die npm-Registry geprueft (npm ping): ohne Internet kein "npm ci" (das wuerde node_modules
+rem zuerst loeschen) - dann Start mit dem bisherigen Stand bzw. klare Meldung bei der Erstinstallation.
+node scripts\ensure-deps.mjs
 if errorlevel 1 (
-  echo.
-  echo   Abhaengigkeiten werden installiert/aktualisiert ^(ca. 1-3 Minuten^) ...
-  echo.
-  call npm ci --no-audit --no-fund
-  if errorlevel 1 (
-    echo.
-    echo   npm ci ist fehlgeschlagen - Details siehe oben.
-    pause
-    exit /b 1
-  )
-  node scripts\check-deps.mjs --write
+  pause
+  exit /b 1
 )
 
 set "MODE=--desktop"

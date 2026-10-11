@@ -60,6 +60,29 @@ describe('Prompt-Aufbau (RAG)', () => {
     }
   });
 
+  it('Quellen nutzen das Budget aus: bis ~70 % von num_ctx statt nur 70 % des Rests (vorher ~49 %)', () => {
+    const hits = Array.from({ length: 24 }, (_, i) => hit(i + 1, 'Inhalt über Thermodynamik. '.repeat(70)));
+    for (const numCtx of [4096, 8192, 16384]) {
+      const p = buildPrompt({ history: [], question: 'Frage?', hits, numCtx });
+      const total = p.messages.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
+      expect(total + p.budget.reservedAnswer, `num_ctx ${numCtx}`).toBeLessThanOrEqual(numCtx);
+      // ohne Verlauf: Quellen füllen den Platz zwischen Antwortreserve und 70-%-Grenze nahezu aus
+      const cap = Math.min(numCtx - p.budget.reservedAnswer - estimateTokens(p.messages[0]!.content) - 70, Math.floor(numCtx * 0.7));
+      expect(p.budget.context, `num_ctx ${numCtx}`).toBeGreaterThan(cap - 800);
+    }
+    expect(buildPrompt({ history: [], question: 'Frage?', hits, numCtx: 8192 }).budget.context).toBeGreaterThan(0.6 * 8192);
+  });
+
+  it('Verlauf behält eine Reserve (≤ 15 % von num_ctx), auch wenn die Quellen das Budget füllen könnten', () => {
+    const hits = Array.from({ length: 24 }, (_, i) => hit(i + 1, 'Inhalt über Optik. '.repeat(100)));
+    const history = Array.from({ length: 10 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: `Nachricht ${i} `.repeat(120) }));
+    const p = buildPrompt({ history, question: 'Und weiter?', hits, numCtx: 8192 });
+    expect(p.budget.history).toBeGreaterThanOrEqual(Math.floor(8192 * 0.15) - 600); // mindestens die jüngsten Nachrichten
+    expect(p.messages.at(-2)!.content).toContain('Nachricht 9'); // letzte Antwort ist im Prompt
+    const total = p.messages.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
+    expect(total + p.budget.reservedAnswer).toBeLessThanOrEqual(8192);
+  });
+
   it('freier Chat ohne Quellen enthält keinen Dokumentblock', () => {
     const p = buildPrompt({ history: [], question: 'Hallo', hits: null, numCtx: 4096 });
     expect(p.messages.at(-1)!.content).toBe('Hallo');

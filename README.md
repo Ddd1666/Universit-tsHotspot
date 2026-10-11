@@ -43,7 +43,9 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
    Projektordner an einen festen Ort legen, z. B. `%USERPROFILE%\Uni-Hotspot`. **Nicht in OneDrive-Ordnern** (Desktop/Dokumente
    sind oft synchronisiert) **und nicht in „Downloads“** betreiben: Sync/Virenscanner sperren sonst Dateien in `node_modules`.
 5. **`start.bat` doppelklicken** (Desktop-App). Beim ersten Start und nach Updates (geänderte `package-lock.json`, erkannt per Hash)
-   führt das Skript `npm ci` aus (1–3 Min.); sonst startet es direkt.
+   führt das Skript `npm ci` aus (1–3 Min.); sonst startet es direkt. **Ein Update braucht Internet:** vorher prüft das Skript die
+   npm-Registry (`npm ping`). Ohne Netz wird nichts gelöscht – Uni-Hotspot startet mit dem bisherigen Stand und meldet
+   „Update braucht Internet“ (nur die Erstinstallation bricht dann mit Hinweis ab).
    **Einmaliger Electron-Download:** beim ersten Desktop-Start lädt `start.bat` die Desktop-Hülle (Electron, **~100 MB**) in den
    Projektordner (`node_modules\electron`, Download-Cache `.cache\electron`). Das ist – neben `npm ci` bei Installation/Update – die **einzige Netzwerkaktion**; die laufende App
    spricht nur `127.0.0.1` an. Schlägt der Download fehl (offline/Proxy), startet automatisch der Browser-Modus.
@@ -52,8 +54,15 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
    <http://127.0.0.1:4317>. Alternativ: `npm start`.
 
 Läuft Uni-Hotspot schon (gleicher Datenordner), beschädigt ein zweiter Start nichts: er meldet „Uni-Hotspot läuft bereits auf
-http://127.0.0.1:4317 – kein zweiter Start nötig“ (Desktop: Dialog mit „Im Browser öffnen“) und beendet sich. Beenden: Fenster schließen
-bzw. im Konsolenfenster `Strg+C`.
+http://127.0.0.1:4317 – kein zweiter Start nötig“ (Desktop: Dialog mit „Im Browser öffnen“, in der Oberflächensprache) und beendet sich.
+Beenden: Fenster schließen bzw. im Konsolenfenster `Strg+C`. **Beim Beenden unterbrochene Dateien werden automatisch neu eingereiht**
+und beim nächsten Start fertig verarbeitet (auch halb entpackte ZIPs).
+
+**Sperrdatei `hotspot.lock`:** liegt im Datenordner und verhindert zwei Instanzen auf denselben Daten. Als „läuft“ gilt nur ein lebender
+Prozess, auf dessen eingetragenem Port wirklich Uni-Hotspot antwortet – nach einem Absturz (auch bei unter Windows wiederverwendeter
+Prozess-ID) wird sie automatisch übernommen. Meldet der Start trotzdem „läuft bereits“, obwohl **sicher keine Instanz läuft**
+(kein Uni-Hotspot-Fenster, kein Konsolenfenster, Port nicht erreichbar), darf `hotspot.lock` im Datenordner manuell gelöscht werden –
+der Pfad steht in der Meldung.
 
 Windows-Hinweise: Wird `start.bat` von SmartScreen blockiert („Computer wurde geschützt“), über *Weitere Informationen → Trotzdem ausführen*
 bzw. Dateieigenschaften → „Zulassen“ freigeben. In PowerShell ggf. `npm.cmd` statt `npm` verwenden (Ausführungsrichtlinie).
@@ -66,7 +75,7 @@ Port durch ein anderes Programm belegt? Die Konsole sagt es ohne Stacktrace; dan
 |---|---|---|---|
 | Chat/Vision | `gemma3:4b` | `qwen3:4b` (Denken), `qwen3:8b` | 8B-Modelle laufen mit 8k Kontext teilweise auf der CPU (langsamer) |
 | Embedding | `nomic-embed-text` | `bge-m3` | Modellwechsel ⇒ **Re-Index** (Button in den Einstellungen, startet nur, wenn das Modell installiert ist); Modell + Dimension werden pro Index gespeichert |
-| Kontext | `num_ctx` = 8192 | 4096 bei VRAM-Engpass | Kontrolle mit `ollama ps` (Spalte PROCESSOR sollte „100% GPU“ zeigen). Der RAG-Prompt nutzt höchstens ~70 % von `num_ctx` (Schätzung 3 Zeichen/Token), der Rest bleibt für die Antwort |
+| Kontext | `num_ctx` = 8192 | 4096 bei VRAM-Engpass | Kontrolle mit `ollama ps` (Spalte PROCESSOR sollte „100% GPU“ zeigen). Quellen belegen bis zu ~70 % von `num_ctx` (Schätzung 3 Zeichen/Token) – nach Antwortreserve (≤ 25 %) und einer Reserve für den jüngsten Verlauf. Es werden bis zu 24 Treffer genutzt, so viele wie ins Budget passen (bei kurzen Folien/Seiten entsprechend mehr) |
 
 Alle Modelle werden live aus Ollama (`/api/tags`) gelesen. Ollama wird ausschließlich lokal angesprochen (nur 127.0.0.1/localhost erlaubt).
 Ohne Ollama funktionieren Import und Volltextsuche weiter; Embeddings werden als „ausstehend“ gespeichert und automatisch nachgeholt.
@@ -129,7 +138,7 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (120 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
+npm test            # vitest (148 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
@@ -149,7 +158,8 @@ PowerShell: `$env:HOTSPOT_MOCK_OLLAMA="1"; npm start`.
   Gesamtgröße und Kompressionsrate, **Zählung der tatsächlich entpackten Bytes**. Uploads werden nie ausgeführt; HTML/SVG werden nur als Download ausgeliefert.
 - Nur parametrisierte SQL-Queries; FTS-Eingaben werden zu sicheren Token-Queries umgebaut; kein `eval`.
 - Modell-/Dokumentinhalte sind nicht vertrauenswürdig: Dokumente werden im Prompt als Daten abgegrenzt (Prompt-Injection-Hinweis,
-  eingeschleuste Tags neutralisiert); Markdown läuft durch DOMPurify, externe Bilder werden entfernt.
+  eingeschleuste Tags neutralisiert); Markdown läuft durch DOMPurify, externe Bilder werden entfernt. Sehr dichte, unausgeglichene
+  Hervorhebungszeichen (`*`, `_`, `~`) werden pro Absatz maskiert, damit präparierte Antworten/Dokumente die Oberfläche nicht einfrieren.
 - Electron: `contextIsolation`, `sandbox`, kein `nodeIntegration`, keine fremde Navigation/Popups/Berechtigungen, Netzwerk nur zum lokalen Server.
 
 ## Messwerte (Linux-Container, Node 22, Mock-Ollama; `npm run bench`)
@@ -171,6 +181,16 @@ PowerShell: `$env:HOTSPOT_MOCK_OLLAMA="1"; npm start`.
 | 40-MB-Textdatei: längste Event-Loop-Blockade | **1,3 s** am Stück (alle Chunks in einer Transaktion) | **67–99 ms**, p99 ~40 ms (Pakete à 200 Chunks + `setImmediate`); Health-Request p95 ~14–30 ms |
 | 40-MB-Textdatei: Durchsatz | 26 818 Chunks in 2,9–3,0 s (~9 000 Chunks/s) | 21 130 Chunks in 2,7–2,9 s (~7 300–7 800 Chunks/s); Text auf 32 MB begrenzt (Hinweis „gekürzt“) |
 | 40-MB-Textdatei: RAM (RSS-Spitze) | +~430 MB | +~370–450 MB |
+
+**Korrekturrunde 2 – vorher (Stand 42f2df2) / nachher:**
+
+| Messung | vorher | nachher |
+|---|---|---|
+| Kontext für Quellen, `num_ctx` 8192 (ohne Verlauf, lange Abschnitte) | 3 744 Token (46 %), 6 Abschnitte | 5 612 Token (69 %), 9 Abschnitte |
+| Kontext für Quellen, `num_ctx` 4096 | 1 254 Token (31 %), 2 Abschnitte | 2 499 Token (61 %), 4 Abschnitte |
+| Folien-PDF mit 120 kurzen Seiten: Kontext einer Antwort | 8 Treffer, 320 Zeichen | 24 Treffer, 992 Zeichen |
+| Markdown-Rendering `"*a " × 13 000` (UI-Thread) | 15,8 s | 87 ms |
+| Markdown: 20 Absätze à 1 000 `"*a "` | 2,2 s | 93 ms (normale Antworten unverändert ~25 ms) |
 
 Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der RTX 3060 typ. wenige ms; Antwort-Streaming abhängig vom Modell).
 

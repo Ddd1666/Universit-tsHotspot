@@ -13,3 +13,21 @@ export function apiErrorText(t: T, err: unknown): string {
   }
   return e?.message ?? String(err);
 }
+
+/** Fehlermeldung eines Ollama-/API-Fehlers lokalisiert aufbereiten. */
+export function errorText(t: T, err: { code?: string; message: string; detail?: string }, model?: string): string {
+  switch (err.code) {
+    case 'unreachable':
+    case 'ollama_unreachable':
+      return t('err.unreachable');
+    case 'model_missing':
+      return t('err.model_missing', { model: model ?? err.detail ?? '<model>' });
+    case 'oom':
+      return t('err.oom');
+    case 'timeout':
+      return t('err.timeout');
+    default:
+      // bekannte API-Codes (z. B. empty, nothing_to_regenerate) übersetzt, sonst die Meldung (z. B. von Ollama)
+      return t('err.generic', { message: apiErrorText(t, err) });
+  }
+}

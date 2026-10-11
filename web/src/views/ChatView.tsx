@@ -6,7 +6,8 @@ import { ViewHeader } from '../components/ViewHeader';
 import { formatTime, locLabel, prefersReducedMotion } from '../lib/format';
 import { reloadUntilFinal } from '../lib/chat-sync';
 import { streams } from '../lib/streams';
-import { errorText, useApp } from '../store';
+import { useApp } from '../store';
+import { errorText } from '../lib/errors';
 import type { ChatMessage, ChatSession, Citation, Scope, Source } from '../types';
 
 const EMBED_RE = /embed|bge-|minilm|e5-|gte-|nomic-bert/i;

@@ -5,7 +5,8 @@ export function prefersReducedMotion(): boolean {
   return document.documentElement.dataset.motion === 'reduced' || !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 }
 
-export function formatBytes(n: number): string {
+/** Größe mit Dezimaltrennzeichen der Oberflächensprache ("1,7 KB" / "1.7 KB"). */
+export function formatBytes(n: number, lang: string = 'en'): string {
   if (n < 1024) return `${n} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let v = n / 1024;
@@ -14,7 +15,8 @@ export function formatBytes(n: number): string {
     v /= 1024;
     i++;
   }
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+  const digits = v < 10 ? 1 : 0;
+  return `${v.toLocaleString(lang === 'de' ? 'de-DE' : 'en-GB', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${units[i]}`;
 }
 
 export function formatDate(ts: number, lang: string): string {

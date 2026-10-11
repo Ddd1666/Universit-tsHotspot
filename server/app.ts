@@ -61,7 +61,7 @@ function rotateLog(file: string): void {
  * wird mit AlreadyRunningError abgebrochen, BEVOR irgendetwas initialisiert (tmp geleert, Jobs zurückgesetzt) wird.
  */
 export async function createHotspot(config: AppConfig): Promise<Hotspot> {
-  const lock = acquireLock(config.dataDir);
+  const lock = await acquireLock(config.dataDir);
   try {
     return await build(config, lock);
   } catch (err) {
@@ -99,11 +99,14 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
   const log = (msg: string, extra?: unknown) => app.log.info({ extra }, msg);
 
   let queueTimer: NodeJS.Timeout | null = null;
+  // Ab close(): keine neuen Queue-Timer mehr (Stop-Schritte melden noch Änderungen, die DB ist danach zu)
+  let closing = false;
   const services = {} as Services;
   const notifyQueue = () => {
-    if (queueTimer) return;
+    if (queueTimer || closing) return;
     queueTimer = setTimeout(() => {
       queueTimer = null;
+      if (closing) return;
       bus.emit({ type: 'queue', ...services.queueStatus() });
     }, 250);
   };
@@ -194,15 +197,20 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     async close() {
       if (closed) return;
       closed = true;
+      closing = true;
       if (maintenanceTimer) clearTimeout(maintenanceTimer);
       monitor.stop();
-      if (queueTimer) clearTimeout(queueTimer);
       // jeder Schritt einzeln abgesichert: Beenden darf nie mit Stacktrace scheitern
       const steps: (() => unknown)[] = [
         () => ingest.stop(),
         () => embed.stop(),
         () => pool.close(),
         () => chat.idle(),
+        () => {
+          // erst nach den Stop-Schritten (die notifyQueue noch aufrufen können) und vor db.close()
+          if (queueTimer) clearTimeout(queueTimer);
+          queueTimer = null;
+        },
         () => app.close(),
         () => mock?.close(),
         () => db.close(),

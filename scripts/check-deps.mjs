@@ -4,24 +4,31 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ROOT } from './lib.mjs';
 
-const args = process.argv.slice(2);
-const write = args.includes('--write');
-const dir = path.resolve(args.find((a) => !a.startsWith('--')) ?? ROOT);
-const lockFile = path.join(dir, 'package-lock.json');
-const marker = path.join(dir, 'node_modules', '.hotspot-lock-hash');
+const markerFile = (dir) => path.join(dir, 'node_modules', '.hotspot-lock-hash');
+const lockHash = (dir) => crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, 'package-lock.json'))).digest('hex');
 
-const hash = crypto.createHash('sha256').update(fs.readFileSync(lockFile)).digest('hex');
-if (write) {
-  fs.mkdirSync(path.dirname(marker), { recursive: true });
-  fs.writeFileSync(marker, hash);
-  process.exit(0);
+export function depsUpToDate(dir = ROOT) {
+  try {
+    return fs.readFileSync(markerFile(dir), 'utf8').trim() === lockHash(dir);
+  } catch {
+    return false; // noch nie installiert
+  }
 }
-let current = '';
-try {
-  current = fs.readFileSync(marker, 'utf8').trim();
-} catch {
-  /* noch nie installiert */
+
+export function writeDepsMarker(dir = ROOT) {
+  fs.mkdirSync(path.dirname(markerFile(dir)), { recursive: true });
+  fs.writeFileSync(markerFile(dir), lockHash(dir));
 }
-process.exit(current === hash ? 0 : 1);
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  const args = process.argv.slice(2);
+  const dir = path.resolve(args.find((a) => !a.startsWith('--')) ?? ROOT);
+  if (args.includes('--write')) {
+    writeDepsMarker(dir);
+    process.exit(0);
+  }
+  process.exit(depsUpToDate(dir) ? 0 : 1);
+}

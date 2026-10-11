@@ -41,7 +41,8 @@ async function main(): Promise<void> {
     if (err instanceof AlreadyRunningError) {
       // Zweiter Start: laufende Instanz unangetastet lassen, nur darauf hinweisen
       const url = err.port ? `http://127.0.0.1:${err.port}` : null;
-      console.log(`\n  Uni-Hotspot läuft bereits${url ? ` auf ${url}` : ''} (gleicher Datenordner) – kein zweiter Start nötig.\n`);
+      console.log(`\n  Uni-Hotspot läuft bereits${url ? ` auf ${url}` : ''} (gleicher Datenordner) – kein zweiter Start nötig.`);
+      console.log(`  Falls sicher keine Instanz läuft: Sperrdatei löschen und neu starten:\n    ${err.lockFile}\n`);
       if (url && open) openBrowser(url);
       process.exit(0);
     }

@@ -91,3 +91,12 @@ export interface ChunkDraft {
   locLabel: string | null;
   tokenEst: number;
 }
+
+/**
+ * Fehler mit stabilem Code (z. B. 'office_corrupt'): wird als Statusdetail gespeichert und in der Oberfläche
+ * übersetzt (`detail.<code>`); die deutsche Meldung landet nur im Log.
+ */
+export function codedError(message: string, code: string, cause?: unknown): Error & { code: string } {
+  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
+}
+

@@ -278,20 +278,3 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
-
-/** Fehlermeldung eines Ollama-/API-Fehlers lokalisiert aufbereiten. */
-export function errorText(t: T, err: { code?: string; message: string }, model?: string): string {
-  switch (err.code) {
-    case 'unreachable':
-    case 'ollama_unreachable':
-      return t('err.unreachable');
-    case 'model_missing':
-      return t('err.model_missing', { model: model ?? '<modell>' });
-    case 'oom':
-      return t('err.oom');
-    case 'timeout':
-      return t('err.timeout');
-    default:
-      return t('err.generic', { message: err.message });
-  }
-}

@@ -128,15 +128,17 @@ export async function streamPost(path: string, body: unknown, handlers: StreamHa
   if (!res.ok || !res.body) {
     let msg = `HTTP ${res.status}`;
     let code = 'error';
+    let detail: string | undefined;
     try {
-      const d = (await res.json()) as { error?: string; message?: string };
+      const d = (await res.json()) as { error?: string; message?: string; detail?: string };
       msg = d.message ?? msg;
       code = d.error ?? code;
+      detail = d.detail;
     } catch {
       /* ignore */
     }
     if (res.status === 401) handleAuthFailure();
-    throw new ApiError(res.status, code, msg);
+    throw new ApiError(res.status, code, msg, detail);
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

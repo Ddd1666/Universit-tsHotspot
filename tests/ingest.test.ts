@@ -171,13 +171,23 @@ describe('Große Dateien blockieren den Server nicht', () => {
       locLabel: null,
       tokenEst: 10,
     }));
+    // Deterministisch statt zeitbasiert (lastabhängig): wie oft kommt der Event-Loop während des Speicherns dran?
+    let turns = 0;
+    let running = true;
+    const tick = () => {
+      if (!running) return;
+      turns++;
+      setImmediate(tick);
+    };
+    setImmediate(tick);
     const { monitorEventLoopDelay } = await import('node:perf_hooks');
     const h = monitorEventLoopDelay({ resolution: 10 });
     h.enable();
     await ingest.storeChunks(id, { chunks, pages: null, warnings: [] });
     h.disable();
-    const maxMs = h.max / 1e6;
-    expect(maxMs).toBeLessThan(250); // vorher eine einzige Transaktion: mehrere 100 ms bis Sekunden am Stück
+    running = false;
+    expect(turns).toBeGreaterThan(100); // 60 000 / 200 = 300 Pakete; vorher eine einzige Transaktion: 0–1
+    expect(h.max / 1e6).toBeLessThan(2000); // grobe Obergrenze (unter Last großzügig)
     expect(app.hotspot.services.library.getSource(id)).toMatchObject({ status: 'ready', chunkCount: 60_000 });
     const fts = db.prepare("SELECT count(*) AS n FROM chunks_fts WHERE chunks_fts MATCH 'abschnitt'").get() as { n: number };
     expect(fts.n).toBe(60_000);

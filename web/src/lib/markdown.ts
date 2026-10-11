@@ -109,12 +109,65 @@ function insertCitations(html: string, maxCite: number): string {
   return tpl.innerHTML;
 }
 
+/**
+ * Schutz vor quadratischer Laufzeit in marked: viele *unausgeglichene* Hervorhebungszeichen in EINEM Absatz
+ * (z. B. "*a " × 13 000 ≈ 16 s CPU) blockieren sonst die Oberfläche. Gemessen wächst die Zeit mit dem Quadrat der
+ * Zeichen `*`, `_`, `~` pro Absatz/Listenpunkt (≈ 1 300 → 200 ms, 400 → 18 ms); Länge allein ist unkritisch.
+ * In Einheiten über dem Limit (und ab einer Gesamtmenge pro Nachricht) werden diese Zeichen maskiert: sie erscheinen
+ * unverändert als Text, nur die Hervorhebung entfällt – Listen, Links, Code bleiben Markdown.
+ */
+export const EMPHASIS_UNIT_LIMIT = 300;
+export const EMPHASIS_TOTAL_LIMIT = 1200;
+const LIST_PREFIX = /^(\s{0,3}(?:[-*+]|\d{1,9}[.)])\s+)/;
+const UNIT_START = /^\s*$|^\s{0,3}(?:[-*+]|\d{1,9}[.)])\s|^\s*(?:\||#{1,6}\s|>)/;
+
+function countEmphasis(line: string): number {
+  let n = 0;
+  for (let i = 0; i < line.length; i++) {
+    const c = line.charCodeAt(i);
+    if (c === 42 || c === 95 || c === 126) n++; // * _ ~
+  }
+  return n;
+}
+
+export function defuseEmphasis(text: string): string {
+  const lines = text.split('\n');
+  let total = 0;
+  let start = 0;
+  const unit = (end: number) => {
+    let d = 0;
+    for (let i = start; i < end; i++) d += countEmphasis(lines[i]!);
+    if (d === 0) return;
+    if (d <= EMPHASIS_UNIT_LIMIT && total + d <= EMPHASIS_TOTAL_LIMIT) {
+      total += d;
+      return;
+    }
+    for (let i = start; i < end; i++) {
+      const line = lines[i]!;
+      const prefix = LIST_PREFIX.exec(line)?.[1] ?? ''; // Listenzeichen "* " bleibt Listenzeichen
+      lines[i] = prefix + line.slice(prefix.length).replace(/[*_~]/g, '\\$&');
+    }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    if (i > start && UNIT_START.test(lines[i]!)) {
+      unit(i);
+      start = i;
+    }
+  }
+  unit(lines.length);
+  return lines.join('\n');
+}
+
 export function renderMarkdown(src: string, opts: { maxCite?: number } = {}): string {
   const math: string[] = [];
+  const code: string[] = [];
   const prepared = src
     .split(CODE_SPLIT)
     .map((seg, i) => {
-      if (i % 2 === 1) return seg; // Code bleibt unverändert
+      if (i % 2 === 1) {
+        code.push(seg); // Code bleibt unverändert (auch nicht maskiert)
+        return `@@CODE${code.length - 1}@@`;
+      }
       return seg.replace(MATH_RE, (_m, d1: string, d2: string, i1: string, i2: string) => {
         const display = d1 !== undefined || d2 !== undefined;
         const tex = (d1 ?? d2 ?? i1 ?? i2 ?? '').trim();
@@ -123,7 +176,8 @@ export function renderMarkdown(src: string, opts: { maxCite?: number } = {}): st
       });
     })
     .join('');
-  let html = marked.parse(prepared, { gfm: true, breaks: false, async: false }) as string;
+  const safe = defuseEmphasis(prepared).replace(/@@CODE(\d+)@@/g, (_m, n: string) => code[Number(n)] ?? '');
+  let html = marked.parse(safe, { gfm: true, breaks: false, async: false }) as string;
   if (math.length) html = html.replace(/@@MATH(\d+)@@/g, (_m, n: string) => math[Number(n)] ?? '');
   return insertCitations(sanitizeHtml(html), opts.maxCite ?? 0);
 }

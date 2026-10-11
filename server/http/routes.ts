@@ -33,7 +33,7 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.code, message: err.message, detail: err.detail });
-    if (err instanceof TooLargeError) return reply.code(413).send({ error: 'too_large', message: err.message });
+    if (err instanceof TooLargeError) return reply.code(413).send({ error: 'too_large', message: err.message, detail: String(Math.round(err.limit / 1024 / 1024)) });
     const e = err as { validation?: unknown; statusCode?: number; message: string };
     if (e.validation) return reply.code(400).send({ error: 'invalid_request', message: e.message });
     if (e.statusCode && e.statusCode < 500) return reply.code(e.statusCode).send({ error: 'bad_request', message: e.message });

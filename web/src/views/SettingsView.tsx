@@ -3,6 +3,7 @@ import { get, post, put } from '../api';
 import { Icon } from '../components/Icon';
 import { ViewHeader } from '../components/ViewHeader';
 import { formatBytes } from '../lib/format';
+import { embeddingChoices } from '../lib/status';
 import { useApp } from '../store';
 import type { OllamaStatus, QueueStatus, Settings } from '../types';
 
@@ -65,7 +66,7 @@ function NumberField({ label, value, min, max, onCommit }: { label: string; valu
 }
 
 export function SettingsView() {
-  const { t, settings, updateSettings, ollama, setOllama, queue, boot, stats, toast, toastError, ask } = useApp();
+  const { t, lang, settings, updateSettings, ollama, setOllama, queue, boot, stats, toast, toastError, ask } = useApp();
   const [url, setUrl] = useState(settings.ollamaUrl);
   const [dataDir, setDataDir] = useState('');
   const [checking, setChecking] = useState(false);
@@ -168,7 +169,7 @@ export function SettingsView() {
                 <div key={r.name} className="vram-row">
                   <span className="mono">{r.name}</span>
                   <span className="muted small">
-                    {formatBytes(r.sizeVram)} VRAM / {formatBytes(r.size)}
+                    {formatBytes(r.sizeVram, lang)} VRAM / {formatBytes(r.size, lang)}
                     {r.contextLength ? ` · ctx ${r.contextLength}` : ''}
                   </span>
                   <div className="mini-bar wide" aria-label={t('set.gpu', { p: r.gpuPercent })}>
@@ -184,7 +185,7 @@ export function SettingsView() {
                   <li key={m.name}>
                     <span className="mono">{m.name}</span>
                     <span className="muted small">
-                      {[m.parameterSize, m.quantization, formatBytes(m.size)].filter(Boolean).join(' · ')}
+                      {[m.parameterSize, m.quantization, formatBytes(m.size, lang)].filter(Boolean).join(' · ')}
                     </span>
                   </li>
                 ))}
@@ -230,7 +231,7 @@ export function SettingsView() {
             <select className="input" value={settings.numCtx} onChange={(ev) => void save({ numCtx: Number(ev.target.value) })}>
               {[...new Set([...NUM_CTX, settings.numCtx])].sort((a, b) => a - b).map((n) => (
                 <option key={n} value={n}>
-                  {n.toLocaleString(settings.language === 'de' ? 'de-DE' : 'en-GB')} Token
+                  {t('set.tokens', { n: n.toLocaleString(lang === 'de' ? 'de-DE' : 'en-GB') })}
                 </option>
               ))}
             </select>
@@ -242,13 +243,14 @@ export function SettingsView() {
           <label className="field">
             <span>{t('set.embedModel')}</span>
             <select className="input" value={settings.embeddingModel} onChange={(ev) => void save({ embeddingModel: ev.target.value })}>
-              {!installed(settings.embeddingModel) && <option value={settings.embeddingModel}>{`${settings.embeddingModel} (${t('set.notInstalled')})`}</option>}
-              {embedModels.map((m) => (
-                <option key={m.name} value={m.name.replace(/:latest$/, '')}>
-                  {m.name.replace(/:latest$/, '')}
+              {embeddingChoices(
+                embedModels.map((m) => m.name),
+                settings.embeddingModel,
+              ).map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.installed ? c.value : `${c.value} (${t('set.notInstalled')})`}
                 </option>
               ))}
-              {!installed('bge-m3') && <option value="bge-m3">{`bge-m3 (${t('set.notInstalled')})`}</option>}
             </select>
             <small className="muted">{t('set.embedHint')}</small>
             <CopyCmd cmd="ollama pull bge-m3" />
@@ -342,7 +344,7 @@ export function SettingsView() {
             <small className="muted">{t('set.dataDirHint')}</small>
           </label>
           <p className="muted small mono">
-            {t('set.stats', { sources: stats.sources, chunks: stats.chunks, vectors: stats.vectors, size: formatBytes(stats.bytes) })} · {boot.vectorStore}
+            {t('set.stats', { sources: stats.sources, chunks: stats.chunks, vectors: stats.vectors, size: formatBytes(stats.bytes, lang) })} · {boot.vectorStore}
           </p>
           <label className="field">
             <span>{t('set.dataDirChange')}</span>

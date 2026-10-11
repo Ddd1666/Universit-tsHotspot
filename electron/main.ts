@@ -10,6 +10,7 @@ import { app, BrowserWindow, dialog, Menu, session, shell, type WebContents } fr
 import { loadConfig, resolveDataDir } from '../server/config.ts';
 import { createHotspot, type Hotspot } from '../server/app.ts';
 import { AlreadyRunningError } from '../server/lock.ts';
+import { DIALOG_TEXT, dialogLanguage } from './messages.ts';
 
 // Chromium-Profil (Cache, LocalStorage) & Logs in den Datenordner statt nach %APPDATA% – nichts außerhalb schreiben.
 const profileDir = path.join(resolveDataDir(), 'electron-profile');
@@ -19,6 +20,8 @@ app.setPath('crashDumps', path.join(profileDir, 'crashes'));
 app.setAppLogsPath(path.join(resolveDataDir(), 'logs'));
 
 let hotspot: Hotspot | null = null;
+/** Dialogtexte in der Oberflächensprache (Einstellung) bzw. OS-Sprache – erst bei Bedarf ermittelt */
+const texts = () => DIALOG_TEXT[dialogLanguage(resolveDataDir(), app.getLocale())];
 let win: BrowserWindow | null = null;
 let origin = '';
 
@@ -51,7 +54,7 @@ async function boot(): Promise<void> {
   session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/');
   const config = loadConfig({ port: 0, token: crypto.randomBytes(32).toString('hex') });
   if (!config.webDir) {
-    dialog.showErrorBox('Uni-Hotspot', 'Die Weboberfläche ist nicht gebaut. Bitte "npm run build" ausführen bzw. start.bat erneut starten.');
+    dialog.showErrorBox('Uni-Hotspot', texts().notBuilt);
     app.quit();
     return;
   }
@@ -62,16 +65,17 @@ async function boot(): Promise<void> {
     if (err instanceof AlreadyRunningError) {
       // z. B. Browser-Modus läuft schon mit demselben Datenordner: nichts anfassen, nur hinweisen
       const url = err.port ? `http://127.0.0.1:${err.port}` : null;
+      const tx = texts();
       const r = await dialog.showMessageBox({
         type: 'info',
         title: 'Uni-Hotspot',
-        message: 'Uni-Hotspot läuft bereits (gleicher Datenordner).',
-        detail: url ? `Die laufende Instanz ist erreichbar unter ${url}` : undefined,
-        buttons: url ? ['Im Browser öffnen', 'Schließen'] : ['Schließen'],
+        message: tx.alreadyRunning,
+        detail: [url ? tx.reachableAt(url) : '', tx.staleLockHint(err.lockFile)].filter(Boolean).join('\n\n'),
+        buttons: url ? [tx.openInBrowser, tx.close] : [tx.close],
       });
       if (url && r.response === 0) await shell.openExternal(url);
     } else {
-      dialog.showErrorBox('Uni-Hotspot – Startfehler', (err as Error).message);
+      dialog.showErrorBox(texts().startErrorTitle, (err as Error).message);
     }
     await hotspot?.close();
     hotspot = null;

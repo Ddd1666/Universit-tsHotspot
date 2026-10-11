@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, waitFor, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
+import { makePdf } from './fixtures.ts';
 
 let app: TestApp;
 beforeAll(async () => {
@@ -186,3 +187,36 @@ describe('Fehlerfälle ohne Absturz', () => {
     expect((await app.stream(`/api/chats/999999/messages`, { content: 'x' }))[0]!.data.status).toBe(404);
   });
 });
+
+describe('Viele kurze Seiten (Folien-PDF): Kontext wird bis zum Budget aufgefüllt', () => {
+  it('statt fest 8 Mini-Abschnitten bis zu 24 Treffer – Kontextnutzung gemessen', async () => {
+    const a = await startTestApp();
+    try {
+      const pages = Array.from({ length: 120 }, (_, i) => [`Folie ${i + 1}: Entropie Aspekt ${i + 1} kurz erklärt.`]);
+      const r = await a.upload('folien.pdf', makePdf(pages));
+      expect((await waitForSource(a, r.data.source.id)).chunkCount).toBe(120); // Seitengrenzen bleiben hart
+      await waitForEmbeddings(a);
+      expect((await a.api<{ settings: { retrievalTopK: number } }>('GET', '/api/settings')).data.settings.retrievalTopK).toBe(24);
+      const s = (await a.api<Session>('POST', '/api/chats', { scope: { mode: 'all' } })).data;
+      const ask = async () => {
+        const ev = await a.stream(`/api/chats/${s.id}/messages`, { content: 'Was wird über Entropie gesagt?' });
+        return ev.find((e) => e.event === 'meta')!.data as { citations: { snippet: string }[]; budget: { context: number; numCtx: number } };
+      };
+      await a.api('PUT', '/api/settings', { retrievalTopK: 8 }); // bisheriger fester Wert
+      const before = await ask();
+      await a.api('PUT', '/api/settings', { retrievalTopK: 24 }); // neuer Standard
+      const after = await ask();
+      const chars = (m: typeof before) => m.citations.reduce((n, c) => n + c.snippet.length, 0);
+      console.log(
+        `Kontextnutzung 120 kurze Seiten, num_ctx ${after.budget.numCtx}: vorher ${before.citations.length} Treffer / ${chars(before)} Zeichen / ${before.budget.context} Token, ` +
+          `nachher ${after.citations.length} Treffer / ${chars(after)} Zeichen / ${after.budget.context} Token`,
+      );
+      expect(before.citations).toHaveLength(8);
+      expect(after.citations).toHaveLength(24);
+      expect(chars(after)).toBeGreaterThanOrEqual(2.5 * chars(before));
+    } finally {
+      await a.close();
+    }
+  }, 60_000);
+});
+
