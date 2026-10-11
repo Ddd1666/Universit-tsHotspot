@@ -79,18 +79,19 @@ export class ExtractionPool {
       void s.worker.terminate();
       settle?.reject(err);
     };
-    const onMessage = (msg: { id: number; ok: boolean; result?: ExtractOutput; error?: string }) => {
+    const coded = (message: string, code?: unknown) => Object.assign(new Error(message), typeof code === 'string' ? { code } : {});
+    const onMessage = (msg: { id: number; ok: boolean; result?: ExtractOutput; error?: string; code?: unknown }) => {
       if (msg.id !== id) return;
       cleanup();
       if (msg.ok && msg.result) settle?.resolve(msg.result);
-      else settle?.reject(new Error(msg.error ?? 'Extraktion fehlgeschlagen'));
+      else settle?.reject(coded(msg.error ?? 'Extraktion fehlgeschlagen', msg.code));
     };
     const onError = (err: Error) => {
       const oom = /memory|heap/i.test(err.message);
-      kill(new Error(oom ? 'Datei zu groß/komplex für die Verarbeitung (Speicherlimit)' : err.message));
+      kill(oom ? coded('Datei zu groß/komplex für die Verarbeitung (Speicherlimit)', 'extract_memory') : err);
     };
-    const onExit = (code: number) => kill(new Error(`Extraktions-Worker beendet (Code ${code})`));
-    const timer = setTimeout(() => kill(new Error('Zeitüberschreitung bei der Extraktion')), this.timeoutMs);
+    const onExit = (code: number) => kill(coded(`Extraktions-Worker beendet (Code ${code})`, 'extract_crash'));
+    const timer = setTimeout(() => kill(coded('Zeitüberschreitung bei der Extraktion', 'extract_timeout')), this.timeoutMs);
 
     s.worker.on('message', onMessage);
     s.worker.on('error', onError);

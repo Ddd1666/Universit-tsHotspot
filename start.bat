@@ -36,17 +36,20 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules\fastify\package.json" (
+rem Abhaengigkeiten nur (neu) installieren, wenn package-lock.json sich geaendert hat (z. B. nach einem Update)
+node scripts\check-deps.mjs
+if errorlevel 1 (
   echo.
-  echo   Erster Start: Abhaengigkeiten werden installiert ^(einmalig, ca. 1-3 Minuten^) ...
+  echo   Abhaengigkeiten werden installiert/aktualisiert ^(ca. 1-3 Minuten^) ...
   echo.
-  call npm install --no-audit --no-fund
+  call npm ci --no-audit --no-fund
   if errorlevel 1 (
     echo.
-    echo   npm install ist fehlgeschlagen - Details siehe oben.
+    echo   npm ci ist fehlgeschlagen - Details siehe oben.
     pause
     exit /b 1
   )
+  node scripts\check-deps.mjs --write
 )
 
 set "MODE=--desktop"

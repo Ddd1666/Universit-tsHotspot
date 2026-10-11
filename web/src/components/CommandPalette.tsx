@@ -71,7 +71,7 @@ export function CommandPalette() {
       { id: 'lang', group: t('cmd.actions'), label: t('cmd.toggleLang'), icon: 'globe', run: () => void updateSettings({ language: settings.language === 'de' ? 'en' : 'de' }) },
       { id: 'sidebar', group: t('cmd.actions'), label: t('cmd.toggleSidebar'), icon: 'sidebar', run: () => setSidebarOpen(!sidebarOpen) },
     ];
-    const chatItems: Item[] = chats.slice(0, 50).map((c) => ({ id: `c${c.id}`, group: t('cmd.chats'), label: c.title, icon: 'chat', run: () => navigate(`#/chat/${c.id}`) }));
+    const chatItems: Item[] = chats.slice(0, 50).map((c) => ({ id: `c${c.id}`, group: t('cmd.chats'), label: c.title || t('chats.new'), icon: 'chat', run: () => navigate(`#/chat/${c.id}`) }));
     const subjectItems: Item[] = subjects.map((s) => ({ id: `s${s.id}`, group: t('cmd.subjects'), label: s.name, icon: 'layers', run: () => navigate(`#/library/${s.id}`) }));
     const query = q.trim();
     const ranked = [...actions, ...subjectItems, ...chatItems]

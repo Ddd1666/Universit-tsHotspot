@@ -9,6 +9,7 @@ import path from 'node:path';
 import { app, BrowserWindow, dialog, Menu, session, shell, type WebContents } from 'electron';
 import { loadConfig, resolveDataDir } from '../server/config.ts';
 import { createHotspot, type Hotspot } from '../server/app.ts';
+import { AlreadyRunningError } from '../server/lock.ts';
 
 // Chromium-Profil (Cache, LocalStorage) & Logs in den Datenordner statt nach %APPDATA% – nichts außerhalb schreiben.
 const profileDir = path.join(resolveDataDir(), 'electron-profile');
@@ -58,7 +59,22 @@ async function boot(): Promise<void> {
     hotspot = await createHotspot(config);
     origin = (await hotspot.listen()).url;
   } catch (err) {
-    dialog.showErrorBox('Uni-Hotspot – Startfehler', (err as Error).message);
+    if (err instanceof AlreadyRunningError) {
+      // z. B. Browser-Modus läuft schon mit demselben Datenordner: nichts anfassen, nur hinweisen
+      const url = err.port ? `http://127.0.0.1:${err.port}` : null;
+      const r = await dialog.showMessageBox({
+        type: 'info',
+        title: 'Uni-Hotspot',
+        message: 'Uni-Hotspot läuft bereits (gleicher Datenordner).',
+        detail: url ? `Die laufende Instanz ist erreichbar unter ${url}` : undefined,
+        buttons: url ? ['Im Browser öffnen', 'Schließen'] : ['Schließen'],
+      });
+      if (url && r.response === 0) await shell.openExternal(url);
+    } else {
+      dialog.showErrorBox('Uni-Hotspot – Startfehler', (err as Error).message);
+    }
+    await hotspot?.close();
+    hotspot = null;
     app.quit();
     return;
   }

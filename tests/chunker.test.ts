@@ -19,15 +19,23 @@ describe('Chunking', () => {
     for (let i = 0; i < 240; i++) expect(all).toContain(`Satz Nummer ${i} `);
   });
 
-  it('übernimmt Seitenbereiche und überlappt fortlaufenden Text', () => {
-    const blocks: TextBlock[] = Array.from({ length: 6 }, (_, p) => ({ text: paragraph(10, p * 10), loc: { kind: 'page', index: p + 1 } }));
-    const chunks = chunkBlocks(blocks);
-    expect(chunks[0]!.locKind).toBe('page');
-    expect(chunks[0]!.locStart).toBe(1);
-    expect(chunks.at(-1)!.locEnd).toBe(6);
-    // Überlappung: Ende von Chunk n taucht am Anfang von Chunk n+1 auf
-    const tail = chunks[0]!.text.slice(-60);
-    expect(chunks[1]!.text.includes(tail.slice(-40))).toBe(true);
+  it('Seiten und Folien sind harte Grenzen: jeder Chunk gehört zu genau einer Seite/Folie', () => {
+    // viele kleine Seiten würden ohne harte Grenze zu "S. 1–5" zusammengefasst
+    const pages: TextBlock[] = Array.from({ length: 8 }, (_, p) => ({ text: paragraph(2, p * 2), loc: { kind: 'page', index: p + 1 } }));
+    const chunks = chunkBlocks(pages);
+    expect(chunks).toHaveLength(8);
+    chunks.forEach((c, i) => expect([c.locKind, c.locStart, c.locEnd]).toEqual(['page', i + 1, i + 1]));
+    const slides = chunkBlocks(Array.from({ length: 5 }, (_, i) => ({ text: `Folie ${i}`, loc: { kind: 'slide' as const, index: i + 1 } })));
+    expect(slides.map((c) => [c.locStart, c.locEnd])).toEqual([[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]);
+  });
+
+  it('überlappt fortlaufenden Text innerhalb einer langen Seite', () => {
+    const chunks = chunkBlocks([{ text: paragraph(60), loc: { kind: 'page', index: 7 } }]);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect([c.locStart, c.locEnd]).toEqual([7, 7]);
+    // Ende von Chunk n (eindeutige Satznummer) taucht am Anfang von Chunk n+1 auf
+    const lastSentence = /Satz Nummer (\d+)[^.]*\.$/.exec(chunks[0]!.text)![0];
+    expect(chunks[1]!.text.startsWith(lastSentence) || chunks[1]!.text.includes(lastSentence)).toBe(true);
   });
 
   it('respektiert Tabellenblatt-Grenzen hart und überlappt Folien nicht', () => {
@@ -68,7 +76,8 @@ describe('Chunking', () => {
   });
 
   it('Hilfsfunktionen', () => {
-    expect(estimateTokens('a'.repeat(35))).toBe(10);
+    expect(CHARS_PER_TOKEN).toBe(3); // konservativ (Zahlen, Tabellen, LaTeX)
+    expect(estimateTokens('a'.repeat(36))).toBe(12);
     expect(splitSentences('Erster Satz. Zweiter Satz! Dritter?')).toHaveLength(3);
     expect(locationLabel({ locKind: 'page', locStart: 3, locEnd: 4, locLabel: null })).toBe('page 3-4');
     expect(locationLabel({ locKind: 'sheet', locStart: 2, locEnd: 9, locLabel: 'Daten' })).toBe('sheet "Daten", rows 2-9');

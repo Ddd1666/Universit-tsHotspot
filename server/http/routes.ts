@@ -3,7 +3,8 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { APP_VERSION, LOCAL_CONFIG_FILE, readLocalConfig, writeLocalConfig } from '../config.ts';
-import { HttpError } from '../library.ts';
+import { HttpError, SOURCE_LIST_LIMIT } from '../library.ts';
+import { hasModel } from '../ollama/status.ts';
 import { TooLargeError } from '../storage.ts';
 import { DEFAULT_SETTINGS } from '../settings.ts';
 import { hybridSearch, parseScope } from '../search/hybrid.ts';
@@ -31,7 +32,7 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
   app.addContentTypeParser('application/octet-stream', (_req, payload, done) => done(null, payload));
 
   app.setErrorHandler((err, _req, reply) => {
-    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.code, message: err.message });
+    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.code, message: err.message, detail: err.detail });
     if (err instanceof TooLargeError) return reply.code(413).send({ error: 'too_large', message: err.message });
     const e = err as { validation?: unknown; statusCode?: number; message: string };
     if (e.validation) return reply.code(400).send({ error: 'invalid_request', message: e.message });
@@ -86,7 +87,7 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
     try {
       next = s.settings.update(req.body as Record<string, unknown>);
     } catch (err) {
-      throw new HttpError(400, 'invalid_setting', (err as Error).message);
+      throw new HttpError(400, 'invalid_setting', (err as Error).message, (err as Error).message.split(':')[0]);
     }
     s.bus.emit({ type: 'settings', settings: next });
     return { settings: next, queue: s.queueStatus() };
@@ -119,7 +120,12 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
   app.get('/api/ollama', async () => s.monitor.status);
   app.post('/api/ollama/refresh', async () => s.monitor.refresh());
 
+  // Re-Index verwirft alle Vektoren -> nur, wenn das Zielmodell wirklich installiert ist
   app.post('/api/index/reindex', async () => {
+    const model = s.settings.get().embeddingModel;
+    const status = await s.monitor.refresh();
+    if (!status.reachable) throw new HttpError(409, 'ollama_unreachable', 'Ollama ist nicht erreichbar – Re-Index nicht möglich');
+    if (!hasModel(status, model)) throw new HttpError(409, 'model_missing', `Embedding-Modell "${model}" ist nicht installiert (ollama pull ${model})`, model);
     s.embed.reindex();
     return { queue: s.queueStatus() };
   });
@@ -174,16 +180,26 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
     async (req) => {
       const q = req.query as { subject?: string; parent?: number; q?: string; status?: string };
       const subjectId = q.subject === 'none' ? 'none' : q.subject && q.subject !== 'all' ? Number(q.subject) : undefined;
-      return s.library.listSources({ subjectId, parentId: q.parent, q: q.q, status: q.status });
+      const { items, total } = s.library.listSources({ subjectId, parentId: q.parent, q: q.q, status: q.status });
+      return { items, total, limit: SOURCE_LIST_LIMIT };
     },
   );
 
-  app.get('/api/sources/:id', { schema: { params: idParam } }, async (req) => {
-    const { id } = req.params as { id: number };
-    const source = s.library.getSource(id);
-    if (!source) throw new HttpError(404, 'not_found', 'Quelle nicht gefunden');
-    return { source, chunks: s.library.chunkPreview(id, 40), children: source.childCount ? s.library.listSources({ parentId: id, limit: 500 }) : [] };
-  });
+  app.get(
+    '/api/sources/:id',
+    { schema: { params: idParam, querystring: { type: 'object', properties: { around: { type: 'integer', minimum: 1 } } } } },
+    async (req) => {
+      const { id } = req.params as { id: number };
+      const source = s.library.getSource(id);
+      if (!source) throw new HttpError(404, 'not_found', 'Quelle nicht gefunden');
+      const around = (req.query as { around?: number }).around;
+      return {
+        source,
+        chunks: s.library.chunkPreview(id, { limit: 40, aroundChunkId: around }),
+        children: source.childCount ? s.library.listSources({ parentId: id, limit: 500 }).items : [],
+      };
+    },
+  );
 
   app.patch(
     '/api/sources/:id',

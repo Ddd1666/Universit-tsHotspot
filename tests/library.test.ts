@@ -76,7 +76,7 @@ describe('Löschkonsistenz', () => {
     const before = counts();
     const up = await app.upload('paket.zip', makeZip({ 'a.txt': 'archivinhalt eins', 'b/c.txt': 'archivinhalt zwei' }));
     await waitForSource(app, up.data.source.id);
-    const children = (await app.api<{ id: number }[]>('GET', `/api/sources?parent=${up.data.source.id}`)).data;
+    const children = (await app.api<{ items: { id: number }[] }>('GET', `/api/sources?parent=${up.data.source.id}`)).data.items;
     expect(children).toHaveLength(2);
     for (const c of children) await waitForSource(app, c.id);
     await waitForEmbeddings(app);
@@ -92,5 +92,47 @@ describe('Löschkonsistenz', () => {
     fs.writeFileSync(orphan, 'verwaist');
     expect(await app.hotspot.services.library.gcOrphanBlobs()).toBe(1);
     expect(fs.existsSync(orphan)).toBe(false);
+  });
+});
+
+describe('Bibliotheksliste skaliert linear', () => {
+  it('2000+ Quellen mit 40k+ Chunks: Liste schnell, Kappung sichtbar, Index genutzt', async () => {
+    const { db } = app.hotspot.services;
+    db.exec('BEGIN');
+    const s = db.prepare("INSERT INTO sources(sha256, name, size, mime, kind, status, imported_at, chunk_count) VALUES (?, ?, 1, 'text/plain', 'text', 'ready', ?, 20)");
+    const c = db.prepare('INSERT INTO chunks(source_id, ord, text, token_est, embed_state) VALUES (?, ?, ?, 10, ?)');
+    for (let i = 0; i < 2100; i++) {
+      const id = Number(s.run(i.toString(16).padStart(63, '0') + 'b', `masse-${i}.txt`, 1000 + i).lastInsertRowid);
+      for (let k = 0; k < 20; k++) c.run(id, k, `Massentext ${i} ${k}`, k % 3 ? 1 : 2); // 2 = nicht erneut einbetten
+    }
+    db.exec('COMMIT');
+    const t0 = performance.now();
+    const r = await app.api<{ items: { name: string; embeddedCount: number; chunkCount: number }[]; total: number; limit: number }>('GET', '/api/sources');
+    const ms = performance.now() - t0;
+    expect(r.data.items).toHaveLength(2000);
+    expect(r.data.total).toBeGreaterThanOrEqual(2100);
+    expect(r.data.limit).toBe(2000);
+    expect(r.data.items.find((x) => x.name === 'masse-2099.txt')!.embeddedCount).toBe(13);
+    expect(ms).toBeLessThan(1500); // vorher: ~8 s (Server blockiert)
+    const plan = (db.prepare(
+      'EXPLAIN QUERY PLAN SELECT count(*) FROM chunks c INDEXED BY chunks_source_state WHERE c.source_id = ? AND c.embed_state = 1',
+    ).all(1) as { detail: string }[]).map((p) => p.detail).join(' ');
+    expect(plan).toContain('chunks_source_state');
+    db.exec("DELETE FROM chunks WHERE text LIKE 'Massentext%'");
+    db.exec("DELETE FROM sources WHERE name LIKE 'masse-%'");
+  });
+});
+
+describe('Vorschau rund um einen Ziel-Chunk ("In Bibliothek zeigen")', () => {
+  it('liefert den Ziel-Chunk auch jenseits der ersten 40 Abschnitte', async () => {
+    const md = Array.from({ length: 150 }, (_, i) => `# Teil ${i}\n\nInhalt von Teil ${i}. ${'Mehr Text. '.repeat(30)}`).join('\n\n');
+    const up = await app.upload('lang.md', md);
+    await waitForSource(app, up.data.source.id);
+    const target = app.hotspot.services.db.prepare('SELECT id, ord FROM chunks WHERE source_id = ? ORDER BY ord DESC LIMIT 1').get(up.data.source.id) as { id: number; ord: number };
+    expect(target.ord).toBeGreaterThan(40);
+    const first = await app.api<{ chunks: { id: number }[] }>('GET', `/api/sources/${up.data.source.id}`);
+    expect(first.data.chunks.some((c) => c.id === target.id)).toBe(false);
+    const around = await app.api<{ chunks: { id: number }[] }>('GET', `/api/sources/${up.data.source.id}?around=${target.id}`);
+    expect(around.data.chunks.some((c) => c.id === target.id)).toBe(true);
   });
 });

@@ -104,7 +104,11 @@ export function detectKind(name: string, head: Buffer): Detected {
     if (known && ['docx', 'pptx', 'xlsx', 'odt', 'odp', 'ods'].includes(known[0])) return { kind: known[0], mime: known[1], ext };
     return { kind: 'zip', mime: 'application/zip', ext };
   }
-  if (isOle) return { kind: 'legacy-office', mime: known?.[1] ?? 'application/x-ole-storage', ext };
+  if (isOle) {
+    // DOCX/XLSX/PPTX sind normalerweise ZIP-Container; als OLE-Container gespeichert = passwortverschlüsselt
+    if (known && ['docx', 'pptx', 'xlsx'].includes(known[0])) return { kind: 'encrypted-office', mime: known[1], ext };
+    return { kind: 'legacy-office', mime: known?.[1] ?? 'application/x-ole-storage', ext };
+  }
   if (known) {
     // Office-Endung ohne ZIP-Signatur -> beschädigt/fremd: als "other" speichern
     if (['docx', 'pptx', 'xlsx', 'odt', 'odp', 'ods', 'zip'].includes(known[0])) return { kind: 'other', mime: 'application/octet-stream', ext };
@@ -126,6 +130,8 @@ export function unsupportedReason(kind: SourceKind): string | null {
       return 'phase2_media';
     case 'legacy-office':
       return 'legacy_office';
+    case 'encrypted-office':
+      return 'encrypted_office';
     case 'other':
       return 'unknown_format';
     default:

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { connectEvents, get, onConnection, onHubEvent, put } from './api';
 import { translate, type Lang, type T, type TKey } from './i18n';
+import { apiErrorText } from './lib/errors';
 import { ImportManager } from './lib/importer';
 import type { Bootstrap, ChatSession, HubEvent, OllamaStatus, QueueStatus, Settings, Stats, Subject } from './types';
 
@@ -63,6 +64,8 @@ interface AppState {
   navigate(hash: string): void;
   toasts: Toast[];
   toast(text: string, kind?: Toast['kind']): void;
+  /** Fehler lokalisiert anzeigen (API-Fehlercodes werden übersetzt) */
+  toastError(err: unknown): void;
   dismissToast(id: number): void;
   dialog: DialogRequest | null;
   ask(req: Omit<DialogRequest, 'resolve'>): Promise<string | boolean | null>;
@@ -140,6 +143,7 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
     setToasts((ts) => [...ts.slice(-3), { id, kind, text }]);
     setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), kind === 'error' ? 8000 : 3500);
   }, []);
+  const toastError = useCallback((err: unknown) => toast(apiErrorText(t, err), 'error'), [toast, t]);
   const dismissToast = useCallback((id: number) => setToasts((ts) => ts.filter((x) => x.id !== id)), []);
 
   const reloadSubjects = useCallback(() => {
@@ -157,11 +161,11 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
         setSettings(r.settings);
         setQueue(r.queue);
       } catch (err) {
-        toast((err as Error).message, 'error');
+        toast(apiErrorText(t, err), 'error');
         throw err;
       }
     },
-    [toast],
+    [toast, t],
   );
 
   const navigate = useCallback((hash: string) => {
@@ -258,6 +262,7 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
     navigate,
     toasts,
     toast,
+    toastError,
     dismissToast,
     dialog,
     ask,

@@ -52,6 +52,14 @@ describe('Prompt-Aufbau (RAG)', () => {
     }
   });
 
+  it('Quellen belegen höchstens ~70 % von num_ctx (konservative Token-Schätzung)', () => {
+    const hits = Array.from({ length: 30 }, (_, i) => hit(i + 1, '12345 6789 $x^2$ | 3,14 | '.repeat(120)));
+    for (const numCtx of [4096, 8192, 32768]) {
+      const p = buildPrompt({ history: [], question: 'Frage?', hits, numCtx });
+      expect(p.budget.context).toBeLessThanOrEqual(Math.ceil(numCtx * 0.7));
+    }
+  });
+
   it('freier Chat ohne Quellen enthält keinen Dokumentblock', () => {
     const p = buildPrompt({ history: [], question: 'Hallo', hits: null, numCtx: 4096 });
     expect(p.messages.at(-1)!.content).toBe('Hallo');

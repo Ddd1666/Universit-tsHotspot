@@ -1,5 +1,10 @@
 import type { T } from '../i18n';
 
+/** Animationen reduzieren (Systemeinstellung oder App-Einstellung "Reduziert")? */
+export function prefersReducedMotion(): boolean {
+  return document.documentElement.dataset.motion === 'reduced' || !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+}
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];

@@ -21,7 +21,8 @@ interface Session {
 describe('Chat-Sessions (CRUD)', () => {
   it('anlegen, auflisten, umbenennen, Wissensbereich/Modell setzen, löschen', async () => {
     const s = (await app.api<Session>('POST', '/api/chats', { scope: { mode: 'none' } })).data;
-    expect(s).toMatchObject({ title: 'Neuer Chat', titleLocked: false, scope: { mode: 'none' } });
+    // leerer Titel = Oberfläche zeigt lokalisiert Neuer Chat / New chat
+    expect(s).toMatchObject({ title: '', titleLocked: false, scope: { mode: 'none' } });
     const renamed = (await app.api<Session>('PATCH', `/api/chats/${s.id}`, { title: 'Meine Lernsession', model: 'qwen3:4b', scope: { mode: 'subjects', ids: [1, 2] } })).data;
     expect(renamed).toMatchObject({ title: 'Meine Lernsession', titleLocked: true, model: 'qwen3:4b', scope: { mode: 'subjects', ids: [1, 2] } });
     expect((await app.api<Session[]>('GET', '/api/chats')).data.some((c) => c.id === s.id)).toBe(true);
@@ -79,6 +80,9 @@ describe('RAG-Antwort mit Streaming', () => {
       return t.startsWith('Mock:') ? t : null;
     });
     expect(titled).toMatch(/^Mock: Was besagt/);
+    // Auto-Titel nutzt dieselbe num_ctx wie der Chat (sonst lädt Ollama das Modell neu)
+    const titleReq = app.hotspot.mock!.requests.filter((r) => r.path === '/api/chat' && (r.body as { stream?: boolean }).stream === false).at(-1)!;
+    expect((titleReq.body as { options: { num_ctx: number } }).options.num_ctx).toBe(8192);
   });
 
   it('Prompt enthält Dokumente als abgegrenzte Daten; Antwortsprache folgt der Frage', async () => {

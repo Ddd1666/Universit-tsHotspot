@@ -19,6 +19,7 @@ import { hybridSearch } from './search/hybrid.ts';
 import { registerSecurity } from './http/security.ts';
 import { registerRoutes } from './http/routes.ts';
 import { registerWeb } from './http/web.ts';
+import { acquireLock, type InstanceLock } from './lock.ts';
 
 export interface Services {
   config: AppConfig;
@@ -55,8 +56,21 @@ function rotateLog(file: string): void {
   }
 }
 
+/**
+ * Erzeugt die App. Zuerst wird die Instanz-Sperre im Datenordner geholt – läuft dort schon eine Instanz,
+ * wird mit AlreadyRunningError abgebrochen, BEVOR irgendetwas initialisiert (tmp geleert, Jobs zurückgesetzt) wird.
+ */
 export async function createHotspot(config: AppConfig): Promise<Hotspot> {
-  fs.mkdirSync(config.dataDir, { recursive: true });
+  const lock = acquireLock(config.dataDir);
+  try {
+    return await build(config, lock);
+  } catch (err) {
+    lock.release();
+    throw err;
+  }
+}
+
+async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
   const logDir = path.join(config.dataDir, 'logs');
   fs.mkdirSync(logDir, { recursive: true });
   const logFile = path.join(logDir, 'server.log');
@@ -74,8 +88,10 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
   const library = new Library(db, blobs, vectors, bus);
   const pool = new ExtractionPool({ inWorker: config.extractInWorker });
 
+  // Normaler WriteStream statt pino-Datei-Ziel: kein "sonic boom is not ready yet" bei frühem Beenden
+  const logStream = config.logToFile ? fs.createWriteStream(logFile, { flags: 'a' }) : null;
   const app = Fastify({
-    logger: config.logToFile ? { level: config.logLevel, file: logFile } : false,
+    logger: logStream ? { level: config.logLevel, stream: logStream } : false,
     bodyLimit: 1024 * 1024,
     trustProxy: false,
     logController: new LogController({ disableRequestLogging: config.logLevel !== 'debug' }),
@@ -93,6 +109,7 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
   };
 
   const embed = new EmbedQueue({ db, store: vectors, client, settings, bus, onProgress: notifyQueue });
+  vectors.onRepaired = () => embed.notify();
   const ingest = new IngestService({
     db,
     blobs,
@@ -159,6 +176,7 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
       await app.listen({ host: '127.0.0.1', port: config.port });
       const addr = app.server.address();
       port = typeof addr === 'object' && addr ? addr.port : config.port;
+      lock.setPort(port);
       monitor.start();
       ingest.start();
       embed.start();
@@ -179,13 +197,25 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
       if (maintenanceTimer) clearTimeout(maintenanceTimer);
       monitor.stop();
       if (queueTimer) clearTimeout(queueTimer);
-      await ingest.stop();
-      await embed.stop();
-      await pool.close();
-      await chat.idle();
-      await app.close();
-      await mock?.close();
-      db.close();
+      // jeder Schritt einzeln abgesichert: Beenden darf nie mit Stacktrace scheitern
+      const steps: (() => unknown)[] = [
+        () => ingest.stop(),
+        () => embed.stop(),
+        () => pool.close(),
+        () => chat.idle(),
+        () => app.close(),
+        () => mock?.close(),
+        () => db.close(),
+        () => new Promise<void>((r) => (logStream ? logStream.end(r) : r())),
+      ];
+      for (const step of steps) {
+        try {
+          await step();
+        } catch {
+          /* weiter aufräumen */
+        }
+      }
+      lock.release();
     },
   };
 }

@@ -13,6 +13,8 @@ export interface MockOllama {
   requests: { path: string; body: unknown }[];
   /** simuliert Ausfall (Verbindungen werden sofort geschlossen) */
   setDown(down: boolean): void;
+  /** künstliche Verzögerung für /api/embed (Tests: Re-Index während laufendem Batch) */
+  setEmbedDelay(ms: number): void;
 }
 
 const MODELS: { name: string; size: number; family: string; params: string; caps: string[] }[] = [
@@ -21,6 +23,7 @@ const MODELS: { name: string; size: number; family: string; params: string; caps
   { name: 'qwen3:8b', size: 5_225_376_047, family: 'qwen3', params: '8.2B', caps: ['completion', 'tools', 'thinking'] },
   { name: 'llama3.1:8b', size: 4_920_753_328, family: 'llama', params: '8.0B', caps: ['completion', 'tools'] },
   { name: 'nomic-embed-text:latest', size: 274_302_450, family: 'nomic-bert', params: '137M', caps: ['embedding'] },
+  { name: 'all-minilm:latest', size: 45_960_996, family: 'bert', params: '23M', caps: ['embedding'] },
 ];
 
 function findModel(name: string) {
@@ -112,6 +115,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
   const tokenDelay = opts.tokenDelayMs ?? 12;
   const requests: { path: string; body: unknown }[] = [];
   let down = false;
+  let embedDelay = 0;
   let lastChatModel = 'gemma3:4b';
 
   const server = http.createServer(async (req, res) => {
@@ -146,6 +150,8 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
         const model = String(body.model ?? '');
         if (!findModel(model)) return json(404, { error: `model "${model}" not found, try pulling it first` });
         const input = Array.isArray(body.input) ? (body.input as string[]) : [String(body.input ?? '')];
+        if (embedDelay) await new Promise((r) => setTimeout(r, embedDelay));
+        if (res.destroyed) return;
         const dim = embedDim(model);
         return json(200, { model, embeddings: input.map((t) => fakeEmbedding(String(t), dim)) });
       }
@@ -176,6 +182,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
           send({ model, message: { role: 'assistant', content: '<think>Inline-Denken (Mock). </think>' }, done: false });
         }
         const tokens = answer.split(/(?<=\s)/);
+        const delay = lastUser.includes('__MOCK_SLOW__') ? 120 : tokenDelay; // langsame Antwort (Stopp-Test)
         let i = 0;
         for (const tok of tokens) {
           if (closed) return;
@@ -186,7 +193,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
           }
           send({ model, message: { role: 'assistant', content: tok }, done: false });
           i++;
-          await sleep(tokenDelay);
+          await sleep(delay);
         }
         send({ model, message: { role: 'assistant', content: '' }, done: true, eval_count: tokens.length, eval_duration: tokens.length * tokenDelay * 1e6 });
         res.end();
@@ -204,6 +211,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
     url: `http://127.0.0.1:${port}`,
     requests,
     setDown: (d) => (down = d),
+    setEmbedDelay: (ms) => (embedDelay = ms),
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

@@ -6,10 +6,12 @@ const TOKEN = document.querySelector<HTMLMetaElement>('meta[name="hotspot-token"
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  readonly detail?: string;
+  constructor(status: number, code: string, message: string, detail?: string) {
     super(message);
     this.status = status;
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -54,8 +56,8 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     data = { error: 'invalid_response', message: text.slice(0, 200) };
   }
   if (!res.ok) {
-    const d = (data ?? {}) as { error?: string; message?: string };
-    throw new ApiError(res.status, d.error ?? 'error', d.message ?? `HTTP ${res.status}`);
+    const d = (data ?? {}) as { error?: string; message?: string; detail?: string };
+    throw new ApiError(res.status, d.error ?? 'error', d.message ?? `HTTP ${res.status}`, d.detail);
   }
   return data as T;
 }
@@ -183,14 +185,14 @@ export function uploadFile(
       if (e.lengthComputable) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
-      let data: { error?: string; message?: string } & Record<string, unknown> = {};
+      let data: { error?: string; message?: string; detail?: string } & Record<string, unknown> = {};
       try {
         data = JSON.parse(xhr.responseText);
       } catch {
         /* ignore */
       }
       if (xhr.status >= 200 && xhr.status < 300) resolve(data as never);
-      else reject(new ApiError(xhr.status, data.error ?? 'error', data.message ?? `HTTP ${xhr.status}`));
+      else reject(new ApiError(xhr.status, data.error ?? 'error', data.message ?? `HTTP ${xhr.status}`, data.detail));
     };
     xhr.onerror = () => reject(new ApiError(0, 'network', 'Upload fehlgeschlagen'));
     xhr.onabort = () => reject(new ApiError(0, 'aborted', 'abgebrochen'));

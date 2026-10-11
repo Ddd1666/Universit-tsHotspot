@@ -23,6 +23,7 @@ export type SourceKind =
   | 'audio'
   | 'video'
   | 'legacy-office'
+  | 'encrypted-office'
   | 'other';
 
 export type LocKind = 'page' | 'slide' | 'sheet' | 'rows' | 'lines' | 'section';
@@ -64,11 +65,14 @@ export interface ExtractLimits {
   maxPartBytes: number;
   /** max. Zellen je Arbeitsmappe */
   maxCells: number;
+  /** Text-/CSV-/HTML-Dateien: nur so viele Bytes indexieren (Datei bleibt vollständig gespeichert) */
+  maxTextBytes: number;
 }
 
 export const DEFAULT_EXTRACT_LIMITS: ExtractLimits = {
   maxPartBytes: 256 * 1024 * 1024,
   maxCells: 300_000,
+  maxTextBytes: 32 * 1024 * 1024,
 };
 
 export interface Extractor {

@@ -32,22 +32,31 @@ export interface SourceDTO {
   processedAt: number | null;
 }
 
+/** API-Fehler mit stabilem Code (die Oberfläche übersetzt anhand des Codes) und optionalem Detail (z. B. Modellname). */
 export class HttpError extends Error {
   readonly statusCode: number;
   readonly code: string;
-  constructor(statusCode: number, code: string, message: string) {
+  readonly detail?: string;
+  constructor(statusCode: number, code: string, message: string, detail?: string) {
     super(message);
     this.statusCode = statusCode;
     this.code = code;
+    this.detail = detail;
   }
 }
 
-const SOURCE_COLUMNS = `
+const BASE_COLUMNS = `
   s.id, s.subject_id AS subjectId, s.parent_id AS parentId, s.name, s.rel_path AS relPath, s.size, s.mime, s.kind,
   s.status, s.status_detail AS statusDetail, s.page_count AS pageCount, s.chunk_count AS chunkCount,
-  (SELECT count(*) FROM chunks c WHERE c.source_id = s.id AND c.embed_state = 1) AS embeddedCount,
-  (SELECT count(*) FROM sources k WHERE k.parent_id = s.id) AS childCount,
   s.batch_id AS batchId, s.sha256, s.imported_at AS importedAt, s.processed_at AS processedAt`;
+
+// INDEXED BY erzwingt den (source_id, embed_state)-Index; ohne ihn wählte SQLite den embed_state-Index
+// und die Liste skalierte mit Quellen × Chunks (2000 Quellen / 40k Chunks: 8 s Blockade).
+const SOURCE_COLUMNS = `${BASE_COLUMNS},
+  (SELECT count(*) FROM chunks c INDEXED BY chunks_source_state WHERE c.source_id = s.id AND c.embed_state = 1) AS embeddedCount,
+  (SELECT count(*) FROM sources k WHERE k.parent_id = s.id) AS childCount`;
+
+export const SOURCE_LIST_LIMIT = 2000;
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -146,7 +155,7 @@ export class Library {
     return (this.db.prepare(`SELECT ${SOURCE_COLUMNS} FROM sources s WHERE s.sha256 = ?`).get(sha256) as SourceDTO | undefined) ?? null;
   }
 
-  listSources(filter: { subjectId?: number | 'none'; parentId?: number; q?: string; status?: string; limit?: number } = {}): SourceDTO[] {
+  listSources(filter: { subjectId?: number | 'none'; parentId?: number; q?: string; status?: string; limit?: number } = {}): { items: SourceDTO[]; total: number } {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (filter.parentId !== undefined) {
@@ -166,19 +175,51 @@ export class Library {
       where.push('s.status = ?');
       params.push(filter.status);
     }
-    const sql = `SELECT ${SOURCE_COLUMNS} FROM sources s ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY s.imported_at DESC, s.id DESC LIMIT ?`;
-    params.push(Math.min(filter.limit ?? 2000, 5000));
-    return this.db.prepare(sql).all(...params) as unknown as SourceDTO[];
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const limit = Math.min(filter.limit ?? SOURCE_LIST_LIMIT, 5000);
+    const items = this.db
+      .prepare(`SELECT ${BASE_COLUMNS} FROM sources s ${whereSql} ORDER BY s.imported_at DESC, s.id DESC LIMIT ?`)
+      .all(...params, limit) as unknown as SourceDTO[];
+    const total = items.length < limit ? items.length : (this.db.prepare(`SELECT count(*) AS n FROM sources s ${whereSql}`).get(...params) as { n: number }).n;
+    // Zähler gruppiert für die angezeigten Quellen (eine Abfrage statt einer pro Zeile)
+    const ids = jsonList(items.map((i) => i.id));
+    const embedded = new Map(
+      (this.db
+        .prepare(
+          `SELECT source_id AS id, count(*) AS n FROM chunks INDEXED BY chunks_source_state
+           WHERE source_id IN (SELECT value FROM json_each(?)) AND embed_state = 1 GROUP BY source_id`,
+        )
+        .all(ids) as { id: number; n: number }[]).map((r) => [r.id, r.n]),
+    );
+    const children = new Map(
+      (this.db
+        .prepare('SELECT parent_id AS id, count(*) AS n FROM sources WHERE parent_id IN (SELECT value FROM json_each(?)) GROUP BY parent_id')
+        .all(ids) as { id: number; n: number }[]).map((r) => [r.id, r.n]),
+    );
+    for (const it of items) {
+      it.embeddedCount = embedded.get(it.id) ?? 0;
+      it.childCount = children.get(it.id) ?? 0;
+    }
+    return { items, total };
   }
 
-  chunkPreview(sourceId: number, limit = 30): { id: number; ord: number; text: string; heading: string | null; locKind: string | null; locStart: number | null; locEnd: number | null; locLabel: string | null; embedState: number }[] {
+  /** Extrahierte Abschnitte für die Vorschau – ab Anfang oder rund um einen Ziel-Chunk (Sprung aus einem Zitat). */
+  chunkPreview(
+    sourceId: number,
+    opts: { limit?: number; aroundChunkId?: number } = {},
+  ): { id: number; ord: number; text: string; heading: string | null; locKind: string | null; locStart: number | null; locEnd: number | null; locLabel: string | null; embedState: number }[] {
+    const limit = opts.limit ?? 40;
+    let fromOrd = 0;
+    if (opts.aroundChunkId) {
+      const target = this.db.prepare('SELECT ord FROM chunks WHERE id = ? AND source_id = ?').get(opts.aroundChunkId, sourceId) as { ord: number } | undefined;
+      if (target) fromOrd = Math.max(0, target.ord - Math.floor(limit / 3));
+    }
     return this.db
       .prepare(
         `SELECT id, ord, text, heading, loc_kind AS locKind, loc_start AS locStart, loc_end AS locEnd, loc_label AS locLabel, embed_state AS embedState
-         FROM chunks WHERE source_id = ? ORDER BY ord LIMIT ?`,
+         FROM chunks WHERE source_id = ? AND ord >= ? ORDER BY ord LIMIT ?`,
       )
-      .all(sourceId, limit) as never;
+      .all(sourceId, fromOrd, limit) as never;
   }
 
   /** Quelle (und ggf. Archiv-Inhalte) in ein anderes Fach verschieben. */

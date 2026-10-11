@@ -1,4 +1,4 @@
-import { getMeta, setMeta, tx, type DB } from '../db.ts';
+import { getMeta, jsonList, setMeta, tx, type DB } from '../db.ts';
 
 export interface VectorHit {
   chunkId: number;
@@ -71,6 +71,8 @@ export class SqliteVectorStore implements VectorStore {
   private cache: Cache | null = null;
   private readonly db: DB;
   private readonly quantize: boolean;
+  /** wird aufgerufen, wenn repair() Chunks wieder auf "ausstehend" gesetzt hat */
+  onRepaired: (() => void) | null = null;
 
   constructor(db: DB, opts: { quantize?: boolean } = {}) {
     this.db = db;
@@ -100,6 +102,10 @@ export class SqliteVectorStore implements VectorStore {
 
   upsert(items: { chunkId: number; sourceId: number; vector: Float32Array }[]): void {
     if (!items.length) return;
+    const dim = this.info().dim;
+    if (dim !== null && items.some((it) => it.vector.length !== dim)) {
+      throw new Error(`Vektordimension passt nicht zum Index (${dim})`);
+    }
     const ins = this.db.prepare('INSERT OR REPLACE INTO embeddings(chunk_id, source_id, vec) VALUES (?, ?, ?)');
     const normalized = items.map((it) => ({ ...it, vector: normalize(it.vector) }));
     tx(this.db, () => {
@@ -160,12 +166,35 @@ export class SqliteVectorStore implements VectorStore {
     c.count++;
   }
 
+  /**
+   * Konsistenz: Vektoren, deren Länge nicht zur Index-Dimension (meta) passt, entfernen und die Chunks
+   * wieder als "ausstehend" markieren (z. B. nach einem abgebrochenen Modellwechsel). Gibt die Anzahl zurück.
+   */
+  repair(): number {
+    const { dim, count } = this.info();
+    if (!count) return 0;
+    const bad = (
+      dim === null
+        ? this.db.prepare('SELECT chunk_id FROM embeddings').all()
+        : this.db.prepare('SELECT chunk_id FROM embeddings WHERE length(vec) != ?').all(dim * 4)
+    ) as { chunk_id: number }[];
+    if (!bad.length) return 0;
+    const list = jsonList(bad.map((b) => b.chunk_id));
+    tx(this.db, () => {
+      this.db.prepare('DELETE FROM embeddings WHERE chunk_id IN (SELECT value FROM json_each(?))').run(list);
+      this.db.prepare('UPDATE chunks SET embed_state = 0 WHERE id IN (SELECT value FROM json_each(?))').run(list);
+    });
+    this.cache = null;
+    return bad.length;
+  }
+
   private ensureLoaded(): Cache | null {
     if (this.cache) return this.cache;
+    if (this.repair() > 0) this.onRepaired?.();
     const info = this.info();
-    if (!info.count) return null;
-    const first = this.db.prepare('SELECT vec FROM embeddings LIMIT 1').get() as { vec: Uint8Array };
-    const dim = first.vec.byteLength / 4;
+    // Dimension kommt aus den Index-Metadaten, nie aus einer zufälligen ersten Zeile
+    if (!info.count || !info.dim) return null;
+    const dim = info.dim;
     this.cache = {
       dim,
       count: 0,

@@ -17,5 +17,5 @@
     "resolveJsonModule": true
   },
   "include": ["server/**/*.ts", "electron/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vite.config.ts", "vitest.config.ts"],
-  "exclude": ["node_modules", "dist", "web", "tests/sanitize.test.ts"]
+  "exclude": ["node_modules", "dist", "web", "tests/sanitize.test.ts", "tests/web-lib.test.ts"]
 }

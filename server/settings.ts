@@ -52,8 +52,13 @@ const num = (min: number, max: number): Validator => (v) => {
   if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) throw new Error(`Zahl ${min}–${max}`);
   return v;
 };
+/** Ollama-Modellnamen wie "gemma3:4b", "hf.co/user/repo:Q4" – ohne "..", führende/abschließende "/" oder Sonderzeichen. */
+export function isValidModelName(v: unknown): v is string {
+  return typeof v === 'string' && /^[\w.\-/:]{1,200}$/.test(v) && !v.includes('..') && !v.startsWith('/') && !v.endsWith('/') && !v.includes('//');
+}
+
 const modelName: Validator = (v) => {
-  if (typeof v !== 'string' || !/^[\w.\-/:]{1,200}$/.test(v)) throw new Error('ungültiger Modellname');
+  if (!isValidModelName(v)) throw new Error('ungültiger Modellname');
   return v;
 };
 const bool: Validator = (v) => {
@@ -107,7 +112,7 @@ export class SettingsStore {
     this.cache = { ...DEFAULT_SETTINGS };
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     for (const row of rows) {
-      if (!(row.key in VALIDATORS)) continue;
+      if (!Object.hasOwn(VALIDATORS, row.key)) continue;
       const key = row.key as keyof Settings;
       try {
         (this.cache as unknown as Record<string, unknown>)[key] = VALIDATORS[key](JSON.parse(row.value));
@@ -126,7 +131,7 @@ export class SettingsStore {
     const next: Record<string, unknown> = { ...this.cache };
     const changed: (keyof Settings)[] = [];
     for (const [k, v] of Object.entries(patch)) {
-      if (!(k in VALIDATORS)) throw new Error(`Unbekannte Einstellung: ${k}`);
+      if (!Object.hasOwn(VALIDATORS, k)) throw new Error(`Unbekannte Einstellung: ${k}`);
       const key = k as keyof Settings;
       let value: unknown;
       try {

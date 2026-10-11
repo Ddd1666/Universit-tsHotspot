@@ -11,6 +11,12 @@ interface Job {
 parentPort?.on('message', (job: Job) => {
   runExtraction(job.input, job.limits).then(
     (result) => parentPort!.postMessage({ id: job.id, ok: true, result }),
-    (err: unknown) => parentPort!.postMessage({ id: job.id, ok: false, error: err instanceof Error ? err.message : String(err) }),
+    (err: unknown) =>
+      parentPort!.postMessage({
+        id: job.id,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        code: (err as { code?: unknown })?.code,
+      }),
   );
 });

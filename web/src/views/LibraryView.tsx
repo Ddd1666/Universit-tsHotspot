@@ -49,7 +49,7 @@ function SubjectForm({ initial, onSave, onCancel }: { initial?: Subject; onSave(
 }
 
 function SubjectList({ current }: { current: 'all' | 'none' | number }) {
-  const { t, subjects, navigate, stats, ask, toast } = useApp();
+  const { t, subjects, navigate, stats, ask, toastError } = useApp();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
 
@@ -59,7 +59,7 @@ function SubjectList({ current }: { current: 'all' | 'none' | number }) {
       setAdding(false);
       navigate(`#/library/${s.id}`);
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
   const update = async (id: number, name: string, color: string) => {
@@ -67,7 +67,7 @@ function SubjectList({ current }: { current: 'all' | 'none' | number }) {
       await patch(`/api/subjects/${id}`, { name, color });
       setEditing(null);
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
   const remove = async (s: Subject) => {
@@ -84,7 +84,7 @@ function SubjectList({ current }: { current: 'all' | 'none' | number }) {
       await del(`/api/subjects/${s.id}?deleteSources=${choice === 'all'}`);
       if (current === s.id) navigate('#/library');
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
 
@@ -142,15 +142,16 @@ function SubjectList({ current }: { current: 'all' | 'none' | number }) {
 }
 
 export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | number; sourceId: number | null }) {
-  const { t, lang, subjects, importer, setImportTarget, navigate, ask, toast } = useApp();
+  const { t, lang, subjects, importer, setImportTarget, navigate, ask, toastError } = useApp();
   const [sources, setSources] = useState<Source[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [preview, setPreview] = useState<{ id: number; chunk: number | null } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
-  const reloadTimer = useRef<number | null>(null);
+  const reloadState = useRef<{ timer: number | null; first: number }>({ timer: null, first: 0 });
   const targetSubject = typeof subject === 'number' ? subject : null;
   const subj = typeof subject === 'number' ? subjects.find((s) => s.id === subject) : null;
 
@@ -163,10 +164,30 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
     const params = new URLSearchParams({ subject: String(subject) });
     if (q.trim()) params.set('q', q.trim());
     if (status) params.set('status', status);
-    get<Source[]>(`/api/sources?${params}`)
-      .then(setSources)
-      .catch((e: Error) => toast(e.message, 'error'));
-  }, [subject, q, status, toast]);
+    get<{ items: Source[]; total: number }>(`/api/sources?${params}`)
+      .then((r) => {
+        setSources(r.items);
+        setTotal(r.total);
+      })
+      .catch((e: unknown) => toastError(e));
+  }, [subject, q, status, toastError]);
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  /** Entprellt neu laden: erst nach einer Ruhephase, bei Dauer-Ereignissen spätestens alle 5 s. */
+  const scheduleReload = useCallback((delay: number) => {
+    const st = reloadState.current;
+    const now = Date.now();
+    if (st.timer === null) st.first = now;
+    else clearTimeout(st.timer);
+    const wait = Math.max(0, Math.min(delay, st.first + 5000 - now));
+    st.timer = window.setTimeout(() => {
+      st.timer = null;
+      loadRef.current();
+    }, wait);
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(load, q ? 200 : 0);
@@ -182,27 +203,22 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
 
   useHubEvent((e) => {
     if (e.type === 'source') {
-      // bekannte Quelle direkt aktualisieren, neue per (gebündeltem) Reload
-      setSources((list) => {
-        if (!list) return list;
-        const idx = list.findIndex((s) => s.id === e.source.id);
-        if (idx === -1) {
-          if (reloadTimer.current === null) reloadTimer.current = window.setTimeout(() => ((reloadTimer.current = null), load()), 400);
-          return list;
-        }
-        const next = list.slice();
-        next[idx] = e.source;
-        return next;
-      });
+      // bekannte Quelle direkt aktualisieren, neue per entprelltem Reload
+      if (sources?.some((s) => s.id === e.source.id)) setSources((list) => list?.map((s) => (s.id === e.source.id ? e.source : s)) ?? list);
+      else scheduleReload(800);
     } else if (e.type === 'source-deleted') {
       setSources((list) => list?.filter((s) => s.id !== e.id) ?? list);
       setPreview((p) => (p?.id === e.id ? null : p));
     } else if (e.type === 'queue') {
-      // Vektor-Fortschritt aktualisieren (gebündelt)
-      if (reloadTimer.current === null) reloadTimer.current = window.setTimeout(() => ((reloadTimer.current = null), load()), 1500);
+      scheduleReload(2000); // Vektor-Fortschritt
     }
   });
-  useEffect(() => () => void (reloadTimer.current && clearTimeout(reloadTimer.current)), []);
+  useEffect(
+    () => () => {
+      if (reloadState.current.timer !== null) clearTimeout(reloadState.current.timer);
+    },
+    [],
+  );
 
   const onDrop = async (e: DragEvent) => {
     e.preventDefault();
@@ -217,7 +233,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
       await patch(`/api/sources/${s.id}`, { subjectId: subjectId === '' ? null : Number(subjectId) });
       load();
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
   const remove = async (s: Source) => {
@@ -226,14 +242,14 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
     try {
       await del(`/api/sources/${s.id}`);
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
   const retry = async (s: Source) => {
     try {
       await post(`/api/sources/${s.id}/retry`);
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
 
@@ -306,7 +322,9 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
               {subj && <span className="dot-color" style={{ background: subj.color }} />}
               {title}
             </h2>
-            <span className="muted small">{sources ? t('lib.count', { n: sources.length }) : ''}</span>
+            <span className={`muted small ${sources && total > sources.length ? 'warn' : ''}`}>
+              {sources ? (total > sources.length ? t('lib.countOf', { shown: sources.length, total }) : t('lib.count', { n: sources.length })) : ''}
+            </span>
             <span className="spacer" />
             <div className="input-icon">
               <Icon name="search" size={15} />

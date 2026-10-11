@@ -1,4 +1,4 @@
-import { estimateTokens, locationLabel } from '../ingest/chunker.ts';
+import { CHARS_PER_TOKEN, estimateTokens, locationLabel } from '../ingest/chunker.ts';
 import type { ChatMessage } from '../ollama/client.ts';
 import type { SearchHit } from '../search/hybrid.ts';
 
@@ -82,7 +82,7 @@ export function buildDocumentsBlock(hits: SearchHit[], budgetTokens: number): { 
     if (used + cost > budgetTokens) {
       if (citations.length === 0 && budgetTokens > 200) {
         // erstes Dokument kürzen statt gar keinen Kontext
-        const maxChars = Math.floor((budgetTokens - estimateTokens(header) - 8) * 3.5);
+        const maxChars = Math.floor((budgetTokens - estimateTokens(header) - 8) * CHARS_PER_TOKEN);
         parts.push(`${header}\n${body.slice(0, maxChars)}…\n</document>`);
         citations.push(citationFromHit(n, h));
       }
@@ -121,7 +121,9 @@ export function buildPrompt(input: { history: HistoryMessage[]; question: string
   let userContent = input.question;
   let contextTokens = 0;
   if (withSources) {
-    const { block, citations: c } = buildDocumentsBlock(input.hits!, Math.floor(available * 0.7));
+    // Quellen: ~70 % des verfügbaren Rests, höchstens aber 70 % von num_ctx
+    const contextBudget = Math.min(Math.floor(available * 0.7), Math.floor(input.numCtx * 0.7));
+    const { block, citations: c } = buildDocumentsBlock(input.hits!, contextBudget);
     citations = c;
     contextTokens = estimateTokens(block);
     userContent = `${block}\n\nQUESTION / FRAGE (answer in this language):\n${input.question}`;

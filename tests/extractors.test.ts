@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runExtraction } from '../server/ingest/extract-run.ts';
-import { detectKind } from '../server/ingest/detect.ts';
+import { detectKind, unsupportedReason } from '../server/ingest/detect.ts';
 import { DEFAULT_EXTRACT_LIMITS, type ExtractInput, type SourceKind } from '../server/ingest/types.ts';
 import { findExtractor } from '../server/ingest/extractors/registry.ts';
 import { pdfExtractor, itemsToParagraphs } from '../server/ingest/extractors/pdf.ts';
@@ -32,6 +32,16 @@ describe('Formaterkennung', () => {
     expect(detectKind('README', Buffer.from('Hallo Welt')).kind).toBe('text');
     expect(detectKind('blob.bin', Buffer.from([0, 1, 2, 3, 0, 0])).kind).toBe('other');
     expect(detectKind('kaputt.docx', Buffer.from('kein zip')).kind).toBe('other');
+  });
+
+  it('passwortgeschützte DOCX/XLSX/PPTX werden als verschlüsselt erkannt (nicht als altes Office-Format)', () => {
+    const ole = Buffer.from('d0cf11e0a1b11ae1000000', 'hex');
+    for (const name of ['geheim.docx', 'geheim.xlsx', 'geheim.pptx']) {
+      const d = detectKind(name, ole);
+      expect(d.kind, name).toBe('encrypted-office');
+      expect(unsupportedReason(d.kind)).toBe('encrypted_office');
+    }
+    expect(unsupportedReason(detectKind('alt.xls', ole).kind)).toBe('legacy_office');
   });
 
   it('hat für Bilder/Audio/Video bewusst keinen Extractor (Phase 2)', () => {
@@ -154,6 +164,30 @@ describe('Text, Markdown, HTML, Code, JSON, ODF', () => {
     expect(code.text).toContain('return 1');
     expect(code.heading).toBe('Kapitel › Unter');
     expect(code.loc).toMatchObject({ kind: 'lines', index: 7 });
+  });
+
+  it('lange Texte ohne Leerzeilen: größenbegrenzte Blöcke mit korrekten Zeilenbereichen', async () => {
+    const text = Array.from({ length: 20_000 }, (_, i) => `Zeile ${i + 1} mit etwas Text`).join('\n');
+    const out = await runExtraction(input('log.txt', text), DEFAULT_EXTRACT_LIMITS);
+    expect(out.chunks.length).toBeGreaterThan(50);
+    let expectStart = 1;
+    for (const c of out.chunks) {
+      expect(c.locKind).toBe('lines');
+      expect(c.locEnd! - c.locStart!).toBeLessThan(200); // früher: "Zeilen 1–20000" für alles
+      expect(c.locStart!).toBeLessThanOrEqual(expectStart + 1);
+      expect(c.text).toContain(`Zeile ${c.locStart} mit`);
+      expect(c.text).toContain(`Zeile ${c.locEnd} mit`);
+      expectStart = c.locEnd! + 1;
+    }
+    expect(out.chunks.at(-1)!.locEnd).toBe(20_000);
+  });
+
+  it('sehr große Textdateien werden nur bis zum Limit indexiert (Warnung), UTF-8 bleibt intakt', async () => {
+    const text = 'Übung macht den Meister. '.repeat(400);
+    const out = await runExtraction(input('gross.md', text), { ...DEFAULT_EXTRACT_LIMITS, maxTextBytes: 1001 });
+    expect(out.warnings).toContain('truncated_text');
+    expect(out.chunks.map((c) => c.text).join('')).not.toContain('\ufffd');
+    expect(out.chunks.map((c) => c.text).join('').length).toBeLessThan(1001);
   });
 
   it('dekodiert Windows-1252 (alte Textdateien) und UTF-16 mit BOM', () => {

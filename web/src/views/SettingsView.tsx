@@ -65,7 +65,7 @@ function NumberField({ label, value, min, max, onCommit }: { label: string; valu
 }
 
 export function SettingsView() {
-  const { t, settings, updateSettings, ollama, setOllama, queue, boot, stats, toast, ask } = useApp();
+  const { t, settings, updateSettings, ollama, setOllama, queue, boot, stats, toast, toastError, ask } = useApp();
   const [url, setUrl] = useState(settings.ollamaUrl);
   const [dataDir, setDataDir] = useState('');
   const [checking, setChecking] = useState(false);
@@ -96,10 +96,20 @@ export function SettingsView() {
     }
   };
 
+  // Re-Index verwirft alle Vektoren: nur mit installiertem Zielmodell und nach Bestätigung
   const reindex = async () => {
-    if ((await ask({ title: t('set.reindex'), message: t('set.reindexConfirm'), confirmLabel: t('set.reindex') })) !== true) return;
-    await post<{ queue: QueueStatus }>('/api/index/reindex');
-    toast(t('set.saved'), 'success');
+    const model = settings.embeddingModel;
+    if (!installed(model)) {
+      toast(t('set.reindexMissing', { model }), 'error');
+      return;
+    }
+    if ((await ask({ title: t('set.reindex'), message: t('set.reindexConfirm'), confirmLabel: t('set.reindex'), danger: true })) !== true) return;
+    try {
+      await post<{ queue: QueueStatus }>('/api/index/reindex');
+      toast(t('set.saved'), 'success');
+    } catch (err) {
+      toastError(err);
+    }
   };
 
   const chatModels = ollama.models.filter((m) => !EMBED_RE.test(m.name) && !EMBED_RE.test(m.family ?? ''));
@@ -220,7 +230,7 @@ export function SettingsView() {
             <select className="input" value={settings.numCtx} onChange={(ev) => void save({ numCtx: Number(ev.target.value) })}>
               {[...new Set([...NUM_CTX, settings.numCtx])].sort((a, b) => a - b).map((n) => (
                 <option key={n} value={n}>
-                  {n.toLocaleString()} Token
+                  {n.toLocaleString(settings.language === 'de' ? 'de-DE' : 'en-GB')} Token
                 </option>
               ))}
             </select>
@@ -246,8 +256,11 @@ export function SettingsView() {
           {e.reindexNeeded && (
             <div className="notice warn" role="alert">
               <Icon name="alert" size={16} />
-              <span>{t('set.reindexNeeded', { old: e.indexModel ?? '?', new: e.settingsModel })}</span>
-              <button className="btn small primary" onClick={() => void reindex()}>
+              <span>
+                {t('set.reindexNeeded', { old: e.indexModel ?? '?', new: e.settingsModel })}
+                {!installed(e.settingsModel) && <> {t('set.reindexMissing', { model: e.settingsModel })}</>}
+              </span>
+              <button className="btn small primary" onClick={() => void reindex()} disabled={!installed(e.settingsModel)}>
                 {t('set.reindex')}
               </button>
             </div>
@@ -349,7 +362,7 @@ export function SettingsView() {
                     toast(t('set.dataDirSaved'), 'success');
                     setDataDir('');
                   } catch (err) {
-                    toast((err as Error).message, 'error');
+                    toastError(err);
                   }
                 }}
               >

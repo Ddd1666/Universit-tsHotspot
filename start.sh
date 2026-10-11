@@ -14,9 +14,10 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 node scripts/check-node.mjs
 
-if [ ! -f node_modules/fastify/package.json ]; then
-  echo "Erster Start: installiere Abhaengigkeiten (einmalig) ..."
-  npm install --no-audit --no-fund
+if ! node scripts/check-deps.mjs; then
+  echo "Abhaengigkeiten werden installiert/aktualisiert ..."
+  npm ci --no-audit --no-fund
+  node scripts/check-deps.mjs --write
 fi
 
 if [ "$1" = "browser" ]; then

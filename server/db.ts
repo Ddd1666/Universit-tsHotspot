@@ -108,6 +108,10 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX chat_messages_session ON chat_messages(session_id, id);
   `,
+  // v2 – Zähler "eingebettete Chunks je Quelle" linear statt O(Quellen × Chunks)
+  `
+  CREATE INDEX chunks_source_state ON chunks(source_id, embed_state);
+  `,
 ];
 
 export function openDb(file: string): DB {

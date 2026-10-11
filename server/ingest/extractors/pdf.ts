@@ -36,22 +36,25 @@ export function itemsToParagraphs(items: PdfTextItem[]): string[] {
   const median = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 0;
 
   const paragraphs: string[] = [];
-  let para = '';
+  // Absatz als Liste von Zeilen sammeln (Prüfungen nur auf der letzten, kurzen Zeile -> linear)
+  let parts: string[] = [];
+  const flush = () => {
+    if (parts.length) paragraphs.push(parts.join(' '));
+    parts = [];
+  };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.text.replace(/\s+/g, ' ').trim();
     const prev = lines[i - 1];
     const gap = prev && prev.y !== null && lines[i]!.y !== null ? prev.y! - lines[i]!.y! : 0;
     const breakHere = !line || (median > 0 && gap > median * 1.6) || gap < 0;
-    if (breakHere && para) {
-      paragraphs.push(para);
-      para = '';
-    }
+    if (breakHere) flush();
     if (!line) continue;
-    if (!para) para = line;
-    else if (/[A-Za-zÄÖÜäöüß]-$/.test(para) && /^[a-zäöüß]/.test(line)) para = para.slice(0, -1) + line;
-    else para += ' ' + line;
+    const last = parts[parts.length - 1];
+    if (last !== undefined && last.endsWith('-') && /[A-Za-zÄÖÜäöüß]/.test(last.charAt(last.length - 2)) && /^[a-zäöüß]/.test(line)) {
+      parts[parts.length - 1] = last.slice(0, -1) + line; // Silbentrennung zusammenfügen
+    } else parts.push(line);
   }
-  if (para) paragraphs.push(para);
+  flush();
   return paragraphs;
 }
 
@@ -65,8 +68,8 @@ export const pdfExtractor: Extractor = {
       pdf = await getDocumentProxy(data, { disableFontFace: true, useSystemFonts: false, stopAtErrors: false, verbosity: 0 });
     } catch (err) {
       const name = (err as { name?: string }).name;
-      if (name === 'PasswordException') throw new Error('PDF ist passwortgeschützt', { cause: err });
-      throw new Error(`PDF nicht lesbar: ${(err as Error).message}`, { cause: err });
+      if (name === 'PasswordException') throw Object.assign(new Error('PDF ist passwortgeschützt', { cause: err }), { code: 'pdf_encrypted' });
+      throw Object.assign(new Error(`PDF nicht lesbar: ${(err as Error).message}`, { cause: err }), { code: 'pdf_invalid' });
     }
     const blocks: TextBlock[] = [];
     const warnings: string[] = [];

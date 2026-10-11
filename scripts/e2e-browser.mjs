@@ -141,13 +141,23 @@ try {
     await page.locator('.sources-panel').getByRole('button', { name: 'Schließen' }).click();
   });
 
+  await step('Zitat -> "In Bibliothek zeigen" markiert den Abschnitt', async () => {
+    await page.locator('.msg.assistant .md button.cite').first().click();
+    await page.locator('.sources-panel .cite-card.active').getByRole('button', { name: 'In Bibliothek zeigen' }).click();
+    await page.locator('.library-view .drawer .chunk-list li.highlight').waitFor();
+    await page.goBack();
+    await page.locator('.chat-view .msg.assistant').first().waitFor();
+  });
+
   await step('Auto-Titel, Umbenennen, zweiter Chat, Löschen', async () => {
     await page.locator('.chat-item', { hasText: 'Mock: Was besagt' }).waitFor({ timeout: 10_000 });
     await page.locator('.chat-item').first().hover();
     await page.locator('.chat-item').first().getByRole('button', { name: /Umbenennen/ }).click();
     await page.locator('.dialog input').fill('Thermo-Lernsession');
-    await page.locator('.dialog').getByRole('button', { name: 'Speichern' }).click();
+    await page.locator('.dialog input').press('Enter'); // Enter darf den Dialog nicht erneut öffnen
     await page.locator('.chat-item', { hasText: 'Thermo-Lernsession' }).waitFor();
+    await page.waitForTimeout(500);
+    if (await page.locator('.dialog').count()) throw new Error('Umbenennen-Dialog hat sich nach Enter erneut geöffnet');
     // zweiter, freier Chat
     await page.getByRole('button', { name: 'Neuer Chat' }).click();
     await page.getByRole('button', { name: /Alle Quellen/ }).click();
@@ -173,6 +183,28 @@ try {
     await page.getByPlaceholder('Chats durchsuchen …').fill('Hauptsatz');
     await page.locator('.chat-item em').first().waitFor();
     await page.getByPlaceholder('Chats durchsuchen …').fill('');
+  });
+
+  await step('Stopp während des Streamings: Teiltext + "Abgebrochen", Neu generieren möglich', async () => {
+    await page.getByRole('button', { name: 'Neuer Chat' }).click();
+    const box = page.getByRole('textbox', { name: /Frag deine Unterlagen/ });
+    await box.fill('__MOCK_SLOW__ Erkläre mir bitte ausführlich die Entropie');
+    await box.press('Enter');
+    await page.locator('.msg.assistant.is-streaming .md').waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(400);
+    await page.getByRole('button', { name: 'Stopp' }).click();
+    const msg = page.locator('.msg.assistant').last();
+    await msg.getByText('Abgebrochen').waitFor({ timeout: 6000 });
+    if (!(await msg.locator('.md').innerText()).trim()) throw new Error('Teiltext fehlt');
+    if (await page.locator('.typing').count()) throw new Error('Tipp-Punkte hängen');
+    await msg.getByRole('button', { name: 'Neu generieren' }).waitFor();
+    await page.waitForTimeout(1500); // Server-Stand bleibt "abgebrochen" (kein Rücksprung)
+    await msg.getByText('Abgebrochen').waitFor();
+    const item = page.locator('.chat-item.active');
+    await item.hover();
+    await item.getByRole('button', { name: /Löschen/ }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'Löschen' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-item').length === 1);
   });
 
   await step('Command-Palette (Strg+K)', async () => {
@@ -232,6 +264,41 @@ try {
     await page.getByRole('radio', { name: /Dunkel/ }).click();
   });
 
+  await step('Quellenzeilen lesbar: mit Vorschau-Panel, 1000 px mit Seitenleiste, 1280 px', async () => {
+    // Zeilenlayout hängt an der Listenbreite: Dateiname nie auf 0 px gequetscht, nichts ragt aus der Zeile
+    const check = (label) =>
+      page.evaluate((label) => {
+        const bad = [];
+        let minName = Infinity;
+        for (const row of document.querySelectorAll('.source-row')) {
+          const r = row.getBoundingClientRect();
+          const name = row.querySelector('.source-name');
+          if (name) minName = Math.min(minName, name.getBoundingClientRect().width);
+          for (const el of row.querySelectorAll('.source-main, .badge, .source-stat, .source-size, .source-date, .source-actions')) {
+            const b = el.getBoundingClientRect();
+            if (b.width > 0 && b.right > r.right + 1) bad.push(`${label}: ${el.className.split(' ')[0]} ragt aus der Zeile`);
+          }
+        }
+        if (minName < 80) bad.push(`${label}: Dateiname nur ${Math.round(minName)}px breit`);
+        return bad;
+      }, label);
+    const problems = [];
+    await page.getByRole('link', { name: 'Bibliothek' }).click();
+    await page.locator('.source-row').first().waitFor();
+    await page.locator('.source-row .source-main').first().click();
+    await page.locator('.drawer .chunk-list li').first().waitFor();
+    await page.waitForTimeout(400);
+    problems.push(...(await check('1440 px + Vorschau')));
+    await page.locator('.drawer').getByRole('button', { name: 'Schließen' }).click();
+    for (const width of [1280, 1000]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.waitForTimeout(350);
+      problems.push(...(await check(`${width} px`)));
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    if (problems.length) throw new Error(problems.slice(0, 4).join('; '));
+  });
+
   await step('Schmales Fenster (Mobil-Layout)', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(url + '/#/chat');
@@ -249,6 +316,15 @@ try {
     await page.goto(url + '/#/library');
     await page.locator('.source-row').first().waitFor();
     await shot('12-schmal-bibliothek.png');
+  });
+
+  await step('Fach-Auswahl bei 600 px nicht abgeschnitten', async () => {
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.goto(url + '/#/library');
+    await page.locator('.source-row .move-select').first().waitFor();
+    const w = await page.locator('.source-row .move-select').first().evaluate((el) => el.getBoundingClientRect().width);
+    if (w < 130) throw new Error(`Select nur ${w}px breit`);
+    await page.setViewportSize({ width: 390, height: 844 });
   });
 
   await step('Keine horizontale Scrollbar im schmalen Layout', async () => {

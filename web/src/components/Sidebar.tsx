@@ -24,7 +24,7 @@ function OllamaPill() {
 }
 
 export function Sidebar() {
-  const { t, lang, route, navigate, chats, sidebarOpen, setSidebarOpen, ask, toast, setPaletteOpen, boot } = useApp();
+  const { t, lang, route, navigate, chats, sidebarOpen, setSidebarOpen, ask, toastError, setPaletteOpen, boot } = useApp();
   const [q, setQ] = useState('');
   const [results, setResults] = useState<ChatSession[] | null>(null);
 
@@ -78,17 +78,17 @@ export function Sidebar() {
     try {
       await patch(`/api/chats/${c.id}`, { title: v });
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
   const remove = async (c: ChatSession) => {
-    const ok = await ask({ title: t('chats.delete'), message: t('chats.deleteConfirm', { title: c.title }), danger: true, confirmLabel: t('common.delete') });
+    const ok = await ask({ title: t('chats.delete'), message: t('chats.deleteConfirm', { title: c.title || t('chats.new') }), danger: true, confirmLabel: t('common.delete') });
     if (ok !== true) return;
     try {
       await del(`/api/chats/${c.id}`);
       if (activeChat === c.id) navigate('#/chat');
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
 
@@ -176,16 +176,16 @@ export function Sidebar() {
                       }}
                       aria-current={activeChat === c.id ? 'page' : undefined}
                     >
-                      <span className="chat-title">{c.title}</span>
+                      <span className="chat-title">{c.title || t('chats.new')}</span>
                       <span className="chat-meta">
                         {c.match ? <em>{c.match}</em> : formatTime(c.updatedAt, lang)}
                       </span>
                     </a>
                     <div className="chat-actions">
-                      <button className="icon-btn small" onClick={() => void rename(c)} aria-label={`${t('chats.rename')}: ${c.title}`} title={t('chats.rename')}>
+                      <button className="icon-btn small" onClick={() => void rename(c)} aria-label={`${t('chats.rename')}: ${c.title || t('chats.new')}`} title={t('chats.rename')}>
                         <Icon name="edit" size={14} />
                       </button>
-                      <button className="icon-btn small danger" onClick={() => void remove(c)} aria-label={`${t('chats.delete')}: ${c.title}`} title={t('chats.delete')}>
+                      <button className="icon-btn small danger" onClick={() => void remove(c)} aria-label={`${t('chats.delete')}: ${c.title || t('chats.new')}`} title={t('chats.delete')}>
                         <Icon name="trash" size={14} />
                       </button>
                     </div>

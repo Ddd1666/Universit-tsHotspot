@@ -19,7 +19,10 @@ export function Dialog() {
     });
     return () => {
       cancelAnimationFrame(id);
-      prevFocus.current?.focus?.();
+      // Fokus erst nach dem aktuellen Tastenereignis zurückgeben – sonst löst dasselbe Enter
+      // den Opener-Button erneut aus und der Dialog öffnet sich sofort wieder
+      const el = prevFocus.current;
+      setTimeout(() => el?.focus?.(), 0);
     };
   }, [dialog]);
 
@@ -63,7 +66,12 @@ export function Dialog() {
               value={value}
               maxLength={120}
               onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && submit()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
             />
           </label>
         )}
@@ -78,7 +86,17 @@ export function Dialog() {
               </button>
             ))
           ) : (
-            <button className={dialog.danger ? 'btn danger' : 'btn primary'} onClick={submit} data-autofocus>
+            <button
+              className={dialog.danger ? 'btn danger' : 'btn primary'}
+              onClick={submit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              data-autofocus
+            >
               {dialog.confirmLabel ?? t('common.confirm')}
             </button>
           )}

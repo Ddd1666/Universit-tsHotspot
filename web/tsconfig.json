@@ -14,5 +14,5 @@
     "types": [],
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "../tests/sanitize.test.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "../tests/sanitize.test.ts", "../tests/web-lib.test.ts"]
 }

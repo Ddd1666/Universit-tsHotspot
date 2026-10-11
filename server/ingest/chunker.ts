@@ -1,7 +1,7 @@
 import type { BlockLocation, ChunkDraft, TextBlock } from './types.ts';
 
-/** Grobe Token-Schätzung für gemischte DE/EN-Texte (konservativ). */
-export const CHARS_PER_TOKEN = 3.5;
+/** Grobe Token-Schätzung für gemischte DE/EN-Texte – konservativ, weil Zahlen, Tabellen und LaTeX mehr Token pro Zeichen brauchen. */
+export const CHARS_PER_TOKEN = 3.0;
 export function estimateTokens(s: string): number {
   return Math.ceil(s.length / CHARS_PER_TOKEN);
 }
@@ -75,12 +75,20 @@ function tailForOverlap(text: string, overlapChars: number): string {
   return tail.trim();
 }
 
-const hardKey = (p: Piece) => `${p.loc?.kind ?? ''}|${p.loc?.label ?? ''}`;
+/**
+ * Harte Grenzen: Art/Blatt immer; Seiten und Folien ebenfalls – ein Chunk gehört genau zu einer Seite bzw. Folie,
+ * damit Zitate präzise bleiben ("S. 3" statt "S. 1–5").
+ */
+const hardKey = (p: Piece) => {
+  const kind = p.loc?.kind ?? '';
+  const unit = kind === 'page' || kind === 'slide' ? `|${p.loc?.index ?? ''}` : '';
+  return `${kind}|${p.loc?.label ?? ''}${unit}`;
+};
 
 /**
  * Strukturbewusstes Chunking: Absätze/Folien/Seiten/Tabellenblätter bleiben Einheiten,
  * Ziel ~600 Token (max. 800), Überlappung ~60 Token innerhalb fortlaufender Texte.
- * Tabellenblatt-Grenzen sind harte Grenzen; Folien werden nicht überlappt.
+ * Seiten-, Folien- und Blattgrenzen sind harte Grenzen (kein Chunk über mehrere Seiten, keine Überlappung darüber).
  */
 export function chunkBlocks(blocks: TextBlock[], options: Partial<ChunkOptions> = {}): ChunkDraft[] {
   const o = { ...DEFAULT_CHUNK_OPTIONS, ...options };

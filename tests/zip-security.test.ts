@@ -51,8 +51,11 @@ describe('ZIP-Sicherheit (Unit)', () => {
 
 describe('ZIP-Import (End-to-End)', () => {
   let app: TestApp;
+  let appParent: string;
   beforeAll(async () => {
-    app = await startTestApp();
+    // eigener Elternordner: prüft, dass beim Zip-Slip-Versuch daneben nichts entsteht
+    appParent = tmpDir('zipapp');
+    app = await startTestApp({ dataDir: path.join(appParent, 'data') });
   });
   afterAll(async () => app.close());
 
@@ -73,7 +76,7 @@ describe('ZIP-Import (End-to-End)', () => {
     expect(parent.status).toBe('archive');
     const summary = JSON.parse(parent.statusDetail!);
     expect(summary).toMatchObject({ files: 3, duplicates: 1, skipped: 2 });
-    const children = (await app.api<{ id: number; relPath: string; subjectId: number; status: string; statusDetail: string }[]>('GET', `/api/sources?parent=${r.data.source.id}`)).data;
+    const children = (await app.api<{ items: { id: number; relPath: string; subjectId: number; status: string; statusDetail: string }[] }>('GET', `/api/sources?parent=${r.data.source.id}`)).data.items;
     expect(children.map((c) => c.relPath).sort()).toEqual(['archiv/inner.zip', 'bilder/foto.png', 'skripte/kapitel1.md']);
     expect(children.every((c) => c.subjectId === subject.id)).toBe(true);
     const md = children.find((c) => c.relPath.endsWith('.md'))!;
@@ -83,12 +86,12 @@ describe('ZIP-Import (End-to-End)', () => {
   });
 
   it('Zip-Slip-Archiv wird abgelehnt, nichts landet außerhalb des Datenordners', async () => {
-    const before = new Set(fs.readdirSync(path.dirname(app.dataDir)));
+    const before = new Set(fs.readdirSync(appParent));
     const r = await app.upload('slip.zip', makeZip({ 'ok.txt': 'harmlos', '../../../pwned.txt': 'böse' }));
     const s = await waitForSource(app, r.data.source.id);
     expect(s.status).toBe('error');
-    expect(s.statusDetail).toMatch(/Zip-Slip|Unsicherer Pfad/);
-    const after = fs.readdirSync(path.dirname(app.dataDir)).filter((f) => !before.has(f));
+    expect(s.statusDetail).toBe('zip_unsafe_path');
+    const after = fs.readdirSync(appParent).filter((f) => !before.has(f));
     expect(after).toEqual([]);
     expect(fs.existsSync(path.join(app.dataDir, '..', 'pwned.txt'))).toBe(false);
   });

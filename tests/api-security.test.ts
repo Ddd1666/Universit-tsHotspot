@@ -105,6 +105,18 @@ describe('API-Schutz (Host, Origin, Token)', () => {
     expect((await app.api('PUT', '/api/settings', { numCtx: 10 })).status).toBe(400);
     expect((await app.api('PUT', '/api/settings', { ollamaUrl: 'http://api.example.com:11434' })).status).toBe(400);
     expect((await app.api('PUT', '/api/settings', { unbekannt: 1 })).status).toBe(400);
+    // Prototyp-Schlüssel sind keine Einstellungen
+    for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
+      expect((await app.api('PUT', '/api/settings', { [key]: 'x' })).status, key).toBe(400);
+    }
+    expect((await app.api('PUT', '/api/settings', JSON.parse('{"__proto__": {"polluted": true}}'))).status).toBeGreaterThanOrEqual(400);
+    // Modellnamen: kein Pfad-Trick
+    for (const bad of ['../etc', '/gemma3', 'a//b', 'gemma3:4b/', 'x y', 'a..b']) {
+      expect((await app.api('PUT', '/api/settings', { chatModel: bad })).status, bad).toBe(400);
+      expect((await app.api('POST', '/api/chats', { model: bad })).status, bad).toBe(400);
+    }
+    expect((await app.api('PUT', '/api/settings', { chatModel: 'hf.co/user/repo:Q4_K_M' })).status).toBe(200);
+    await app.api('PUT', '/api/settings', { chatModel: 'gemma3:4b' });
     expect((await app.api('GET', '/api/sources/abc')).status).toBe(400);
     expect((await app.api('GET', '/api/sources/999999')).status).toBe(404);
     expect((await app.api('PUT', '/api/settings', { maxFileSizeMB: 1 })).status).toBe(200);

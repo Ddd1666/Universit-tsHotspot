@@ -47,6 +47,8 @@ export class EmbedQueue {
   private st: { state: EmbedState; lastError: string | null; retryAt: number | null } = { state: 'idle', lastError: null, retryAt: null };
   private backoffMs = 0;
   private lastEmit = 0;
+  /** wird bei jedem Re-Index erhöht; Ergebnisse älterer Generationen werden verworfen */
+  private generation = 0;
   private readonly deps: { db: DB; store: VectorStore; client: OllamaClient; settings: SettingsStore; bus: EventBus; onProgress?: () => void };
 
   constructor(deps: EmbedQueue['deps']) {
@@ -94,6 +96,10 @@ export class EmbedQueue {
   reindex(): void {
     const { store, settings, db } = this.deps;
     const model = settings.get().embeddingModel;
+    // Laufende Anfrage (altes Modell) abbrechen; ihr Ergebnis wird über die Generation verworfen
+    this.generation++;
+    this.abort.abort();
+    this.abort = new AbortController();
     store.setIndex(model, null);
     // gleiches Modell: setIndex ist No-op -> explizit alles neu
     tx(db, () => {
@@ -136,8 +142,10 @@ export class EmbedQueue {
     return `${embedPrefix(model, 'document')}${r.name}${r.heading ? ' – ' + r.heading : ''}\n${r.text}`;
   }
 
-  private store(rows: PendingRow[], vectors: Float32Array[]): void {
+  /** Speichert nur, wenn Index-Modell und Generation noch zum Batch passen (sonst verwerfen -> bleibt ausstehend). */
+  private store(rows: PendingRow[], vectors: Float32Array[], model: string, gen: number): boolean {
     const { db, store } = this.deps;
+    if (gen !== this.generation || store.info().model !== model) return false;
     tx(db, () => {
       const existing = new Set(
         (db.prepare('SELECT id FROM chunks WHERE id IN (SELECT value FROM json_each(?))').all(jsonList(rows.map((r) => r.id))) as { id: number }[]).map((r) => r.id),
@@ -146,15 +154,13 @@ export class EmbedQueue {
       store.upsert(items);
       db.prepare('UPDATE chunks SET embed_state = 1 WHERE id IN (SELECT value FROM json_each(?))').run(jsonList(items.map((i) => i.chunkId)));
     });
+    return true;
   }
 
   private async loop(): Promise<void> {
     const { db, store, client, settings } = this.deps;
     while (!this.stopped) {
       const s = settings.get();
-      if (store.info().model === null) store.setIndex(s.embeddingModel, null);
-      const info = store.info();
-      const model = info.model!;
       const rows = db
         .prepare(
           `SELECT c.id, c.source_id, c.text, c.heading, s.name FROM chunks c JOIN sources s ON s.id = c.source_id
@@ -166,21 +172,30 @@ export class EmbedQueue {
         await this.wait(null);
         continue;
       }
+      // Index-Modell wird beim ersten tatsächlichen Einbetten festgelegt (danach nur per Re-Index geändert)
+      if (store.info().model === null) store.setIndex(s.embeddingModel, null);
+      const model = store.info().model!;
       if (this.st.state !== 'running') this.setState('running');
+      const gen = this.generation;
+      const signal = this.abort.signal;
       try {
-        const vectors = await client.embed(model, rows.map((r) => this.docText(model, r)), { signal: this.abort.signal });
+        const vectors = await client.embed(model, rows.map((r) => this.docText(model, r)), { signal });
+        // Während des Wartens Re-Index/Modellwechsel? -> Ergebnis des alten Modells verwerfen
+        if (gen !== this.generation || store.info().model !== model) continue;
         const dim = vectors[0]?.length ?? 0;
-        if (info.dim === null) store.setIndex(model, dim);
-        else if (dim !== info.dim) {
-          this.setState('error', `Vektordimension hat sich geändert (${info.dim} -> ${dim}). Bitte Re-Index starten.`);
+        const current = store.info();
+        if (current.dim === null) store.setIndex(model, dim);
+        else if (dim !== current.dim) {
+          this.setState('error', `Vektordimension hat sich geändert (${current.dim} -> ${dim}). Bitte Re-Index starten.`);
           await this.wait(null);
           continue;
         }
-        this.store(rows, vectors);
+        this.store(rows, vectors, model, gen);
         this.backoffMs = 0;
         this.emit();
       } catch (err) {
         if (this.stopped) break;
+        if (gen !== this.generation) continue; // durch Re-Index abgebrochen -> sofort mit neuem Modell weiter
         const e = err instanceof OllamaError ? err : new OllamaError('http', (err as Error).message);
         if (e.code === 'model_missing') {
           this.setState('model_missing', `Embedding-Modell "${model}" fehlt. Installieren: ollama pull ${model}`, Date.now() + 60_000);
@@ -193,8 +208,8 @@ export class EmbedQueue {
           // dauerhafter Fehler (z. B. HTTP 400): einzeln versuchen, Ausreißer als Fehler markieren
           for (const r of rows) {
             try {
-              const [v] = await client.embed(model, [this.docText(model, r)], { signal: this.abort.signal, retries: 0 });
-              this.store([r], [v!]);
+              const [v] = await client.embed(model, [this.docText(model, r)], { signal, retries: 0 });
+              if (!this.store([r], [v!], model, gen)) break;
             } catch (e2) {
               if (e2 instanceof OllamaError && (e2.transient || e2.code === 'aborted')) break;
               db.prepare('UPDATE chunks SET embed_state = 2 WHERE id = ?').run(r.id);

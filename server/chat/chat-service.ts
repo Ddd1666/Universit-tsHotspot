@@ -2,7 +2,7 @@ import type { DB } from '../db.ts';
 import type { EventBus } from '../events.ts';
 import { HttpError } from '../library.ts';
 import { OllamaError, type OllamaClient } from '../ollama/client.ts';
-import type { SettingsStore } from '../settings.ts';
+import { isValidModelName, type SettingsStore } from '../settings.ts';
 import { parseScope, type Scope, type SearchResult } from '../search/hybrid.ts';
 import { buildPrompt, usedCitationNumbers, type Citation, type HistoryMessage } from './prompt.ts';
 import { ThinkSplitter } from './think.ts';
@@ -60,11 +60,10 @@ interface MessageRow {
   created_at: number;
 }
 
-const MODEL_RE = /^[\w.\-/:]{1,200}$/;
 
 export function fallbackTitle(question: string): string {
   const line = question.replace(/\s+/g, ' ').trim();
-  if (line.length <= 60) return line || 'Neuer Chat';
+  if (line.length <= 60) return line; // leer = Oberfläche zeigt lokalisiert "Neuer Chat"/"New chat"
   const cut = line.lastIndexOf(' ', 57);
   return line.slice(0, cut > 30 ? cut : 57) + '…';
 }
@@ -182,10 +181,11 @@ export class ChatService {
   create(input: { title?: string; scope?: unknown; model?: string | null } = {}): SessionDTO {
     const now = Date.now();
     const title = (input.title ?? '').trim().slice(0, 120);
-    const model = input.model && MODEL_RE.test(input.model) ? input.model : null;
+    if (input.model && !isValidModelName(input.model)) throw new HttpError(400, 'invalid_model', 'Ungültiger Modellname');
+    const model = input.model ?? null;
     const r = this.deps.db
       .prepare('INSERT INTO chat_sessions(title, title_locked, model, scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(title || 'Neuer Chat', title ? 1 : 0, model, JSON.stringify(parseScope(input.scope ?? { mode: 'all' })), now, now);
+      .run(title, title ? 1 : 0, model, JSON.stringify(parseScope(input.scope ?? { mode: 'all' })), now, now);
     const s = this.getSession(Number(r.lastInsertRowid));
     this.deps.bus.emit({ type: 'chat', session: s });
     return s;
@@ -201,7 +201,7 @@ export class ChatService {
     }
     if (patch.scope !== undefined) db.prepare('UPDATE chat_sessions SET scope = ? WHERE id = ?').run(JSON.stringify(parseScope(patch.scope)), id);
     if (patch.model !== undefined) {
-      if (patch.model !== null && !MODEL_RE.test(patch.model)) throw new HttpError(400, 'invalid_model', 'Ungültiger Modellname');
+      if (patch.model !== null && !isValidModelName(patch.model)) throw new HttpError(400, 'invalid_model', 'Ungültiger Modellname');
       db.prepare('UPDATE chat_sessions SET model = ? WHERE id = ?').run(patch.model, id);
     }
     const s = this.getSession(id);
@@ -348,7 +348,7 @@ export class ChatService {
       content = content.replace(/^\s+/, '');
       const msg = finish('done', null);
       sink.send('done', { message: msg });
-      if (!session.title_locked && !input.regenerate && (session.messageCount ?? 0) === 0) this.autoTitle(sessionId, question, content, model);
+      if (!session.title_locked && !input.regenerate && (session.messageCount ?? 0) === 0) this.autoTitle(sessionId, question, content, model, s.numCtx);
     } catch (err) {
       if (signal.aborted) {
         finish('aborted', null);
@@ -372,7 +372,7 @@ export class ChatService {
   }
 
   /** Auto-Titel nach erster Antwort: kurzer LLM-Call im Hintergrund, Fallback = erste Frage (bereits gesetzt). */
-  private autoTitle(sessionId: number, question: string, answer: string, model: string): void {
+  private autoTitle(sessionId: number, question: string, answer: string, model: string, numCtx: number): void {
     const { client, db, bus } = this.deps;
     const job = (async () => {
       try {
@@ -393,7 +393,8 @@ export class ChatService {
               },
               { role: 'user', content: `Question: ${question.slice(0, 500)}\nAnswer: ${answer.slice(0, 500)}\n\nTitle:` },
             ],
-            options: { num_ctx: 2048, num_predict: 24, temperature: 0.2 },
+            // gleiche num_ctx wie im Chat – sonst lädt Ollama das Modell mit anderem Kontext neu
+            options: { num_ctx: numCtx, num_predict: 24, temperature: 0.2 },
           },
           30_000,
         );

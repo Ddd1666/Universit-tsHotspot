@@ -34,7 +34,11 @@ interface SourceRow {
   batch_id: string | null;
 }
 
-const SKIP_IN_ARCHIVE = /(^|\/)(__MACOSX|\.git|\.svn|node_modules)(\/|$)|(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|(^|\/)\._/i;
+const STORE_BATCH = 200;
+
+/** Systemordner/-dateien, die nicht importiert werden (gleiche Liste wie beim Ordner-Import im Browser). */
+export const SKIP_IN_ARCHIVE =
+  /(^|\/)(__MACOSX|\.git|\.svn|\.hg|node_modules|__pycache__|\.venv|venv|\.idea|\.vscode|\.mypy_cache|\.pytest_cache|\.tox|\.ipynb_checkpoints)(\/|$)|(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|(^|\/)(\._|~\$)/i;
 
 export interface IngestStats {
   queued: number;
@@ -186,7 +190,10 @@ export class IngestService {
       } catch (err) {
         const cancelled = err instanceof CancelledError;
         if (!cancelled) this.deps.log(`Verarbeitung fehlgeschlagen: ${row.name}`, (err as Error).message);
-        this.setStatus(row.id, cancelled ? 'cancelled' : 'error', cancelled ? null : (err as Error).message.slice(0, 500));
+        // Bekannte Fehler als Code speichern (Oberfläche übersetzt), sonst die Meldung
+        const code = (err as { code?: unknown }).code;
+        const detail = typeof code === 'string' && /^[a-z_]+$/.test(code) ? code : (err as Error).message.slice(0, 500);
+        this.setStatus(row.id, cancelled ? 'cancelled' : 'error', cancelled ? null : detail);
       } finally {
         this.active.delete(row.id);
         this.emitSource(row.id);
@@ -212,34 +219,60 @@ export class IngestService {
     );
     this.active.set(row.id, { cancel: handle.cancel, batchId: row.batch_id, name: row.name });
     const out = await handle.promise;
-    this.storeChunks(row.id, out);
+    let cancelled = false;
+    this.active.set(row.id, { cancel: () => (cancelled = true), batchId: row.batch_id, name: row.name });
+    await this.storeChunks(row.id, out, () => cancelled || this.stopped);
   }
 
-  /** Chunks atomar speichern (FTS-Trigger aktualisieren den Volltextindex automatisch). */
-  storeChunks(sourceId: number, out: ExtractOutput): void {
+  /**
+   * Chunks in Paketen (je 200, je ~15–25 ms) speichern und zwischen den Paketen den Event-Loop freigeben – große Dateien
+   * blockieren so weder API noch Chat-Streaming. FTS-Trigger aktualisieren den Volltextindex automatisch.
+   * Bei Abbruch/Löschen werden bereits geschriebene Chunks wieder entfernt.
+   */
+  async storeChunks(sourceId: number, out: ExtractOutput, isCancelled: () => boolean = () => false): Promise<void> {
     const { db } = this.deps;
-    const stored = tx(db, () => {
-      const exists = db.prepare("SELECT 1 FROM sources WHERE id = ? AND status = 'processing'").get(sourceId);
-      if (!exists) return false; // zwischenzeitlich gelöscht/abgebrochen
+    const stillProcessing = () => !isCancelled() && !!db.prepare("SELECT 1 FROM sources WHERE id = ? AND status = 'processing'").get(sourceId);
+    if (!stillProcessing()) return; // zwischenzeitlich gelöscht/abgebrochen
+    tx(db, () => {
       const old = db.prepare('DELETE FROM embeddings WHERE source_id = ?').run(sourceId);
       db.prepare('DELETE FROM chunks WHERE source_id = ?').run(sourceId);
       if (Number(old.changes) > 0) this.deps.onChunksReplaced();
-      const ins = db.prepare(
-        `INSERT INTO chunks(source_id, ord, text, heading, loc_kind, loc_start, loc_end, loc_label, token_est, embed_state)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      );
-      out.chunks.forEach((c, i) => ins.run(sourceId, i, c.text, c.heading, c.locKind, c.locStart, c.locEnd, c.locLabel, c.tokenEst));
-      const detail = out.chunks.length === 0 ? 'no_text' : out.warnings.filter((w) => w !== 'no_text').join(',') || null;
-      db.prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, page_count = ?, processed_at = ? WHERE id = ?").run(
-        detail,
-        out.chunks.length,
-        out.pages,
-        Date.now(),
-        sourceId,
-      );
-      return true;
     });
-    if (stored && out.chunks.length) this.deps.onChunksStored();
+    const ins = db.prepare(
+      `INSERT INTO chunks(source_id, ord, text, heading, loc_kind, loc_start, loc_end, loc_label, token_est, embed_state)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    );
+    try {
+      for (let start = 0; start < out.chunks.length; start += STORE_BATCH) {
+        if (start > 0) {
+          await new Promise<void>((r) => setImmediate(r));
+          if (!stillProcessing()) throw new CancelledError();
+        }
+        tx(db, () => {
+          const end = Math.min(out.chunks.length, start + STORE_BATCH);
+          for (let i = start; i < end; i++) {
+            const c = out.chunks[i]!;
+            ins.run(sourceId, i, c.text, c.heading, c.locKind, c.locStart, c.locEnd, c.locLabel, c.tokenEst);
+          }
+        });
+      }
+    } catch (err) {
+      try {
+        db.prepare('DELETE FROM chunks WHERE source_id = ?').run(sourceId);
+      } catch {
+        /* Quelle evtl. schon gelöscht */
+      }
+      throw err;
+    }
+    const detail = out.chunks.length === 0 ? 'no_text' : out.warnings.filter((w) => w !== 'no_text').join(',') || null;
+    db.prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, page_count = ?, processed_at = ? WHERE id = ? AND status = 'processing'").run(
+      detail,
+      out.chunks.length,
+      out.pages,
+      Date.now(),
+      sourceId,
+    );
+    if (out.chunks.length) this.deps.onChunksStored();
   }
 
   private async expandZip(row: SourceRow): Promise<void> {

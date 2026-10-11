@@ -1,6 +1,7 @@
 import { post, uploadFile, type UploadHandle } from '../api';
 import type { Source } from '../types';
 import { randomId } from './format';
+import { shouldSkipPath } from './skip';
 
 export type ItemStatus = 'waiting' | 'uploading' | 'stored' | 'duplicate' | 'error' | 'cancelled';
 
@@ -29,7 +30,6 @@ export interface PickedFile {
   relPath: string | null;
 }
 
-const HIDDEN = /(^|\/)\.[^/]*$|(^|\/)(Thumbs\.db|desktop\.ini)$|(^|\/)~\$/i;
 const FINAL_SERVER = new Set(['ready', 'error', 'unsupported', 'archive', 'cancelled']);
 
 export function isItemFinished(i: ImportItem): boolean {
@@ -61,7 +61,7 @@ export class ImportManager {
   }
 
   add(files: PickedFile[], subjectId: number | null): void {
-    const visible = files.filter((f) => !HIDDEN.test(f.relPath ?? f.file.name));
+    const visible = files.filter((f) => !shouldSkipPath(f.relPath ?? f.file.name));
     const batchId = this.snap.active && this.snap.batchId ? this.snap.batchId : randomId();
     const newItems: ImportItem[] = visible.map((f) => ({
       key: randomId(),

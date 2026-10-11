@@ -4,8 +4,11 @@ import crypto from 'node:crypto';
 import { PROJECT_ROOT, loadConfig, type AppConfig } from '../server/config.ts';
 import { createHotspot, type Hotspot } from '../server/app.ts';
 
-/** Testdaten bleiben im Projektordner (.tmp/), nichts außerhalb. */
-export const TMP_ROOT = path.join(PROJECT_ROOT, '.tmp', 'tests');
+/**
+ * Testdaten bleiben im Projektordner (.tmp/), nichts außerhalb. Jede Testdatei läuft in einem eigenen Prozess
+ * und bekommt ein eigenes Verzeichnis (parallele Dateien stören sich nicht).
+ */
+export const TMP_ROOT = path.join(PROJECT_ROOT, '.tmp', 'tests', `p${process.pid}`);
 
 export function tmpDir(prefix = 'case'): string {
   fs.mkdirSync(TMP_ROOT, { recursive: true });

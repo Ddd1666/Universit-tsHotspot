@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { makeDocx, makePdf, makePptx, makeXlsx } from './fixtures.ts';
+import { makeDocx, makePdf, makePptx, makeXlsx, makeZip } from './fixtures.ts';
 import { startTestApp, tmpDir, waitFor, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
 
 let apps: TestApp[] = [];
@@ -36,7 +36,7 @@ describe('Import & Verarbeitung', () => {
       expect(s.status, name).toBe(expected);
       if (expected === 'ready') expect(s.chunkCount, name).toBeGreaterThan(0);
     }
-    const list = (await app.api<{ name: string; sha256: string; size: number; mime: string; importedAt: number }[]>('GET', '/api/sources')).data;
+    const list = (await app.api<{ items: { name: string; sha256: string; size: number; mime: string; importedAt: number }[] }>('GET', '/api/sources')).data.items;
     expect(list).toHaveLength(files.length);
     for (const s of list) {
       expect(s.sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -126,14 +126,11 @@ describe('Import & Verarbeitung', () => {
 
     await app.api('PUT', '/api/settings', { embeddingModel: 'bge-m3' });
     expect(app.hotspot.services.embed.status().reindexNeeded).toBe(true);
-    await app.api('POST', '/api/index/reindex'); // bge-m3 ist im Mock nicht installiert
-    const st = await waitFor(() => {
-      const s = app.hotspot.services.embed.status();
-      return s.state === 'model_missing' ? s : null;
-    });
-    expect(st.lastError).toMatch(/ollama pull bge-m3/);
-    expect(st.pending).toBe(1);
-    expect(st.indexModel).toBe('bge-m3');
+    // bge-m3 ist im Mock nicht installiert -> Re-Index wird abgelehnt, der vorhandene Index bleibt erhalten
+    const refused = await app.api<{ error: string; detail: string }>('POST', '/api/index/reindex');
+    expect(refused.status).toBe(409);
+    expect(refused.data).toMatchObject({ error: 'model_missing', detail: 'bge-m3' });
+    expect(app.hotspot.services.embed.status()).toMatchObject({ indexModel: 'nomic-embed-text', done: 1, pending: 0 });
 
     await app.api('PUT', '/api/settings', { embeddingModel: 'nomic-embed-text' });
     await app.api('POST', '/api/index/reindex');
@@ -141,5 +138,77 @@ describe('Import & Verarbeitung', () => {
     expect(ok.indexModel).toBe('nomic-embed-text');
     expect(ok.done).toBe(1);
     expect(ok.reindexNeeded).toBe(false);
+  });
+
+  it('fehlendes Embedding-Modell beim ersten Index wird klar gemeldet (Daten bleiben ausstehend)', async () => {
+    const app = await start();
+    await app.api('PUT', '/api/settings', { embeddingModel: 'bge-m3' });
+    const up = await app.upload('y.txt', 'Text ohne Embedding-Modell');
+    await waitForSource(app, up.data.source.id);
+    const st = await waitFor(() => {
+      const s = app.hotspot.services.embed.status();
+      return s.state === 'model_missing' ? s : null;
+    });
+    expect(st.lastError).toMatch(/ollama pull bge-m3/);
+    expect(st.pending).toBe(1);
+  });
+});
+
+describe('Große Dateien blockieren den Server nicht', () => {
+  it('Chunks werden paketweise mit Event-Loop-Pausen geschrieben (60 000 Chunks)', async () => {
+    const app = await start();
+    const { db, ingest } = app.hotspot.services;
+    await ingest.stop();
+    const id = Number(
+      db.prepare("INSERT INTO sources(sha256, name, size, mime, kind, status, imported_at) VALUES (?, 'riesig.txt', 1, 'text/plain', 'text', 'processing', 0)").run('d'.repeat(64)).lastInsertRowid,
+    );
+    const chunks = Array.from({ length: 60_000 }, (_, i) => ({
+      text: `Abschnitt ${i} über Thermodynamik und Entropie.`,
+      heading: null,
+      locKind: 'lines' as const,
+      locStart: i,
+      locEnd: i,
+      locLabel: null,
+      tokenEst: 10,
+    }));
+    const { monitorEventLoopDelay } = await import('node:perf_hooks');
+    const h = monitorEventLoopDelay({ resolution: 10 });
+    h.enable();
+    await ingest.storeChunks(id, { chunks, pages: null, warnings: [] });
+    h.disable();
+    const maxMs = h.max / 1e6;
+    expect(maxMs).toBeLessThan(250); // vorher eine einzige Transaktion: mehrere 100 ms bis Sekunden am Stück
+    expect(app.hotspot.services.library.getSource(id)).toMatchObject({ status: 'ready', chunkCount: 60_000 });
+    const fts = db.prepare("SELECT count(*) AS n FROM chunks_fts WHERE chunks_fts MATCH 'abschnitt'").get() as { n: number };
+    expect(fts.n).toBe(60_000);
+  });
+
+  it('Abbruch während des Schreibens entfernt bereits geschriebene Chunks', async () => {
+    const app = await start();
+    const { db, ingest } = app.hotspot.services;
+    await ingest.stop();
+    const id = Number(
+      db.prepare("INSERT INTO sources(sha256, name, size, mime, kind, status, imported_at) VALUES (?, 'x.txt', 1, 'text/plain', 'text', 'processing', 0)").run('c'.repeat(64)).lastInsertRowid,
+    );
+    let batches = 0;
+    const chunks = Array.from({ length: 5000 }, (_, i) => ({ text: `T ${i}`, heading: null, locKind: null, locStart: null, locEnd: null, locLabel: null, tokenEst: 1 }));
+    await expect(ingest.storeChunks(id, { chunks, pages: null, warnings: [] }, () => ++batches > 3)).rejects.toThrow();
+    expect((db.prepare('SELECT count(*) AS n FROM chunks WHERE source_id = ?').get(id) as { n: number }).n).toBe(0);
+  });
+});
+
+describe('ZIP-Import überspringt Werkzeugordner', () => {
+  it('__pycache__, .venv, .git, node_modules werden nicht importiert', async () => {
+    const app = await start();
+    const zip = makeZip({
+      'projekt/main.py': 'print("hallo")',
+      'projekt/__pycache__/main.cpython-312.pyc': 'bin',
+      'projekt/.venv/lib/site.py': 'x',
+      'projekt/.git/HEAD': 'ref',
+      'projekt/node_modules/a/index.js': 'x',
+    });
+    const r = await app.upload('projekt.zip', zip);
+    const s = await waitForSource(app, r.data.source.id);
+    expect(JSON.parse(s.statusDetail!)).toMatchObject({ files: 1, skipped: 4 });
   });
 });

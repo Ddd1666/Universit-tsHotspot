@@ -14,7 +14,8 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
 ## Funktionen
 
 - **Import „alles aufnehmen“:** Drag & Drop (auch Ordner), Datei-/Ordnerdialog, Fortschritt pro Datei, abbrechbar, Fehler pro Datei
-  ohne Gesamtabbruch. Jede Datei wird gespeichert (SHA-256, Dedupe). Text wird extrahiert aus PDF (mit Seitenzahlen), DOCX, PPTX
+  ohne Gesamtabbruch; Ordner-Import überspringt Systemordner (`.git`, `node_modules`, `__pycache__`, `.venv` …) und Office-Sperrdateien (`~$…`).
+  Jede Datei wird gespeichert (SHA-256, Dedupe). Text wird extrahiert aus PDF (mit Seitenzahlen), DOCX, PPTX
   (Folien + Notizen), XLSX/CSV (Blätter/Zeilen), ODT/ODP/ODS, Markdown/Text/HTML/JSON/Code/Jupyter, ZIP (sicher entpackt).
   Bilder/Audio/Video/Unbekanntes: gespeichert, Status „nur gespeichert – Analyse folgt in Phase 2“.
 - **Hybrid-Suche:** SQLite-FTS5 (BM25) + Vektorsuche, fusioniert per Reciprocal Rank Fusion; Treffer mit Quelle, Fach, Seite/Folie/Blatt, Snippet.
@@ -22,6 +23,7 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
   Wissensbereich (alle Quellen / Fächer / einzelne Quellen / freier Chat) und Modell. Streaming mit Stopp/Neu-generieren,
   Zitate `[1]` klickbar → Quellen-Panel (Datei öffnen/herunterladen, in Bibliothek zeigen), Denk-Blöcke (qwen3) einklappbar.
 - **Bibliothek:** Fächer mit Farbe (anlegen/umbenennen/löschen), Quellen mit Status, Vorschau des extrahierten Texts, verschieben, löschen (konsistent: Datei + Chunks + Index + Vektoren).
+  Chunks überschreiten nie Seiten-/Folien-/Blattgrenzen; „In Bibliothek zeigen“ springt zur zitierten Stelle.
 - **Einstellungen:** Ollama-Status (Version, Modelle, VRAM-Belegung via `/api/ps`), Chat-/Embedding-Modell, `num_ctx`, Re-Index, Sprache DE/EN, Hell/Dunkel, Akzentfarbe, reduzierte Animationen.
 - **Bedienung:** Command-Palette `Strg+K`, Tastatur-bedienbar, responsiv (Seitenleiste einklappbar).
 
@@ -37,22 +39,34 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
    ollama pull nomic-embed-text     # Embeddings (Standard)
    ollama pull bge-m3               # optional: bessere Embeddings für Deutsch/Englisch gemischt
    ```
-4. Projektordner entpacken/klonen und **`start.bat` doppelklicken**.
-   Beim ersten Start: `npm install` (1–3 Min.), danach wird die Desktop-Hülle (Electron, ~100 MB) einmalig in den Projektordner geladen.
+4. **ZIP zuerst vollständig entpacken** (Rechtsklick → „Alle extrahieren“) – nicht aus der ZIP-Vorschau heraus starten – und den
+   Projektordner an einen festen Ort legen, z. B. `%USERPROFILE%\Uni-Hotspot`. **Nicht in OneDrive-Ordnern** (Desktop/Dokumente
+   sind oft synchronisiert) **und nicht in „Downloads“** betreiben: Sync/Virenscanner sperren sonst Dateien in `node_modules`.
+5. **`start.bat` doppelklicken** (Desktop-App). Beim ersten Start und nach Updates (geänderte `package-lock.json`, erkannt per Hash)
+   führt das Skript `npm ci` aus (1–3 Min.); sonst startet es direkt.
+   **Einmaliger Electron-Download:** beim ersten Desktop-Start lädt `start.bat` die Desktop-Hülle (Electron, **~100 MB**) in den
+   Projektordner (`node_modules\electron`, Download-Cache `.cache\electron`). Das ist – neben `npm ci` bei Installation/Update – die **einzige Netzwerkaktion**; die laufende App
+   spricht nur `127.0.0.1` an. Schlägt der Download fehl (offline/Proxy), startet automatisch der Browser-Modus.
    Alles landet im Projektordner (`node_modules`, `.cache`) bzw. im Datenordner – nichts Systemweites.
-5. **Browser-Modus** (ohne Electron): `start.bat browser` → öffnet <http://127.0.0.1:4317>. Alternativ: `npm start`.
+6. **Browser-Modus** (ohne Electron, ohne Download): **`start-browser.bat`** doppelklicken (= `start.bat browser`) → öffnet
+   <http://127.0.0.1:4317>. Alternativ: `npm start`.
+
+Läuft Uni-Hotspot schon (gleicher Datenordner), beschädigt ein zweiter Start nichts: er meldet „Uni-Hotspot läuft bereits auf
+http://127.0.0.1:4317 – kein zweiter Start nötig“ (Desktop: Dialog mit „Im Browser öffnen“) und beendet sich. Beenden: Fenster schließen
+bzw. im Konsolenfenster `Strg+C`.
 
 Windows-Hinweise: Wird `start.bat` von SmartScreen blockiert („Computer wurde geschützt“), über *Weitere Informationen → Trotzdem ausführen*
 bzw. Dateieigenschaften → „Zulassen“ freigeben. In PowerShell ggf. `npm.cmd` statt `npm` verwenden (Ausführungsrichtlinie).
-Port belegt? `set HOTSPOT_PORT=4318` vor dem Start.
+Port durch ein anderes Programm belegt? Die Konsole sagt es ohne Stacktrace; dann `set HOTSPOT_PORT=4318` (cmd) bzw.
+`$env:HOTSPOT_PORT="4318"` (PowerShell) vor dem Start.
 
 ## Ollama & Modelle (Empfehlung für RTX 3060 Laptop, 6 GB VRAM)
 
 | Zweck | Standard | Alternative | Hinweis |
 |---|---|---|---|
 | Chat/Vision | `gemma3:4b` | `qwen3:4b` (Denken), `qwen3:8b` | 8B-Modelle laufen mit 8k Kontext teilweise auf der CPU (langsamer) |
-| Embedding | `nomic-embed-text` | `bge-m3` | Modellwechsel ⇒ **Re-Index** (Button in den Einstellungen); Modell + Dimension werden pro Index gespeichert |
-| Kontext | `num_ctx` = 8192 | 4096 bei VRAM-Engpass | Kontrolle mit `ollama ps` (Spalte PROCESSOR sollte „100% GPU“ zeigen) |
+| Embedding | `nomic-embed-text` | `bge-m3` | Modellwechsel ⇒ **Re-Index** (Button in den Einstellungen, startet nur, wenn das Modell installiert ist); Modell + Dimension werden pro Index gespeichert |
+| Kontext | `num_ctx` = 8192 | 4096 bei VRAM-Engpass | Kontrolle mit `ollama ps` (Spalte PROCESSOR sollte „100% GPU“ zeigen). Der RAG-Prompt nutzt höchstens ~70 % von `num_ctx` (Schätzung 3 Zeichen/Token), der Rest bleibt für die Antwort |
 
 Alle Modelle werden live aus Ollama (`/api/tags`) gelesen. Ollama wird ausschließlich lokal angesprochen (nur 127.0.0.1/localhost erlaubt).
 Ohne Ollama funktionieren Import und Volltextsuche weiter; Embeddings werden als „ausstehend“ gespeichert und automatisch nachgeholt.
@@ -115,7 +129,7 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (82 Tests)
+npm test            # vitest (120 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
@@ -142,12 +156,21 @@ PowerShell: `$env:HOTSPOT_MOCK_OLLAMA="1"; npm start`.
 
 | Messung | Ergebnis |
 |---|---|
-| Großes PDF (400 Seiten, 1,4 MB → 729 Chunks): Extraktion + Chunking + FTS im Worker | ~1,2 s ⇒ ~600 Chunks/s, ~330 Seiten/s |
-| RAM beim Import dieses PDFs (Prozess inkl. Worker) | +~100 MB Spitze (126 → 224 MB RSS) |
-| API-Latenz während paralleler PDF-Verarbeitung | p50 ~1,4 ms (Event-Loop bleibt frei) |
+| Großes PDF (400 Seiten, 1,4 MB → 800 Chunks): Extraktion + Chunking + FTS im Worker | ~1,3 s ⇒ ~600–630 Chunks/s, ~310 Seiten/s |
+| RAM beim Import dieses PDFs (Prozess inkl. Worker) | +~100 MB Spitze (128 → 228 MB RSS) |
+| API-Latenz während paralleler PDF-Verarbeitung | p50 ~1,3 ms, max < 15 ms |
 | Suche bei 10 000 Chunks: FTS5/BM25 | p50 ~8 ms |
-| Vektor-Brute-Force 768-dim: float32 (vorher) → int8 (nachher) | p50 ~12–15 ms → ~11 ms; RAM-Cache 29 MB → 7 MB |
-| Hybrid gesamt (Query-Embedding + FTS + Vektor + RRF) | p50 ~28 ms |
+| Vektor-Brute-Force 768-dim: float32 → int8 | p50 ~12,5 ms → ~11,5 ms; RAM-Cache 29 MB → 7 MB |
+| Hybrid gesamt (Query-Embedding + FTS + Vektor + RRF) | p50 ~27 ms |
+
+**Korrekturrunde 1 – vorher (Stand e22ec8d) / nachher**, gleiches Messskript, Event-Loop-Blockade per `monitorEventLoopDelay`:
+
+| Messung | vorher | nachher |
+|---|---|---|
+| Bibliotheksliste, 2000 Quellen / 40k Chunks | 8,1–9,0 s, Server so lange blockiert | 57–90 ms (Index `chunks(source_id, embed_state)`, gruppierte Zählung); Event-Loop max ~30 ms |
+| 40-MB-Textdatei: längste Event-Loop-Blockade | **1,3 s** am Stück (alle Chunks in einer Transaktion) | **67–99 ms**, p99 ~40 ms (Pakete à 200 Chunks + `setImmediate`); Health-Request p95 ~14–30 ms |
+| 40-MB-Textdatei: Durchsatz | 26 818 Chunks in 2,9–3,0 s (~9 000 Chunks/s) | 21 130 Chunks in 2,7–2,9 s (~7 300–7 800 Chunks/s); Text auf 32 MB begrenzt (Hinweis „gekürzt“) |
+| 40-MB-Textdatei: RAM (RSS-Spitze) | +~430 MB | +~370–450 MB |
 
 Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der RTX 3060 typ. wenige ms; Antwort-Streaming abhängig vom Modell).
 
@@ -160,8 +183,12 @@ Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der 
 ## Bekannte Grenzen
 
 - Nur mit Mock-Ollama getestet – echte Modellqualität, VRAM-Verhalten und Geschwindigkeit sind erst auf dem Laptop prüfbar (siehe `HANDOFF.md`).
-- Gescannte PDFs ohne Textschicht werden gespeichert, aber erst mit OCR (Phase 2) durchsuchbar. Alte Office-Formate (.doc/.ppt/.xls) werden nur gespeichert.
+- Gescannte PDFs ohne Textschicht werden gespeichert, aber erst mit OCR (Phase 2) durchsuchbar. Alte Office-Formate (.doc/.ppt/.xls) werden nur gespeichert;
+  passwortgeschützte Office-Dateien und PDFs werden gespeichert und als „passwortgeschützt“ gemeldet (ohne Passwort speichern, erneut importieren).
+- Text-/CSV-/HTML-Dateien werden bis 32 MB Text indexiert; darüber Hinweis „gekürzt“ (Datei bleibt vollständig gespeichert).
 - DOCX liefert Seitenzahlen nur, wenn Word Seitenumbruch-Hinweise gespeichert hat; sonst Abschnitt/Überschrift.
-- Verschachtelte ZIPs werden gespeichert, aber nicht weiter entpackt. Die Bibliotheksliste zeigt max. 2000 Einträge (Filter nutzen).
+- Verschachtelte ZIPs werden gespeichert, aber nicht weiter entpackt. Die Bibliotheksliste zeigt max. 2000 Einträge mit Hinweis „2000 von N“
+  (bewusst ohne Seitennavigation – Fach-Filter/Suche nutzen).
 - `nomic-embed-text` ist englisch-lastig; für deutsch/englisch gemischte Unterlagen `bge-m3` + Re-Index empfehlen.
-- Datei-Links („Öffnen“) enthalten das Sitzungstoken in der URL (nur lokal relevant, gilt bis zum nächsten Neustart).
+- **Bewusste Entscheidung:** Datei-Links („Öffnen“/Download) enthalten das Sitzungstoken in der URL, damit Browser und Electron die Datei
+  direkt öffnen können (kein Cookie nötig). Nur lokal relevant (Server bindet 127.0.0.1), das Token gilt bis zum nächsten Neustart.

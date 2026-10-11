@@ -15,7 +15,7 @@
   --border-strong: rgba(140, 175, 255, 0.26);
   --text: #e8edff;
   --text-dim: #a3b0d0;
-  --text-faint: #7684a8;
+  --text-faint: #8592b6;
   --accent: #39e6ff;
   --accent-2: #a77bff;
   --accent-ink: #001218;
@@ -39,8 +39,8 @@
   --border-strong: rgba(30, 50, 110, 0.24);
   --text: #0b1224;
   --text-dim: #3c4864;
-  --text-faint: #56627e;
-  --accent: #0077a8;
+  --text-faint: #4e5974;
+  --accent: #005e85;
   --accent-2: #6b3fd4;
   --accent-ink: #ffffff;
   --ok: #0c7d4c;
@@ -65,8 +65,8 @@
   --accent-2: #b0218f;
 }
 [data-theme='light'][data-accent='lime'] {
-  --accent: #3d7a00;
-  --accent-2: #0077a8;
+  --accent: #3a7300;
+  --accent-2: #006690;
   --accent-ink: #ffffff;
 }
 
@@ -1870,6 +1870,8 @@ input[type='range'] {
 }
 
 .source-list {
+  /* Zeilenlayout richtet sich nach der Listenbreite (Vorschau-Panel/Seitenleiste), nicht nach dem Fenster */
+  container: srclist / inline-size;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -2517,13 +2519,42 @@ input[type='range'] {
 
 /* ------------------------------------------------------------------ Responsiv */
 
-@media (max-width: 1180px) {
+@container srclist (max-width: 780px) {
   .source-row {
     grid-template-columns: 34px minmax(0, 1fr) auto 130px auto;
   }
   .source-size,
   .source-date {
     display: none;
+  }
+}
+
+@container srclist (max-width: 600px) {
+  .source-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    grid-template-areas: 'icon main main' 'icon badge stat' 'icon actions actions';
+  }
+  .source-row .kind {
+    grid-area: icon;
+  }
+  .source-main {
+    grid-area: main;
+  }
+  .source-row .badge {
+    grid-area: badge;
+    justify-self: start;
+  }
+  .source-stat {
+    grid-area: stat;
+  }
+  .source-actions {
+    grid-area: actions;
+    justify-content: flex-end;
+  }
+  .move-select {
+    max-width: none;
+    min-width: 140px;
+    flex: 1;
   }
 }
 
@@ -2594,29 +2625,6 @@ input[type='range'] {
 @media (max-width: 640px) {
   .hide-sm {
     display: none;
-  }
-  .source-row {
-    grid-template-columns: 34px minmax(0, 1fr) auto;
-    grid-template-areas: 'icon main actions' 'icon badge stat';
-  }
-  .source-row .kind {
-    grid-area: icon;
-  }
-  .source-main {
-    grid-area: main;
-  }
-  .source-actions {
-    grid-area: actions;
-  }
-  .source-row .badge {
-    grid-area: badge;
-    justify-self: start;
-  }
-  .source-stat {
-    grid-area: stat;
-  }
-  .move-select {
-    max-width: 84px;
   }
   .msg.assistant {
     grid-template-columns: minmax(0, 1fr);

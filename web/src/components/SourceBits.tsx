@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fileUrl, get } from '../api';
+import { apiErrorText } from '../lib/errors';
 import { formatBytes, formatDate, kindIcon, locLabel } from '../lib/format';
 import { useApp } from '../store';
 import type { ChunkPreview, Source } from '../types';
@@ -29,7 +30,11 @@ export function statusDetailText(source: Source, t: ReturnType<typeof useApp>['t
       return null;
     }
   }
-  if (source.status === 'error') return source.statusDetail;
+  if (source.status === 'error') {
+    const key = `detail.${source.statusDetail}` as 'detail.no_text';
+    const v = t(key);
+    return v === key ? source.statusDetail : v;
+  }
   return source.statusDetail
     .split(',')
     .map((p) => {
@@ -58,11 +63,13 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
     setData(null);
     setError(null);
     const ctrl = new AbortController();
-    get<{ source: Source; chunks: ChunkPreview[]; children: Source[] }>(`/api/sources/${sourceId}`, ctrl.signal)
+    get<{ source: Source; chunks: ChunkPreview[]; children: Source[] }>(`/api/sources/${sourceId}${highlightChunk ? `?around=${highlightChunk}` : ''}`, ctrl.signal)
       .then(setData)
-      .catch((e: Error) => e.name !== 'AbortError' && setError(e.message));
+      .catch((e: Error & { code?: string }) => {
+        if (e.name !== 'AbortError') setError(e.code === 'not_found' ? t('src.deleted') : apiErrorText(t, e));
+      });
     return () => ctrl.abort();
-  }, [sourceId]);
+  }, [sourceId, highlightChunk, t]);
 
   useEffect(() => {
     if (!data || !highlightChunk) return;
@@ -86,7 +93,7 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
           <Icon name="close" />
         </button>
       </header>
-      {error && <p className="err pad">{error === 'Quelle nicht gefunden' ? t('src.deleted') : error}</p>}
+      {error && <p className="err pad">{error}</p>}
       {s && (
         <div className="drawer-body">
           <div className="drawer-actions">
@@ -121,7 +128,7 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
             )}
             {s.relPath && (
               <>
-                <dt>Pfad</dt>
+                <dt>{t('lib.path')}</dt>
                 <dd className="mono small">{s.relPath}</dd>
               </>
             )}

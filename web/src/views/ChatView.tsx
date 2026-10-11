@@ -3,7 +3,8 @@ import { fileUrl, get, patch, post, type ApiError } from '../api';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { ViewHeader } from '../components/ViewHeader';
-import { formatTime, locLabel } from '../lib/format';
+import { formatTime, locLabel, prefersReducedMotion } from '../lib/format';
+import { reloadUntilFinal } from '../lib/chat-sync';
 import { streams } from '../lib/streams';
 import { errorText, useApp } from '../store';
 import type { ChatMessage, ChatSession, Citation, Scope, Source } from '../types';
@@ -35,8 +36,8 @@ function ScopePicker({ scope, onChange }: { scope: Scope; onChange(s: Scope): vo
     if (!open || scope.mode !== 'sources') return;
     const ctrl = new AbortController();
     const timer = setTimeout(() => {
-      get<Source[]>(`/api/sources?q=${encodeURIComponent(q)}`, ctrl.signal)
-        .then((r) => setSources(r.filter((s) => s.status === 'ready' || s.status === 'archive')))
+      get<{ items: Source[] }>(`/api/sources?q=${encodeURIComponent(q)}`, ctrl.signal)
+        .then((r) => setSources(r.items.filter((s) => s.status === 'ready' || s.status === 'archive')))
         .catch(() => {});
     }, 150);
     return () => {
@@ -238,7 +239,7 @@ function MessageItem({ msg, isLast, onCite, onRegenerate, canRegenerate }: { msg
 function SourcesPanel({ citations, active, onClose }: { citations: Citation[]; active: number; onClose(): void }) {
   const { t, navigate } = useApp();
   useEffect(() => {
-    document.getElementById(`cite-card-${active}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    document.getElementById(`cite-card-${active}`)?.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
   }, [active]);
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -298,7 +299,7 @@ function SourcesPanel({ citations, active, onClose }: { citations: Citation[]; a
 /* ------------------------------------------------------------------ Hauptansicht */
 
 export function ChatView({ chatId }: { chatId: number | null }) {
-  const { t, navigate, toast, ollama, stats, settings } = useApp();
+  const { t, navigate, toast, toastError, ollama, stats, settings } = useApp();
   const [session, setSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -319,20 +320,26 @@ export function ChatView({ chatId }: { chatId: number | null }) {
   const load = useCallback(
     async (id: number) => {
       try {
-        const r = await get<{ session: ChatSession; messages: ChatMessage[] }>(`/api/chats/${id}`);
+        // Nach Stream-Ende (auch Stopp) warten, bis der Server die Antwort final gespeichert hat;
+        // bis dahin bleibt die lokale Live-Anzeige (inkl. Teiltext) stehen.
+        const live0 = streams.get(id);
+        const { data: r, final } = await reloadUntilFinal(
+          () => get<{ session: ChatSession; messages: ChatMessage[] }>(`/api/chats/${id}`),
+          live0?.done ? live0.assistant.id : -1,
+        );
         if (currentChat.current !== id) return;
         setSession(r.session);
         setMessages(r.messages);
-        streams.clear(id);
+        if (final) streams.clear(id);
       } catch (err) {
         if (currentChat.current !== id) return;
         if ((err as ApiError).status === 404) {
           toast(t('chats.notFound'), 'error');
           navigate('#/chat');
-        } else toast((err as Error).message, 'error');
+        } else toastError(err);
       }
     },
-    [navigate, toast, t],
+    [navigate, toast, toastError, t],
   );
 
   useEffect(() => {
@@ -392,7 +399,7 @@ export function ChatView({ chatId }: { chatId: number | null }) {
         setSession(s);
         navigate(`#/chat/${id}`);
       } catch (err) {
-        toast((err as Error).message, 'error');
+        toastError(err);
         setInput(content);
         return;
       }
@@ -435,7 +442,7 @@ export function ChatView({ chatId }: { chatId: number | null }) {
     try {
       setSession(await patch<ChatSession>(`/api/chats/${session.id}`, p));
     } catch (err) {
-      toast((err as Error).message, 'error');
+      toastError(err);
     }
   };
 
@@ -477,7 +484,7 @@ export function ChatView({ chatId }: { chatId: number | null }) {
               }}
               title={session ? t('chat.titleEdit') : undefined}
             >
-              <h1>{session?.title ?? t('chats.new')}</h1>
+              <h1>{session?.title || t('chats.new')}</h1>
               {session && <Icon name="edit" size={14} className="title-edit-icon" />}
             </button>
           )

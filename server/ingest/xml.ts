@@ -70,19 +70,8 @@ export function* tokenize(xml: string): Generator<XmlToken> {
     const body = selfClosing ? inner.slice(0, -1) : inner;
     const sp = body.search(/\s/);
     const name = sp === -1 ? body : body.slice(0, sp);
-    const attrs = sp === -1 ? {} : parseAttrs(body.slice(sp));
+    // Riesige Tags (präparierte Dateien) nicht per Regex zerlegen -> kein quadratisches Laufzeitverhalten
+    const attrs = sp === -1 || body.length > 65_536 ? {} : parseAttrs(body.slice(sp));
     yield { type: 'open', name, attrs, selfClosing };
   }
-}
-
-/** Alle Textknoten innerhalb eines bestimmten Elementnamens (z. B. 'a:t'), verbunden. */
-export function collectText(xml: string, textTag: string): string {
-  let depth = 0;
-  let out = '';
-  for (const t of tokenize(xml)) {
-    if (t.type === 'open' && t.name === textTag && !t.selfClosing) depth++;
-    else if (t.type === 'close' && t.name === textTag) depth = Math.max(0, depth - 1);
-    else if (t.type === 'text' && depth > 0) out += t.text;
-  }
-  return out;
 }

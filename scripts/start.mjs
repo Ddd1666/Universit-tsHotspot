@@ -23,9 +23,12 @@ function runBrowser() {
     stdio: 'inherit',
     env: { ...process.env, ...localCacheEnv() },
   });
-  const forward = (sig) => () => child.kill(sig);
-  process.on('SIGINT', forward('SIGINT'));
-  process.on('SIGTERM', forward('SIGTERM'));
+  // Strg+C erreicht den Server-Prozess selbst (gleiche Konsole) und beendet ihn sauber (close(): DB, Sperrdatei).
+  // Unter Windows wäre child.kill() ein harter Abbruch (TerminateProcess) -> dort NICHT weiterleiten.
+  process.on('SIGINT', () => {
+    if (process.platform !== 'win32') child.kill('SIGINT');
+  });
+  process.on('SIGTERM', () => child.kill('SIGTERM'));
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
