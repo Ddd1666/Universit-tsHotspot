@@ -62,7 +62,7 @@ export const pdfExtractor: Extractor = {
     const data = new Uint8Array(await fsp.readFile(input.path));
     let pdf;
     try {
-      pdf = await getDocumentProxy(data, { disableFontFace: true, useSystemFonts: false, stopAtErrors: false });
+      pdf = await getDocumentProxy(data, { disableFontFace: true, useSystemFonts: false, stopAtErrors: false, verbosity: 0 });
     } catch (err) {
       const name = (err as { name?: string }).name;
       if (name === 'PasswordException') throw new Error('PDF ist passwortgeschützt', { cause: err });

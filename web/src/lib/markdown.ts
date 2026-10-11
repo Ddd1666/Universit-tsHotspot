@@ -42,6 +42,9 @@ function installHooks(): void {
       el.setAttribute('target', '_blank');
       el.setAttribute('rel', 'noopener noreferrer nofollow');
     }
+    // kein CSS mit URLs/Ausdrücken aus Modellausgaben (KaTeX braucht nur einfache Inline-Styles)
+    const style = el.getAttribute?.('style');
+    if (style && /url\s*\(|expression|@import|javascript:/i.test(style)) el.removeAttribute('style');
     if (el.tagName === 'IMG') {
       // keine externen Bilder (Tracking / Netzwerkzugriffe), nur eingebettete Rasterbilder
       const src = el.getAttribute('src') ?? '';

@@ -75,8 +75,8 @@ export function cleanTitle(raw: string): string {
     .split('\n')
     .map((l) => l.trim())
     .find(Boolean)
-    ?.replace(/^(title|titel)\s*:\s*/i, '')
-    .replace(/[*#_`"“”„]/g, '')
+    ?.replace(/[*#_`"“”„]/g, '')
+    .replace(/^\s*(title|titel)\s*:\s*/i, '')
     .replace(/[.:;,!]+$/, '')
     .trim()
     .slice(0, 80) ?? '';

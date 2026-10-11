@@ -148,6 +148,7 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
   registerWeb(app, config.webDir, config.token);
 
   let closed = false;
+  let maintenanceTimer: NodeJS.Timeout | null = null;
   return {
     app,
     services,
@@ -160,15 +161,21 @@ export async function createHotspot(config: AppConfig): Promise<Hotspot> {
       monitor.start();
       ingest.start();
       embed.start();
-      setTimeout(() => {
-        void library.gcOrphanBlobs().then((n) => n && log(`${n} verwaiste Datei(en) entfernt`));
+      maintenanceTimer = setTimeout(() => {
+        if (closed) return;
         vectors.warmup();
-      }, 1500).unref();
+        void library
+          .gcOrphanBlobs()
+          .then((n) => n && log(`${n} verwaiste Datei(en) entfernt`))
+          .catch(() => {});
+      }, 1500);
+      maintenanceTimer.unref();
       return { url: `http://127.0.0.1:${port}`, port };
     },
     async close() {
       if (closed) return;
       closed = true;
+      if (maintenanceTimer) clearTimeout(maintenanceTimer);
       monitor.stop();
       if (queueTimer) clearTimeout(queueTimer);
       await ingest.stop();

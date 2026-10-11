@@ -9,20 +9,20 @@ export type DB = DatabaseSync;
 export type Param = SQLInputValue;
 
 const MIGRATIONS: string[] = [
-  // v1 – Grundschema Phase 1
+  // v1 – Grundschema Phase 1 (AUTOINCREMENT: gelöschte IDs werden nie wiederverwendet -> Zitate/Links bleiben eindeutig)
   `
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
   CREATE TABLE subjects (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     color TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
 
   CREATE TABLE sources (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     subject_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
     parent_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,
     sha256 TEXT NOT NULL UNIQUE,
@@ -44,7 +44,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX sources_parent ON sources(parent_id);
 
   CREATE TABLE chunks (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     ord INTEGER NOT NULL,
     text TEXT NOT NULL,
@@ -84,7 +84,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX embeddings_source ON embeddings(source_id);
 
   CREATE TABLE chat_sessions (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     title_locked INTEGER NOT NULL DEFAULT 0,
     model TEXT,
@@ -95,7 +95,7 @@ const MIGRATIONS: string[] = [
   CREATE INDEX chat_sessions_updated ON chat_sessions(updated_at);
 
   CREATE TABLE chat_messages (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL,

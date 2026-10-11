@@ -59,6 +59,7 @@ export interface SearchResult {
 }
 
 export const RRF_K = 60;
+export const MIN_VECTOR_SCORE = 0.2;
 export const MARK_START = '\u0002';
 export const MARK_END = '\u0003';
 
@@ -71,6 +72,15 @@ export function rrfFuse(lists: number[][], k = RRF_K): { id: number; score: numb
   return [...scores.entries()].map(([id, score]) => ({ id, score })).sort((a, b) => b.score - a.score || a.id - b.id);
 }
 
+const SUFFIXES = ['ungen', 'ung', 'heit', 'keit', 'ern', 'en', 'er', 'es', 'em', 'e', 'n', 's'];
+
+/** Sehr einfaches Stemming (DE/EN-Endungen), nur für zusätzliche Präfix-Suche. */
+export function germanStem(t: string): string {
+  if (t.length < 6) return t;
+  for (const suf of SUFFIXES) if (t.endsWith(suf) && t.length - suf.length >= 4) return t.slice(0, -suf.length);
+  return t;
+}
+
 /**
  * Nutzereingabe -> sichere FTS5-Query: nur Wort-Tokens, jeweils in Anführungszeichen (keine FTS-Syntax-Injection),
  * ODER-verknüpft; längere Wörter zusätzlich als Präfix des Wortstamms (einfaches DE-Stemming: "Vektoren" ~ "Vektor*").
@@ -81,7 +91,8 @@ export function buildFtsQuery(input: string): string | null {
   const parts = new Set<string>();
   for (const t of tokens) {
     parts.add(`"${t}"`);
-    if (t.length >= 6) parts.add(`"${t.slice(0, Math.max(5, t.length - 3))}"*`);
+    const stem = germanStem(t);
+    if (stem !== t) parts.add(`"${stem}"*`);
   }
   return [...parts].join(' OR ');
 }
@@ -164,7 +175,8 @@ export async function hybridSearch(
   if (client && info.model && info.count > 0) {
     try {
       const [qv] = await client.embed(info.model, [embedPrefix(info.model, 'query') + query], { retries: 0, timeoutMs: 15_000, signal: opts.signal });
-      vecIds = vectors.search(qv!, cand, allowed).map((h) => h.chunkId);
+      // Mindestähnlichkeit: reine "nächste Nachbarn ohne Bezug" nicht als Treffer zeigen
+      vecIds = vectors.search(qv!, cand, allowed).filter((h) => h.score >= MIN_VECTOR_SCORE).map((h) => h.chunkId);
     } catch (err) {
       vectorError = (err as Error).message;
     }
