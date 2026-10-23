@@ -49,9 +49,27 @@ export function locLabel(c: LocLike, t: T): string {
       return range ? t('src.lines', { n: range }) : '';
     case 'section':
       return c.locLabel ?? '';
+    case 'time':
+      return c.locStart !== null ? `${formatClock(c.locStart)}–${formatClock(c.locEnd ?? c.locStart)}` : '';
     default:
       return '';
   }
+}
+
+/** Sekunden -> "mm:ss" bzw. "h:mm:ss" (gleiches Format wie der Server im Prompt). */
+export function formatClock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
+}
+
+/** Restzeit grob und lesbar ("~3 min", "~1 h 20 min"). */
+export function formatEta(sec: number): string {
+  if (sec < 60) return `~${Math.max(1, Math.round(sec))} s`;
+  const m = Math.round(sec / 60);
+  return m < 60 ? `~${m} min` : `~${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
 export function dayBucket(ts: number): 'today' | 'yesterday' | 'week' | 'older' {

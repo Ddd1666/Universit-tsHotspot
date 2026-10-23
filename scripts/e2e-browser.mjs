@@ -38,14 +38,51 @@ const files = {
   ]),
   'Messwerte.xlsx': fx.makeXlsx([{ name: 'Versuch 1', rows: [['Temperatur', 'Druck'], [293, 1.01], [313, 1.08]] }]),
   'Uebungsblatt.zip': fx.makeZip({ 'blatt1/aufgabe1.md': '# Aufgabe 1\n\nBerechne die Entropieänderung beim isothermen Prozess.', 'blatt1/notizen.txt': 'Formel: dS = dQ / T' }),
-  'Tafelbild.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),
+  // Phase 2: echtes PNG (Mock-OCR liest den Marker), abspielbare WAV-Aufnahme (Fake-Whisper), Scan-PDF
+  'Tafelbild.png': fx.makePng(96, 64, 'Tafelbild: Entropie S = k ln W'),
+  'Vorlesung-Thermo.wav': playableWav(1500, { duration: 1500, words: Array.from({ length: 50 }, (_, i) => (i === 40 ? 'Wärmekraftmaschine' : 'Wiederholung')) }),
+  'Scan-Kapitel3.pdf': fx.makeScanPdf([{ lines: ['Kapitel 3: Kreisprozesse – Einleitung mit ausreichend Text auf dieser Seite.'] }, { image: { w: 320, h: 400 } }]),
 };
 for (const [name, data] of Object.entries(files)) fs.writeFileSync(path.join(FILES, name), data);
+// hängende Aufnahme für die Aufgaben-Ansicht (läuft, bis sie abgebrochen wird)
+const HANG = path.join(FILES, 'hang.flag');
+fs.writeFileSync(HANG, '1');
+fs.writeFileSync(path.join(FILES, 'Lange-Vorlesung.mp3'), fx.makeFakeMedia('mp3', { duration: 5400, hangFile: HANG, hangFrom: 1100 }));
+
+/** Abspielbares WAV (8 kHz, 8 Bit, Stille) + Steuer-Marker für das Fake-ffmpeg hinter den Audiodaten. */
+function playableWav(seconds, spec) {
+  const n = seconds * 8000;
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + n, 4);
+  h.write('WAVEfmt ', 8);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(8000, 24);
+  h.writeUInt32LE(8000, 28);
+  h.writeUInt16LE(1, 32);
+  h.writeUInt16LE(8, 34);
+  h.write('data', 36);
+  h.writeUInt32LE(n, 40);
+  return Buffer.concat([h, Buffer.alloc(n, 128), Buffer.from(`\nFAKEMEDIA${JSON.stringify({ audio: true, ...spec })}\n`, 'latin1')]);
+}
+
+// Fake-Werkzeuge (nur Mock-Modus): whisper/ffmpeg als Node-Skripte, Modell-Attrappe
+const MODELS = path.join(ROOT, '.tmp', 'e2e', 'models');
+fs.mkdirSync(MODELS, { recursive: true });
+fs.writeFileSync(path.join(MODELS, 'ggml-small.bin'), 'fake');
+const MEDIA_TOOLS = JSON.stringify({
+  ffmpeg: [process.execPath, path.join(ROOT, 'tests', 'fake-tools', 'ffmpeg.mjs')],
+  whisper: [process.execPath, path.join(ROOT, 'tests', 'fake-tools', 'whisper-cli.mjs')],
+  modelsDir: MODELS,
+});
+const uploadNames = Object.keys(files);
 
 // --- Server starten (Mock-Ollama)
 const server = spawn(process.execPath, [...NODE_FLAGS, path.join(ROOT, 'server', 'main.ts')], {
   cwd: ROOT,
-  env: { ...process.env, HOTSPOT_MOCK_OLLAMA: '1', HOTSPOT_PORT: String(PORT), HOTSPOT_DATA_DIR: DATA },
+  env: { ...process.env, HOTSPOT_MOCK_OLLAMA: '1', HOTSPOT_PORT: String(PORT), HOTSPOT_DATA_DIR: DATA, HOTSPOT_MEDIA_TOOLS_JSON: MEDIA_TOOLS },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -99,14 +136,14 @@ try {
   });
 
   await step('Import mehrerer Formate inkl. ZIP (Dateidialog)', async () => {
-    await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(Object.keys(files).map((n) => path.join(FILES, n)));
+    await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(uploadNames.map((n) => path.join(FILES, n)));
     await page.locator('.import-panel').waitFor();
-    await page.waitForFunction(() => {
+    await page.waitForFunction((n) => {
       const states = [...document.querySelectorAll('.import-state')].map((e) => e.textContent ?? '');
-      return states.length === 6 && states.every((s) => /indexiert|Archiv entpackt|nur gespeichert/.test(s));
-    }, null, { timeout: 30_000 });
+      return states.length === n && states.every((s) => /indexiert|Archiv entpackt|nur gespeichert/.test(s));
+    }, uploadNames.length, { timeout: 60_000 });
     await page.locator('.source-row', { hasText: 'aufgabe1.md' }).waitFor();
-    await page.waitForFunction(() => document.querySelectorAll('.source-row').length >= 8, null, { timeout: 15_000 });
+    await page.waitForFunction(() => document.querySelectorAll('.source-row').length >= 10, null, { timeout: 15_000 });
     await page.waitForTimeout(2800); // Vektor-Fortschritt, Import-Liste klappt ein
     await shot('02-bibliothek-import.png');
   });
@@ -117,6 +154,73 @@ try {
     if (!/S\. \d/.test(await page.locator('.drawer').innerText())) throw new Error('Seitenangabe fehlt');
     await shot('03-quellen-vorschau.png');
     await page.locator('.drawer').getByRole('button', { name: 'Schließen' }).click();
+  });
+
+  await step('Phase 2: Bild -> OCR + Beschreibung, KI-gekennzeichnet', async () => {
+    await page.locator('.source-row', { hasText: 'Tafelbild.png' }).locator('.source-main').click();
+    await page.locator('.drawer .chunk-list li.ai .badge.ai').first().waitFor();
+    const txt = await page.locator('.drawer').innerText();
+    if (!txt.includes('Entropie S = k ln W') || !txt.includes('KI-generiert')) throw new Error('OCR/KI-Kennzeichnung fehlt');
+    await shot('13-bild-ki.png');
+    await page.locator('.drawer').getByRole('button', { name: 'Schließen' }).click();
+  });
+
+  await step('Phase 2: gescanntes PDF seitengenau durchsuchbar', async () => {
+    await page.getByRole('link', { name: 'Suche' }).click();
+    await page.getByPlaceholder('Begriff, Frage oder Stichwort …').fill('Mock-OCR 320x400');
+    await page.locator('.result').first().waitFor();
+    const first = await page.locator('.result').first().innerText();
+    if (!first.includes('Scan-Kapitel3.pdf') || !first.includes('S. 2') || !first.includes('KI-generiert')) throw new Error('Scan-Treffer unerwartet: ' + first);
+    await shot('14-suche-scan.png');
+  });
+
+  await step('Phase 2: Transkript-Zitat springt im Player an die Stelle', async () => {
+    await page.getByRole('button', { name: 'Neuer Chat' }).click();
+    const box = page.getByRole('textbox', { name: /Frag deine Unterlagen/ });
+    await box.fill('Was wurde in der Vorlesung zur Wärmekraftmaschine gesagt?');
+    await box.press('Enter');
+    await page.locator('.msg.assistant:not(.is-streaming) .md button.cite').first().waitFor({ timeout: 20_000 });
+    // Zitat-Chip der Aufnahme anklicken (Chips zeigen Quelle + Zeitbereich)
+    await page.locator('.msg.assistant .cite-chip', { hasText: 'Vorlesung-Thermo.wav' }).first().click();
+    await page.locator('.sources-panel .player-box audio').waitFor();
+    const card = await page.locator('.sources-panel .cite-card.active').innerText();
+    const m = /(\d\d):(\d\d)–/.exec(card);
+    if (!m || !card.includes('Vorlesung-Thermo.wav')) throw new Error('aktives Zitat ohne Zeit: ' + card.slice(0, 120));
+    const want = Number(m[1]) * 60 + Number(m[2]);
+    await page.waitForFunction((w) => {
+      const a = document.querySelector('.sources-panel .player-box audio');
+      return a && a.readyState >= 1 && Math.abs(a.currentTime - w) < 3;
+    }, want, { timeout: 10_000 });
+    await page.locator('.sources-panel .player-box audio').evaluate((a) => a.pause());
+    await shot('15-chat-transkript-player.png');
+    await page.locator('.sources-panel').getByRole('button', { name: 'Schließen' }).click();
+    // Chat wieder entfernen (spätere Schritte zählen Chats)
+    const item = page.locator('.chat-item.active');
+    await item.hover();
+    await item.getByRole('button', { name: /Löschen/ }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'Löschen' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-item').length === 0);
+  });
+
+  await step('Phase 2: Aufgaben-Ansicht mit Fortschritt/ETA, Abbrechen', async () => {
+    await page.getByRole('link', { name: 'Bibliothek' }).click();
+    await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(path.join(FILES, 'Lange-Vorlesung.mp3'));
+    await page.getByRole('link', { name: 'Aufgaben' }).click();
+    await page.locator('.job.running', { hasText: 'Lange-Vorlesung.mp3' }).locator('.mini-bar').waitFor({ timeout: 20_000 });
+    await page.waitForFunction(() => /noch ~/.test(document.querySelector('.job.running')?.textContent ?? ''), null, { timeout: 15_000 });
+    await shot('16-aufgaben.png');
+    await page.locator('.job.running').getByRole('button', { name: 'Abbrechen' }).click();
+    await page.locator('.job.cancelled', { hasText: 'Lange-Vorlesung.mp3' }).waitFor({ timeout: 10_000 });
+  });
+
+  await step('Phase 2: Einstellungen – Medien', async () => {
+    await page.getByRole('link', { name: 'Einstellungen' }).click();
+    const sec = page.locator('section[aria-labelledby=media-settings]');
+    await sec.waitFor();
+    await sec.scrollIntoViewIfNeeded();
+    if (!(await sec.innerText()).includes('installiert')) throw new Error('Werkzeug-Status fehlt');
+    await page.waitForTimeout(300);
+    await sec.screenshot({ path: path.join(OUT, '17-einstellungen-medien.png') });
   });
 
   await step('Hybrid-Suche mit Quellenangabe', async () => {
@@ -245,14 +349,14 @@ try {
     await page.getByRole('link', { name: 'Einstellungen' }).click();
     await page.locator('.settings-section').first().waitFor();
     await shot('07-einstellungen.png');
-    await page.getByRole('radio', { name: 'English' }).click();
+    await page.getByRole('radiogroup', { name: 'Sprache', exact: true }).getByRole('radio', { name: 'English' }).click();
     await page.getByRole('link', { name: 'Library' }).waitFor();
     await page.getByRole('link', { name: 'Chat' }).click();
     await page.locator('.chat-item').first().locator('a').click();
     await page.locator('.msg.assistant').first().waitFor();
     await shot('08-chat-english.png');
     await page.getByRole('link', { name: 'Settings' }).click();
-    await page.getByRole('radio', { name: 'Deutsch' }).click();
+    await page.getByRole('radiogroup', { name: 'Language', exact: true }).getByRole('radio', { name: 'Deutsch' }).click();
     await page.getByRole('link', { name: 'Bibliothek' }).waitFor();
   });
 
@@ -287,7 +391,7 @@ try {
     const problems = [];
     await page.getByRole('link', { name: 'Bibliothek' }).click();
     await page.locator('.source-row').first().waitFor();
-    await page.locator('.source-row .source-main').first().click();
+    await page.locator('.source-row', { hasText: 'Thermodynamik-Skript.pdf' }).locator('.source-main').click();
     await page.locator('.drawer .chunk-list li').first().waitFor();
     await page.waitForTimeout(400);
     problems.push(...(await check('1440 px + Vorschau')));
@@ -326,6 +430,20 @@ try {
     await page.locator('.source-row .move-select').first().waitFor();
     const w = await page.locator('.source-row .move-select').first().evaluate((el) => el.getBoundingClientRect().width);
     if (w < 130) throw new Error(`Select nur ${w}px breit`);
+    await page.setViewportSize({ width: 390, height: 844 });
+  });
+
+  await step('Phase 2: Aufgaben + Medien-Einstellungen bei 600 px', async () => {
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.goto(url + '/#/queue');
+    await page.locator('.job').first().waitFor();
+    await shot('18-schmal-aufgaben.png');
+    for (const hash of ['#/queue', '#/settings']) {
+      await page.goto(url + '/' + hash);
+      await page.waitForTimeout(400);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (overflow > 1) throw new Error(`${hash}: horizontaler Überlauf ${overflow}px`);
+    }
     await page.setViewportSize({ width: 390, height: 844 });
   });
 

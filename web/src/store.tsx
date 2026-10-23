@@ -9,7 +9,8 @@ export type Route =
   | { view: 'chat'; chatId: number | null }
   | { view: 'library'; subject: 'all' | 'none' | number; sourceId: number | null }
   | { view: 'search'; q: string }
-  | { view: 'settings' };
+  | { view: 'settings' }
+  | { view: 'queue' };
 
 export function parseRoute(hash: string): Route {
   const [pathPart, query = ''] = hash.replace(/^#/, '').split('?');
@@ -25,6 +26,8 @@ export function parseRoute(hash: string): Route {
       return { view: 'search', q: params.get('q') ?? '' };
     case 'settings':
       return { view: 'settings' };
+    case 'queue':
+      return { view: 'queue' };
     default:
       return { view: 'chat', chatId: parts[1] && /^\d+$/.test(parts[1]) ? Number(parts[1]) : null };
   }
@@ -219,7 +222,10 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
         reloadSubjects();
         break;
       case 'queue':
-        setQueue({ ingest: e.ingest, embed: e.embed });
+        setQueue({ ingest: e.ingest, embed: e.embed, media: e.media });
+        break;
+      case 'jobs':
+        setQueue((q) => ({ ...q, media: e.counts }));
         break;
       case 'ollama':
         setOllama(e.status);

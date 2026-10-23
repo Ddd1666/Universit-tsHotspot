@@ -276,7 +276,7 @@ export function makePng(w: number, h: number, marker?: string): Buffer {
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
-    ...(marker ? [chunk('tEXt', Buffer.from(`Comment\0MOCKTEXT:${marker}`, 'latin1'))] : []),
+    ...(marker ? [chunk('tEXt', Buffer.from(`Comment\0MOCKTEXT:${marker}\n`, 'latin1'))] : []),
     chunk('IDAT', zlib.deflateSync(raw)),
     chunk('IEND', Buffer.alloc(0)),
   ]);

@@ -9,6 +9,7 @@ export function sourceBadge(s: Pick<Source, 'status' | 'statusDetail' | 'chunkCo
     if ((s.statusDetail ?? '').split(',').some((w) => w === 'truncated_text' || w === 'truncated')) return { key: 'status.partial', cls: 'warn' };
     return { key: 'status.ready', cls: 'ok' };
   }
+  // "ready" mit noch laufender KI-Analyse (Scan-Seiten) zeigt der Server als 'media'
   const cls = s.status === 'error' ? 'err' : s.status === 'unsupported' || s.status === 'cancelled' ? 'muted' : s.status === 'archive' ? 'ok' : 'accent';
   return { key: `status.${s.status}`, cls };
 }

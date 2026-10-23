@@ -10,6 +10,7 @@ import { ChatView } from './views/ChatView';
 import { LibraryView } from './views/LibraryView';
 import { SearchView } from './views/SearchView';
 import { SettingsView } from './views/SettingsView';
+import { QueueView } from './views/QueueView';
 
 export function App() {
   const { route, sidebarOpen, importer, importTarget, subjects, t, toast } = useApp();
@@ -75,6 +76,7 @@ export function App() {
         {route.view === 'library' && <LibraryView subject={route.subject} sourceId={route.sourceId} />}
         {route.view === 'search' && <SearchView initialQuery={route.q} />}
         {route.view === 'settings' && <SettingsView />}
+        {route.view === 'queue' && <QueueView />}
       </main>
       <CommandPalette />
       <Dialog />

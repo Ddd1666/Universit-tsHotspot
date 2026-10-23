@@ -8,7 +8,7 @@ import { ImportMini } from './ImportPanel';
 
 function OllamaPill() {
   const { ollama, queue, t, navigate } = useApp();
-  const busy = queue.ingest.processing.length > 0 || queue.ingest.queued > 0 || queue.embed.state === 'running';
+  const busy = queue.ingest.processing.length > 0 || queue.ingest.queued > 0 || queue.embed.state === 'running' || queue.media.running > 0;
   const running = ollama.running[0];
   const label = ollama.mock ? t('ollama.mock') : ollama.reachable ? t('ollama.online') : t('ollama.offline');
   return (
@@ -24,7 +24,7 @@ function OllamaPill() {
 }
 
 export function Sidebar() {
-  const { t, lang, route, navigate, chats, sidebarOpen, setSidebarOpen, ask, toastError, setPaletteOpen, boot } = useApp();
+  const { t, lang, route, navigate, chats, sidebarOpen, setSidebarOpen, ask, toastError, setPaletteOpen, boot, queue } = useApp();
   const [q, setQ] = useState('');
   const [results, setResults] = useState<ChatSession[] | null>(null);
 
@@ -96,6 +96,7 @@ export function Sidebar() {
     { view: 'chat', hash: '#/chat', icon: 'chat', label: t('nav.chat') },
     { view: 'library', hash: '#/library', icon: 'library', label: t('nav.library') },
     { view: 'search', hash: '#/search', icon: 'search', label: t('nav.search') },
+    { view: 'queue', hash: '#/queue', icon: 'cpu', label: t('nav.queue'), count: queue.media.running + queue.media.queued },
     { view: 'settings', hash: '#/settings', icon: 'settings', label: t('nav.settings') },
   ];
 
@@ -141,6 +142,7 @@ export function Sidebar() {
             >
               <Icon name={n.icon} />
               <span>{n.label}</span>
+              {!!n.count && <span className="nav-count" aria-label={t('queue.active', { n: n.count })}>{n.count}</span>}
             </a>
           ))}
         </nav>

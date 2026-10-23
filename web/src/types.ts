@@ -17,6 +17,16 @@ export interface Settings {
   zipMaxTotalMB: number;
   ingestConcurrency: number;
   embedBatchSize: number;
+  visionModel: string;
+  mediaImages: boolean;
+  mediaAudio: boolean;
+  mediaVideo: boolean;
+  mediaScanOcr: boolean;
+  mediaKeyframes: boolean;
+  mediaEmbeddedImages: boolean;
+  mediaLanguage: 'auto' | 'de' | 'en';
+  whisperModel: string;
+  mediaMaxDurationMin: number;
 }
 
 export interface Subject {
@@ -36,7 +46,7 @@ export interface Source {
   size: number;
   mime: string;
   kind: string;
-  status: 'queued' | 'processing' | 'ready' | 'error' | 'unsupported' | 'cancelled' | 'archive';
+  status: 'queued' | 'processing' | 'media' | 'ready' | 'error' | 'unsupported' | 'cancelled' | 'archive';
   statusDetail: string | null;
   pageCount: number | null;
   chunkCount: number;
@@ -58,6 +68,8 @@ export interface ChunkPreview {
   locEnd: number | null;
   locLabel: string | null;
   embedState: number;
+  /** KI-generiert: 'ocr' | 'vision' | 'transcript' */
+  origin: string | null;
 }
 
 export interface OllamaStatus {
@@ -84,9 +96,50 @@ export interface EmbedStatus {
   retryAt: number | null;
 }
 
+export interface JobCounts {
+  queued: number;
+  running: number;
+  error: number;
+}
+
 export interface QueueStatus {
   ingest: { queued: number; processing: { id: number; name: string }[] };
   embed: EmbedStatus;
+  media: JobCounts;
+}
+
+export interface MediaJob {
+  id: number;
+  sourceId: number;
+  sourceName: string;
+  kind: 'image' | 'scan' | 'audio' | 'video';
+  state: 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+  progress: number;
+  total: number | null;
+  detail: string | null;
+  note: 'waiting_ollama' | 'waiting_chat' | null;
+  etaSec: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MediaSetupState {
+  running: boolean;
+  queue: string[];
+  current: string | null;
+  received: number;
+  total: number;
+  done: string[];
+  error: { id: string; code: string } | null;
+}
+
+export interface MediaStatus {
+  tools: { ffmpeg: boolean; whisper: boolean; models: string[] };
+  supported: boolean;
+  platform: string;
+  toolsDir: string;
+  items: { id: string; label: string; size: number; url: string; installed: boolean }[];
+  setup: MediaSetupState;
 }
 
 export interface Stats {
@@ -137,6 +190,8 @@ export interface Citation {
   locStart: number | null;
   locEnd: number | null;
   locLabel: string | null;
+  origin?: string | null;
+  sourceKind?: string;
   snippet: string;
   used?: boolean;
 }
@@ -176,6 +231,8 @@ export interface SearchHit {
   locStart: number | null;
   locEnd: number | null;
   locLabel: string | null;
+  origin?: string | null;
+  sourceKind?: string;
   snippet: string;
   score: number;
   matchedBy: ('fts' | 'vector')[];
@@ -192,7 +249,10 @@ export type HubEvent =
   | { type: 'source'; source: Source }
   | { type: 'source-deleted'; id: number }
   | { type: 'subjects' }
-  | { type: 'queue'; ingest: QueueStatus['ingest']; embed: EmbedStatus }
+  | { type: 'queue'; ingest: QueueStatus['ingest']; embed: EmbedStatus; media: JobCounts }
+  | { type: 'job'; job: MediaJob }
+  | { type: 'jobs'; counts: JobCounts }
+  | { type: 'media-setup'; setup: MediaSetupState }
   | { type: 'ollama'; status: OllamaStatus }
   | { type: 'chat'; session: ChatSession | null }
   | { type: 'chat-deleted'; id: number }

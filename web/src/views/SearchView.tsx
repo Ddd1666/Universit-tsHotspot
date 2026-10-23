@@ -5,6 +5,7 @@ import { SourceDrawer } from '../components/SourceBits';
 import { ViewHeader } from '../components/ViewHeader';
 import { locLabel, snippetParts } from '../lib/format';
 import { useApp } from '../store';
+import { AiBadge } from '../components/MediaBits';
 import type { SearchResult } from '../types';
 
 export function SearchView({ initialQuery }: { initialQuery: string }) {
@@ -90,6 +91,7 @@ export function SearchView({ initialQuery }: { initialQuery: string }) {
                     <div className="result-head">
                       <strong className="ellipsis">{h.sourceName}</strong>
                       {locLabel(h, t) && <span className="loc">{locLabel(h, t)}</span>}
+                      <AiBadge origin={h.origin} />
                       {h.subjectName && (
                         <span className="muted small">
                           <span className="dot-color" style={{ background: h.subjectColor ?? 'var(--accent)' }} /> {h.subjectName}

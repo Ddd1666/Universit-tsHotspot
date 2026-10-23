@@ -83,7 +83,7 @@ let connListeners = new Set<(connected: boolean) => void>();
 export function connectEvents(): void {
   if (source) return;
   source = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`);
-  const types: HubEvent['type'][] = ['source', 'source-deleted', 'subjects', 'queue', 'ollama', 'chat', 'chat-deleted', 'settings'];
+  const types: HubEvent['type'][] = ['source', 'source-deleted', 'subjects', 'queue', 'ollama', 'chat', 'chat-deleted', 'settings', 'job', 'jobs', 'media-setup'];
   for (const type of types) {
     source.addEventListener(type, (ev) => {
       const data = JSON.parse((ev as MessageEvent<string>).data) as HubEvent;

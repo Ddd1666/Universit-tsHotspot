@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { get, post, put } from '../api';
 import { Icon } from '../components/Icon';
 import { ViewHeader } from '../components/ViewHeader';
+import { MediaSettings } from '../components/MediaSettings';
 import { formatBytes } from '../lib/format';
 import { embeddingChoices } from '../lib/status';
 import { useApp } from '../store';
@@ -284,6 +285,8 @@ export function SettingsView() {
             {e.lastError && <p className="warn small">{e.lastError}</p>}
           </div>
         </Section>
+
+        <MediaSettings save={save} />
 
         <Section title={t('set.appearance')} icon="sun">
           <div className="seg-field">

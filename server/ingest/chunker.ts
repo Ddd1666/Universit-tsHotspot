@@ -14,6 +14,7 @@ export interface ChunkOptions {
 }
 
 export const DEFAULT_CHUNK_OPTIONS: ChunkOptions = { targetTokens: 600, maxTokens: 800, minTokens: 120, overlapTokens: 60 };
+export const MAX_TIME_SPAN_SEC = 120;
 
 interface Piece {
   text: string;
@@ -166,8 +167,11 @@ export function chunkBlocks(blocks: TextBlock[], options: Partial<ChunkOptions> 
     const real = realPieces();
     if (real.length) {
       const lastReal = real[real.length - 1]!;
+      const t0 = real[0]!.loc?.kind === 'time' ? real[0]!.loc.index : undefined;
       if (hardKey(lastReal) !== hardKey(piece)) flush(false);
       else if (piece.role === 'heading' && curChars >= minChars) flush(false);
+      // Transkript: ein Abschnitt umfasst höchstens ~2 min, damit Zitate präzise in den Player springen
+      else if (t0 !== undefined && piece.loc?.kind === 'time' && (piece.loc.index ?? 0) - t0 >= MAX_TIME_SPAN_SEC) flush(true);
       else if (curChars + piece.text.length + 2 > targetChars && curChars >= minChars) flush(true);
       else if (curChars + piece.text.length + 2 > maxChars) flush(true);
     }

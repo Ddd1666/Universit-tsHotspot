@@ -160,7 +160,7 @@ describe('Gescannte PDFs (pro Seite)', () => {
 describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', () => {
   it('MP3 -> Transkript mit Zeitbereichen in Segmenten, Zitat mit Zeit, Range-Auslieferung für den Player', async () => {
     const app = await start();
-    const r = await app.upload('Vorlesung-Thermo.mp3', media({ duration: 1500, words: ['Thermodynamik', 'Entropie'] }));
+    const r = await app.upload('Vorlesung-Thermo.mp3', media({ duration: 1500, words: ['Thermodynamik', 'Entropie', 'Wärmelehre'] }));
     const s = await waitForSource(app, r.data.source.id);
     expect(s.status).toBe('ready');
     expect(app.calls('whisper')).toHaveLength(3); // 25 min = 3 Segmente à 10 min
@@ -184,6 +184,9 @@ describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', () => {
     const job = jobOf(app, r.data.source.id)!;
     expect(job).toMatchObject({ state: 'done', progress: 1500, total: 1500 });
     expect(app.hotspot.services.db.prepare('SELECT count(*) AS n FROM media_parts').get()).toEqual({ n: 0 });
+    // Umlaute aus dem Transkript sind durchsuchbar
+    const uml = (await app.api<{ hits: { origin: string; locKind: string }[] }>('GET', '/api/search?q=W%C3%A4rmelehre')).data.hits;
+    expect(uml[0]).toMatchObject({ origin: 'transcript', locKind: 'time' });
 
     // Chat-Zitat trägt Zeit + Quellart (UI: Player springt dorthin)
     const chat = (await app.api<{ id: number }>('POST', '/api/chats', {})).data;

@@ -143,6 +143,10 @@ describe('Zeit-Chunks', () => {
     expect(cs.length).toBeGreaterThan(1);
     expect(cs.every((c) => c.origin === 'transcript' && c.locKind === 'time' && c.locStart! <= c.locEnd!)).toBe(true);
     expect(cs[0]!.locStart).toBe(0);
+    // dünnes Transkript (ein Satz alle 30 s): Abschnitte trotzdem höchstens ~2 min lang (präzise Sprünge im Player)
+    const sparse = chunkBlocks(Array.from({ length: 50 }, (_, i) => ({ text: `Satz ${i}.`, loc: { kind: 'time' as const, index: i * 30, end: i * 30 + 4 }, origin: 'transcript' as const })));
+    expect(sparse.length).toBeGreaterThan(5);
+    for (const c of sparse) expect(c.locEnd! - c.locStart!).toBeLessThanOrEqual(124);
     const mixed = chunkBlocks([
       { text: 'Text aus der Datei', loc: { kind: 'page', index: 1 } },
       { text: 'OCR-Text', loc: { kind: 'page', index: 1 }, origin: 'ocr' },

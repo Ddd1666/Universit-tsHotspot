@@ -327,7 +327,10 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
 
   app.get('/api/media/status', async () => {
     const t = s.media.tools();
-    return { tools: { ffmpeg: !!t.ffmpeg, whisper: !!t.whisper, models: Object.keys(t.models).sort() }, ...s.mediaSetup.status() };
+    const st = s.mediaSetup.status();
+    // "installiert" auch, wenn das Werkzeug anders bereitgestellt wurde (manuell nach tools/ gelegt, Mock-Betrieb)
+    const present = (id: string) => (id === 'whisper' ? !!t.whisper : id === 'ffmpeg' ? !!t.ffmpeg : id.startsWith('model-') && !!t.models[id.slice(6)]);
+    return { tools: { ffmpeg: !!t.ffmpeg, whisper: !!t.whisper, models: Object.keys(t.models).sort() }, ...st, items: st.items.map((i) => ({ ...i, installed: i.installed || present(i.id) })) };
   });
 
   app.post(

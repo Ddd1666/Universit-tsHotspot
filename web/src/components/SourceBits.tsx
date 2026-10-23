@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { fileUrl, get } from '../api';
+import { del, fileUrl, get, patch } from '../api';
 import { apiErrorText } from '../lib/errors';
-import { formatBytes, formatDate, kindIcon, locLabel } from '../lib/format';
+import { formatBytes, formatClock, formatDate, kindIcon, locLabel } from '../lib/format';
+import { AiBadge, MediaPlayer, type Seek } from './MediaBits';
 import { sourceBadge } from '../lib/status';
 import { useApp } from '../store';
 import type { ChunkPreview, Source } from '../types';
@@ -55,12 +56,15 @@ export function KindIcon({ kind }: { kind: string }) {
 
 /** Seitliches Vorschau-Panel für eine Quelle: Metadaten, Aktionen, extrahierte Abschnitte. */
 export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { sourceId: number; highlightChunk?: number | null; onClose(): void; actions?: (s: Source) => React.ReactNode }) {
-  const { t, lang, subjects } = useApp();
+  const { t, lang, subjects, ask, toast, toastError } = useApp();
   const [data, setData] = useState<{ source: Source; chunks: ChunkPreview[]; children: Source[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [seek, setSeek] = useState<Seek | null>(null);
+  const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
-    setData(null);
+    if (!reload) setData(null);
     setError(null);
     const ctrl = new AbortController();
     get<{ source: Source; chunks: ChunkPreview[]; children: Source[] }>(`/api/sources/${sourceId}${highlightChunk ? `?around=${highlightChunk}` : ''}`, ctrl.signal)
@@ -69,7 +73,34 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
         if (e.name !== 'AbortError') setError(e.code === 'not_found' ? t('src.deleted') : apiErrorText(t, e));
       });
     return () => ctrl.abort();
-  }, [sourceId, highlightChunk, t]);
+  }, [sourceId, highlightChunk, t, reload]);
+
+  // Sprung aus einem Zitat (Suche/Bibliothek) in eine Aufnahme: Player an die Stelle
+  useEffect(() => {
+    const c = data?.chunks.find((x) => x.id === highlightChunk);
+    if (c && c.locKind === 'time' && c.locStart !== null) setSeek({ t: c.locStart, n: Date.now() });
+  }, [data, highlightChunk]);
+
+  const saveChunk = async () => {
+    if (!editing) return;
+    try {
+      await patch(`/api/chunks/${editing.id}`, { text: editing.text });
+      setEditing(null);
+      toast(t('ai.saved'), 'success');
+      setReload((n) => n + 1);
+    } catch (err) {
+      toastError(err);
+    }
+  };
+  const deleteChunk = async (id: number) => {
+    if ((await ask({ title: t('ai.delete'), message: t('ai.deleteConfirm'), danger: true, confirmLabel: t('common.delete') })) !== true) return;
+    try {
+      await del(`/api/chunks/${id}`);
+      setReload((n) => n + 1);
+    } catch (err) {
+      toastError(err);
+    }
+  };
 
   useEffect(() => {
     if (!data || !highlightChunk) return;
@@ -105,6 +136,7 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
             </a>
             {actions?.(s)}
           </div>
+          {(s.kind === 'audio' || s.kind === 'video') && <MediaPlayer sourceId={s.id} kind={s.kind} seek={seek} />}
           <dl className="meta-grid">
             <dt>{t('lib.type')}</dt>
             <dd>
@@ -165,12 +197,44 @@ export function SourceDrawer({ sourceId, highlightChunk, onClose, actions }: { s
               {data.chunks.length === 0 && <p className="muted">{t('lib.noChunks')}</p>}
               <ol className="chunk-list">
                 {data.chunks.map((c) => (
-                  <li key={c.id} id={`chunk-${c.id}`} className={c.id === highlightChunk ? 'highlight' : ''}>
+                  <li key={c.id} id={`chunk-${c.id}`} className={`${c.id === highlightChunk ? 'highlight' : ''} ${c.origin ? 'ai' : ''}`}>
                     <div className="chunk-meta">
-                      {locLabel(c, t) && <span className="loc">{locLabel(c, t)}</span>}
+                      {locLabel(c, t) &&
+                        (c.locKind === 'time' && c.locStart !== null && (s.kind === 'audio' || s.kind === 'video') ? (
+                          <button className="loc link" onClick={() => setSeek({ t: c.locStart!, n: Date.now() })} title={t('media.playFrom', { t: formatClock(c.locStart) })}>
+                            ▶ {locLabel(c, t)}
+                          </button>
+                        ) : (
+                          <span className="loc">{locLabel(c, t)}</span>
+                        ))}
                       {c.heading && <span className="muted ellipsis">{c.heading}</span>}
+                      <AiBadge origin={c.origin} />
+                      {c.origin && editing?.id !== c.id && (
+                        <span className="chunk-tools">
+                          <button className="icon-btn small" onClick={() => setEditing({ id: c.id, text: c.text })} aria-label={t('ai.edit')} title={t('ai.edit')}>
+                            <Icon name="edit" size={13} />
+                          </button>
+                          <button className="icon-btn small danger" onClick={() => void deleteChunk(c.id)} aria-label={t('ai.delete')} title={t('ai.delete')}>
+                            <Icon name="trash" size={13} />
+                          </button>
+                        </span>
+                      )}
                     </div>
-                    <p>{c.text.length > 1200 ? c.text.slice(0, 1200) + ' …' : c.text}</p>
+                    {editing?.id === c.id ? (
+                      <div className="chunk-edit">
+                        <textarea className="input" value={editing.text} maxLength={20000} rows={6} onChange={(e) => setEditing({ id: c.id, text: e.target.value })} aria-label={t('ai.edit')} />
+                        <div className="row gap">
+                          <button className="btn small primary" onClick={() => void saveChunk()} disabled={!editing.text.trim()}>
+                            {t('ai.save')}
+                          </button>
+                          <button className="btn small ghost" onClick={() => setEditing(null)}>
+                            {t('common.cancel')}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p>{c.text.length > 1200 ? c.text.slice(0, 1200) + ' …' : c.text}</p>
+                    )}
                   </li>
                 ))}
               </ol>

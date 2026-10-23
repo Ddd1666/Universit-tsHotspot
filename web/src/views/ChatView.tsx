@@ -3,7 +3,8 @@ import { fileUrl, get, patch, post, type ApiError } from '../api';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { ViewHeader } from '../components/ViewHeader';
-import { formatTime, locLabel, prefersReducedMotion } from '../lib/format';
+import { formatClock, formatTime, locLabel, prefersReducedMotion } from '../lib/format';
+import { AiBadge, MediaPlayer, type Seek } from '../components/MediaBits';
 import { reloadUntilFinal } from '../lib/chat-sync';
 import { streams } from '../lib/streams';
 import { useApp } from '../store';
@@ -237,11 +238,21 @@ function MessageItem({ msg, isLast, onCite, onRegenerate, canRegenerate }: { msg
   );
 }
 
+const isTimed = (c: Citation) => c.locKind === 'time' && c.locStart !== null && (c.sourceKind === 'audio' || c.sourceKind === 'video');
+
 function SourcesPanel({ citations, active, onClose }: { citations: Citation[]; active: number; onClose(): void }) {
   const { t, navigate } = useApp();
+  const [play, setPlay] = useState<{ sourceId: number; kind: string; name: string; seek: Seek } | null>(null);
+  const nonce = useRef(0);
+  const playAt = useCallback((c: Citation) => setPlay({ sourceId: c.sourceId, kind: c.sourceKind ?? 'audio', name: c.sourceName, seek: { t: c.locStart ?? 0, n: ++nonce.current } }), []);
+  const citesRef = useRef(citations);
+  citesRef.current = citations;
   useEffect(() => {
     document.getElementById(`cite-card-${active}`)?.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
-  }, [active]);
+    // Zitat aus einer Aufnahme: Player springt direkt an die zitierte Stelle (nur bei Klick, nicht bei jedem Stream-Update)
+    const c = citesRef.current.find((x) => x.n === active);
+    if (c && isTimed(c)) playAt(c);
+  }, [active, playAt]);
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -257,6 +268,14 @@ function SourcesPanel({ citations, active, onClose }: { citations: Citation[]; a
         </button>
       </header>
       <div className="drawer-body">
+        {play && (
+          <div className="player-box">
+            <div className="small ellipsis" title={play.name}>
+              <Icon name={play.kind === 'video' ? 'video' : 'audio'} size={14} /> {play.name}
+            </div>
+            <MediaPlayer sourceId={play.sourceId} kind={play.kind} seek={play.seek} />
+          </div>
+        )}
         {citations.length === 0 && <p className="muted">{t('chat.noSources')}</p>}
         {citations.map((c) => (
           <article key={c.n} id={`cite-card-${c.n}`} className={`cite-card ${c.n === active ? 'active' : ''} ${c.used ? 'used' : ''}`}>
@@ -278,8 +297,18 @@ function SourcesPanel({ citations, active, onClose }: { citations: Citation[]; a
               </div>
             </header>
             {c.heading && <div className="muted small ellipsis">{c.heading}</div>}
+            {c.origin && (
+              <div>
+                <AiBadge origin={c.origin} />
+              </div>
+            )}
             <p className="cite-snippet">{c.snippet}</p>
             <div className="cite-actions">
+              {isTimed(c) && (
+                <button className="btn small primary" onClick={() => playAt(c)}>
+                  <Icon name="send" size={14} /> {t('media.playFrom', { t: formatClock(c.locStart!) })}
+                </button>
+              )}
               <a className="btn small" href={fileUrl(c.sourceId)} target="_blank" rel="noopener noreferrer">
                 <Icon name="external" size={14} /> {t('src.open')}
               </a>
@@ -564,7 +593,7 @@ export function ChatView({ chatId }: { chatId: number | null }) {
         </div>
       </div>
 
-      {panelMsg && <SourcesPanel citations={panelMsg.citations} active={panel!.n} onClose={() => setPanel(null)} />}
+      {panelMsg && <SourcesPanel key={panelMsg.id} citations={panelMsg.citations} active={panel!.n} onClose={() => setPanel(null)} />}
     </div>
   );
 }
