@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PROJECT_ROOT } from '../server/config.ts';
 import { AlreadyRunningError } from '../server/lock.ts';
@@ -174,7 +175,8 @@ describe('Instanz-Sperre: PID-Wiederverwendung und gleichzeitige Starts', () => 
   });
 
   it('zwei bis vier gleichzeitige Starts nach einem Absturz: genau einer übernimmt die Sperre', async () => {
-    const lockModule = path.join(PROJECT_ROOT, 'server', 'lock.ts');
+    // Windows: ESM-import() lehnt absolute Pfade ab ("C:\..." wird als URL-Schema "c:" gelesen) -> file://-URL
+    const lockModule = pathToFileURL(path.join(PROJECT_ROOT, 'server', 'lock.ts')).href;
     const code = `
       const { acquireLock, AlreadyRunningError } = await import(${JSON.stringify(lockModule)});
       const http = await import('node:http');

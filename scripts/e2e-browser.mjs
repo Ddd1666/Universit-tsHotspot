@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { ensureWebBuild, NODE_FLAGS, ROOT } from './lib.mjs';
 
 const OUT = path.resolve(process.argv[2] ?? path.join(ROOT, '.tmp', 'e2e', 'screens'));
@@ -14,7 +15,8 @@ const PORT = Number(process.env.E2E_PORT ?? 4391);
 const DATA = path.join(ROOT, '.tmp', 'e2e', `data-${Date.now()}`);
 const FILES = path.join(ROOT, '.tmp', 'e2e', 'files');
 
-const { chromium } = await import(PW);
+// absolute Pfade unter Windows nur als file://-URL importierbar
+const { chromium } = await import(path.isAbsolute(PW) ? pathToFileURL(PW).href : PW);
 const fx = await import('../tests/fixtures.ts');
 ensureWebBuild();
 fs.mkdirSync(OUT, { recursive: true });
