@@ -9,3 +9,4 @@
 *.jpg binary
 *.pdf binary
 *.zip binary
+*.sqlite binary
