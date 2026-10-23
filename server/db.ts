@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
 /**
@@ -112,29 +114,105 @@ const MIGRATIONS: string[] = [
   `
   CREATE INDEX chunks_source_state ON chunks(source_id, embed_state);
   `,
+  // v3 – Phase 2: Medien (Bilder/Scans/Audio/Video)
+  `
+  -- Herkunft eines Abschnitts: NULL = Text aus der Datei; 'ocr' | 'vision' | 'transcript' = KI-generiert (gekennzeichnet, bearbeitbar)
+  ALTER TABLE chunks ADD COLUMN origin TEXT;
+
+  -- persistente, neustartfeste Medien-Jobs (Fortschritt bleibt über Neustarts erhalten)
+  CREATE TABLE media_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    progress REAL NOT NULL DEFAULT 0,
+    total REAL,
+    detail TEXT,
+    params TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX media_jobs_state ON media_jobs(state, id);
+  CREATE INDEX media_jobs_source ON media_jobs(source_id);
+
+  -- Zwischenstände (Transkript-Segmente, OCR je Seite); werden mit dem Job/der Quelle gelöscht
+  CREATE TABLE media_parts (
+    job_id INTEGER NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (job_id, idx)
+  ) WITHOUT ROWID;
+
+  -- In Phase 1 nur gespeicherte Medien und Scans (kein Text) werden jetzt verarbeitet
+  UPDATE sources SET status = 'queued', status_detail = NULL WHERE status = 'unsupported' AND status_detail = 'phase2_media';
+  UPDATE sources SET status = 'queued', status_detail = NULL
+    WHERE kind = 'pdf' AND status = 'ready' AND (status_detail LIKE '%no_text%' OR status_detail LIKE '%partial_text%');
+  `,
 ];
+
+/** Aktuelle Schema-Version (= Anzahl Migrationen). */
+export const SCHEMA_VERSION = MIGRATIONS.length;
+const KEEP_BACKUPS = 3;
 
 export function openDb(file: string): DB {
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA synchronous = NORMAL');
-  db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
-  migrate(db);
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = NORMAL');
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA busy_timeout = 5000');
+    migrate(db, file);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   return db;
 }
 
-function migrate(db: DB): void {
-  const row = db.prepare('PRAGMA user_version').get() as { user_version: number };
-  let version = row.user_version;
-  while (version < MIGRATIONS.length) {
-    const sql = MIGRATIONS[version]!;
+export class SchemaTooNewError extends Error {
+  readonly code = 'db_too_new';
+  constructor(version: number) {
+    super(`Datenbank stammt von einer neueren Uni-Hotspot-Version (Schema ${version} > ${SCHEMA_VERSION})`);
+  }
+}
+
+/**
+ * Migrationen: idempotent (user_version), jede in einer eigenen Transaktion (Fehler -> Rollback, Version bleibt).
+ * Vor der ersten Migration einer bestehenden DB wird eine konsistente Kopie per VACUUM INTO angelegt
+ * (<Datenordner>/backups/hotspot-v<alt>-<Zeit>.sqlite, die neuesten 3 bleiben). Eine neue, leere DB braucht kein Backup.
+ */
+export function migrate(db: DB, file: string | null, migrations: readonly string[] = MIGRATIONS): { from: number; to: number; backup: string | null } {
+  const from = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  if (from > migrations.length) throw new SchemaTooNewError(from);
+  let backup: string | null = null;
+  if (from > 0 && from < migrations.length && file && file !== ':memory:') backup = backupDb(db, file, from);
+  let version = from;
+  while (version < migrations.length) {
+    const sql = migrations[version]!;
     tx(db, () => {
       db.exec(sql);
       db.exec(`PRAGMA user_version = ${version + 1}`);
     });
     version++;
   }
+  return { from, to: version, backup };
+}
+
+function backupDb(db: DB, file: string, version: number): string {
+  const dir = path.join(path.dirname(file), 'backups');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
+  let target = path.join(dir, `hotspot-v${version}-${stamp}.sqlite`);
+  for (let i = 2; fs.existsSync(target); i++) target = path.join(dir, `hotspot-v${version}-${stamp}-${i}.sqlite`);
+  db.prepare('VACUUM INTO ?').run(target);
+  const old = fs
+    .readdirSync(dir)
+    .filter((f) => /^hotspot-v\d+-.*\.sqlite$/.test(f))
+    .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t || b.f.localeCompare(a.f));
+  for (const o of old.slice(KEEP_BACKUPS)) fs.rmSync(path.join(dir, o.f), { force: true });
+  return target;
 }
 
 let savepointCounter = 0;

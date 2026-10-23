@@ -6,6 +6,7 @@ import { isValidModelName, type SettingsStore } from '../settings.ts';
 import { parseScope, type Scope, type SearchResult } from '../search/hybrid.ts';
 import { buildPrompt, usedCitationNumbers, type Citation, type HistoryMessage } from './prompt.ts';
 import { ThinkSplitter } from './think.ts';
+import type { Scheduler } from '../scheduler.ts';
 
 export interface SessionDTO {
   id: number;
@@ -125,7 +126,7 @@ export type SearchFn = (query: string, scope: Scope, limit: number, signal: Abor
 
 /** Chat-Sessions: jede Session ist ein eigener, persistenter Chat mit eigenem Wissensbereich und Modell. */
 export class ChatService {
-  private readonly deps: { db: DB; settings: SettingsStore; client: OllamaClient; search: SearchFn; bus: EventBus; log: (m: string, e?: unknown) => void };
+  private readonly deps: { db: DB; settings: SettingsStore; client: OllamaClient; search: SearchFn; bus: EventBus; log: (m: string, e?: unknown) => void; scheduler?: Scheduler };
   private titleJobs = new Set<Promise<void>>();
 
   constructor(deps: ChatService['deps']) {
@@ -236,6 +237,16 @@ export class ChatService {
    * start, meta (Quellen), thinking, token, done | error.
    */
   async respond(sessionId: number, input: { content?: string; regenerate?: boolean }, sink: StreamSink, signal: AbortSignal): Promise<void> {
+    // Chat hat Vorrang: Hintergrundjobs (Embedding, Vision, neue Whisper-Segmente) pausieren, solange geantwortet wird
+    const endChat = this.deps.scheduler?.chatStarted();
+    try {
+      await this.respondInner(sessionId, input, sink, signal);
+    } finally {
+      endChat?.();
+    }
+  }
+
+  private async respondInner(sessionId: number, input: { content?: string; regenerate?: boolean }, sink: StreamSink, signal: AbortSignal): Promise<void> {
     const { db, settings, client, search, bus } = this.deps;
     const session = this.row(sessionId);
     const s = settings.get();

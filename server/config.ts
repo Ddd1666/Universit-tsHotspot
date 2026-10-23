@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import type { ToolOverrides } from './media/tools.ts';
+import type { MediaTimeouts } from './media/audio.ts';
 
 /** Projektordner (enthält server/, web/, dist/ …). */
 export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,6 +29,29 @@ export interface AppConfig {
   logLevel: string;
   /** Ollama-URL überschreiben (Tests). Sonst aus Settings. */
   ollamaUrlOverride?: string;
+  /** Medien-Werkzeuge (whisper.cpp, ffmpeg, Modelle) – Projektordner/tools (gitignored) */
+  toolsDir: string;
+  /** Manifest der bestätigten Downloads (URLs, SHA-256, Größen) */
+  mediaManifestFile: string;
+  /** NUR Mock-/Testbetrieb: Fake-Werkzeuge statt echter Binaries */
+  mediaTools?: ToolOverrides;
+  /** Tests: kürzere Zeitlimits */
+  mediaTimeouts?: Partial<MediaTimeouts>;
+  /** Tests: Manifest-URLs auf http://127.0.0.1 erlauben (lokaler Fake-Server) */
+  mediaAllowLocalHttp?: boolean;
+}
+
+/** Fake-Werkzeuge per Umgebungsvariable – wird nur im Mock-Modus akzeptiert (klar getrennt vom echten Betrieb). */
+function mediaToolsFromEnv(mock: boolean): ToolOverrides | undefined {
+  const raw = process.env.HOTSPOT_MEDIA_TOOLS_JSON;
+  if (!raw || !mock) return undefined;
+  try {
+    const j = JSON.parse(raw) as ToolOverrides;
+    const list = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined);
+    return { ffmpeg: list(j.ffmpeg), whisper: list(j.whisper), modelsDir: typeof j.modelsDir === 'string' ? j.modelsDir : undefined };
+  } catch {
+    return undefined;
+  }
 }
 
 export function defaultDataDir(): string {
@@ -72,18 +97,22 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(s));
+  const mockOllama = process.env.HOTSPOT_MOCK_OLLAMA === '1';
   return {
     dataDir: resolveDataDir(),
     port: Number.isInteger(envPort) && envPort >= 0 && envPort < 65536 ? envPort : 4317,
     token: process.env.HOTSPOT_TOKEN && process.env.HOTSPOT_TOKEN.length >= 32
       ? process.env.HOTSPOT_TOKEN
       : crypto.randomBytes(32).toString('hex'),
-    mockOllama: process.env.HOTSPOT_MOCK_OLLAMA === '1',
+    mockOllama,
     devOrigins,
     webDir: fs.existsSync(path.join(webDir, 'index.html')) ? webDir : null,
     extractInWorker: true,
     logToFile: true,
     logLevel: process.env.HOTSPOT_LOG_LEVEL || 'info',
+    toolsDir: path.join(PROJECT_ROOT, 'tools'),
+    mediaManifestFile: path.join(PROJECT_ROOT, 'scripts', 'media-manifest.json'),
+    mediaTools: mediaToolsFromEnv(overrides.mockOllama ?? mockOllama),
     ...overrides,
   };
 }

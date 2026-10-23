@@ -38,6 +38,23 @@ describe('Übersetzungen für Server-Fehlercodes (EN-Oberfläche ohne deutsche S
     for (const code of codes) expect(i18n.split(`'detail.${code}':`).length - 1, code).toBe(2);
   });
 
+  it('Phase 2: alle Medien-/Vision-/Download-Codes (Status-Details, Job-Fehler) haben DE+EN', () => {
+    const files = [...walk(path.join(PROJECT_ROOT, 'server', 'media')), path.join(PROJECT_ROOT, 'server', 'ingest', 'detect.ts'), path.join(PROJECT_ROOT, 'server', 'ingest', 'ingest.ts')];
+    const src = files.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+    const codes = new Set<string>();
+    for (const m of src.matchAll(/'((?:media|vision|image|download|ocr)_[a-z_]+)'/g)) codes.add(m[1]!);
+    expect(codes.size).toBeGreaterThan(25);
+    for (const c of ['media_disabled', 'media_tools_missing', 'media_mismatch', 'image_format_unsupported', 'ocr_empty', 'media_failed', 'download_hash_mismatch']) expect(codes).toContain(c);
+    for (const code of codes) {
+      const key = src.includes(`HttpError(`) && new RegExp(`HttpError\\(\\d+, '${code}'`).test(src) ? 'apierr' : 'detail';
+      expect(i18n.split(`'${key}.${code}':`).length - 1, code).toBe(2);
+    }
+    // Job-Zustände/-Arten und Quellstatus "media" werden übersetzt
+    for (const k of ['queued', 'running', 'done', 'error', 'cancelled']) expect(i18n.split(`'queue.state.${k}':`).length - 1, k).toBe(2);
+    for (const k of ['image', 'scan', 'audio', 'video']) expect(i18n.split(`'queue.kind.${k}':`).length - 1, k).toBe(2);
+    expect(i18n.split(`'status.media':`).length - 1).toBe(2);
+  });
+
   it('Extraktion wirft keine Fehler ohne Code (sonst landet deutscher Text in der EN-Oberfläche)', () => {
     const dir = path.join(PROJECT_ROOT, 'server', 'ingest');
     const files = [...walk(path.join(dir, 'extractors')), path.join(dir, 'extract-run.ts')];

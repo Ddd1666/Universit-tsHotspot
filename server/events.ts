@@ -7,7 +7,10 @@ export type HubEvent =
   | { type: 'ollama'; status: unknown }
   | { type: 'chat'; session: unknown }
   | { type: 'chat-deleted'; id: number }
-  | { type: 'settings'; settings: unknown };
+  | { type: 'settings'; settings: unknown }
+  | { type: 'job'; job: unknown }
+  | { type: 'jobs'; counts: unknown }
+  | { type: 'media-setup'; setup: unknown };
 
 type Listener = (e: HubEvent) => void;
 

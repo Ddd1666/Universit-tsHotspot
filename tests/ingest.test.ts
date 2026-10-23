@@ -24,7 +24,8 @@ describe('Import & Verarbeitung', () => {
       ['noten.xlsx', makeXlsx([{ name: 'Noten', rows: [['Fach', 'Note'], ['Chemie', 2]] }]), 'ready'],
       ['liste.csv', 'a;b\n1;2\n', 'ready'],
       ['notiz.md', '# Titel\n\nMarkdown-Inhalt', 'ready'],
-      ['foto.jpg', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]), 'unsupported'],
+      // Phase 2: Bilder gehen an die Medien-Pipeline – dieses "JPEG" ist nur ein Kopf ohne Bilddaten -> sauberer Fehlercode
+      ['foto.jpg', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]), 'error'],
       ['vorlesung.mp4', Buffer.from('....ftypisom'), 'unsupported'],
       ['alt.doc', Buffer.from('d0cf11e0a1b11ae1000000', 'hex'), 'unsupported'],
       ['daten.bin', Buffer.from([0, 0, 1, 2, 0, 3]), 'unsupported'],
@@ -43,8 +44,11 @@ describe('Import & Verarbeitung', () => {
       expect(fs.existsSync(app.hotspot.services.blobs.pathFor(s.sha256))).toBe(true);
     }
     const img = list.find((s) => s.name === 'foto.jpg') as unknown as { statusDetail: string; mime: string };
-    expect(img.statusDetail).toBe('phase2_media');
+    expect(img.statusDetail).toBe('media_corrupt');
     expect(img.mime).toBe('image/jpeg');
+    // ohne installierte Werkzeuge: Video wird nur gespeichert, mit klarem Hinweis statt Fehler
+    const vid = list.find((s) => s.name === 'vorlesung.mp4') as unknown as { statusDetail: string };
+    expect(vid.statusDetail).toBe('media_tools_missing');
   });
 
   it('dedupliziert identische Inhalte (Content-Addressing)', async () => {

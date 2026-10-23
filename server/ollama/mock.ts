@@ -1,5 +1,6 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { imageSize } from '../media/image.ts';
 
 /**
  * Mock-Ollama für Tests und den Browser-Testbetrieb ohne echtes Modell (HOTSPOT_MOCK_OLLAMA=1).
@@ -161,7 +162,23 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
         if (!m || m.caps.includes('embedding')) return json(404, { error: `model "${model}" not found, try pulling it first` });
         if (body.think === true && !m.caps.includes('thinking')) return json(400, { error: `"${model}" does not support thinking` });
         lastChatModel = m.name;
-        const messages = (body.messages as { role: string; content: string }[]) ?? [];
+        const messages = (body.messages as { role: string; content: string; images?: string[] }[]) ?? [];
+        const image = messages.flatMap((x) => x.images ?? [])[0];
+        if (image !== undefined) {
+          // Vision (Phase 2): deterministische Fake-Analyse. Marker im Bild steuern Tests:
+          // MOCKTEXT:<text> -> OCR-Text, MOCKBAD -> ungültiges JSON, MOCKREJECT -> Ollama lehnt das Bild ab
+          if (!m.caps.includes('vision')) return json(500, { error: 'this model is missing data required for image input' });
+          const buf = Buffer.from(image, 'base64');
+          const raw = buf.toString('latin1');
+          if (raw.includes('MOCKREJECT')) return json(500, { error: 'failed to process image: unsupported image format' });
+          const size = imageSize(buf);
+          const marker = /MOCKTEXT:([^\0\n]{1,500})/.exec(raw)?.[1];
+          const dims = size ? `${size.width}x${size.height}` : '?';
+          const content = raw.includes('MOCKBAD')
+            ? 'Das ist kein JSON'
+            : JSON.stringify({ text: marker ?? `Mock-OCR ${dims}`, description: `Mock-Bildbeschreibung eines Bildes mit ${dims} Pixeln (Testmodus).` });
+          return json(200, { model, message: { role: 'assistant', content }, done: true });
+        }
         const answer = buildAnswer(messages);
         const lastUser = [...messages].reverse().find((x) => x.role === 'user')?.content ?? '';
         const thinkingModel = m.caps.includes('thinking');

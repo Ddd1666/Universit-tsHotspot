@@ -45,6 +45,9 @@ export interface SearchHit {
   locStart: number | null;
   locEnd: number | null;
   locLabel: string | null;
+  /** KI-generiert: 'ocr' | 'vision' | 'transcript'; null = Text aus der Datei */
+  origin?: string | null;
+  sourceKind?: string;
   /** Ausschnitt; Treffer markiert mit \u0002 … \u0003 (UI rendert <mark> ohne innerHTML) */
   snippet: string;
   score: number;
@@ -191,7 +194,8 @@ export async function hybridSearch(
   const rows = db
     .prepare(
       `SELECT c.id AS chunkId, c.source_id AS sourceId, s.name AS sourceName, s.subject_id AS subjectId, sub.name AS subjectName,
-              sub.color AS subjectColor, c.text, c.heading, c.loc_kind AS locKind, c.loc_start AS locStart, c.loc_end AS locEnd, c.loc_label AS locLabel
+              sub.color AS subjectColor, c.text, c.heading, c.loc_kind AS locKind, c.loc_start AS locStart, c.loc_end AS locEnd, c.loc_label AS locLabel,
+              c.origin, s.kind AS sourceKind
        FROM chunks c JOIN sources s ON s.id = c.source_id LEFT JOIN subjects sub ON sub.id = s.subject_id
        WHERE c.id IN (SELECT value FROM json_each(?))`,
     )

@@ -20,6 +20,9 @@ import { registerSecurity } from './http/security.ts';
 import { registerRoutes } from './http/routes.ts';
 import { registerWeb } from './http/web.ts';
 import { acquireLock, type InstanceLock } from './lock.ts';
+import { Scheduler } from './scheduler.ts';
+import { MediaService } from './media/media-service.ts';
+import { MediaSetup } from './media/setup.ts';
 
 export interface Services {
   config: AppConfig;
@@ -34,7 +37,10 @@ export interface Services {
   client: OllamaClient;
   monitor: OllamaMonitor;
   chat: ChatService;
-  queueStatus(): { ingest: IngestStats; embed: EmbedStatus };
+  scheduler: Scheduler;
+  media: MediaService;
+  mediaSetup: MediaSetup;
+  queueStatus(): { ingest: IngestStats; embed: EmbedStatus; media: { queued: number; running: number; error: number } };
   notifyQueue(): void;
   /** Ollama-Client für Suche – null, wenn Ollama bekanntermaßen offline ist (dann reine Volltextsuche). */
   searchClient(): OllamaClient | null;
@@ -111,7 +117,8 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     }, 250);
   };
 
-  const embed = new EmbedQueue({ db, store: vectors, client, settings, bus, onProgress: notifyQueue });
+  const scheduler = new Scheduler();
+  const embed = new EmbedQueue({ db, store: vectors, client, settings, bus, scheduler, onProgress: notifyQueue });
   vectors.onRepaired = () => embed.notify();
   const ingest = new IngestService({
     db,
@@ -125,6 +132,33 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     onQueueChange: notifyQueue,
     log,
   });
+  const media = new MediaService({
+    db,
+    blobs,
+    settings,
+    bus,
+    library,
+    client,
+    scheduler,
+    toolsDir: config.toolsDir,
+    toolOverrides: config.mediaTools,
+    timeouts: config.mediaTimeouts,
+    storeChunks: (id, out, isCancelled, expect) => ingest.storeChunks(id, out, isCancelled, expect),
+    onChunksStored: () => embed.notify(),
+    onChunksReplaced: () => vectors.invalidate(),
+    log,
+  });
+  ingest.media = media;
+  const mediaSetup = new MediaSetup({
+    toolsDir: config.toolsDir,
+    manifestFile: config.mediaManifestFile,
+    allowLocalHttp: config.mediaAllowLocalHttp,
+    bus,
+    log,
+    onInstalled: () => {
+      if (media.requeueStored(['media_tools_missing'])) ingest.wakeUp();
+    },
+  });
   const monitor = new OllamaMonitor(client, !!mock, (status, cameOnline) => {
     bus.emit({ type: 'ollama', status });
     if (cameOnline) embed.notify();
@@ -137,12 +171,15 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     bus,
     log,
     search: (q, scope, limit, signal) => hybridSearch({ db, vectors, client: searchClient() }, q, { scope, limit, signal }),
+    scheduler,
   });
   chat.recoverInterrupted();
 
   settings.onChange((_s, changed) => {
     if (changed.includes('ollamaUrl')) void monitor.refresh();
     if (changed.includes('embeddingModel')) notifyQueue();
+    // Medientyp eingeschaltet: bisher "ausgeschaltet" gespeicherte Medien jetzt verarbeiten
+    if (changed.some((k) => ['mediaImages', 'mediaAudio', 'mediaVideo'].includes(k)) && media.requeueStored(['media_disabled'])) ingest.wakeUp();
   });
 
   Object.assign(services, {
@@ -158,7 +195,10 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     client,
     monitor,
     chat,
-    queueStatus: () => ({ ingest: ingest.stats(), embed: embed.status() }),
+    scheduler,
+    media,
+    mediaSetup,
+    queueStatus: () => ({ ingest: ingest.stats(), embed: embed.status(), media: media.counts() }),
     notifyQueue,
     searchClient,
   } satisfies Services);
@@ -183,6 +223,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       monitor.start();
       ingest.start();
       embed.start();
+      media.start();
       maintenanceTimer = setTimeout(() => {
         if (closed) return;
         vectors.warmup();
@@ -202,6 +243,8 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       monitor.stop();
       // jeder Schritt einzeln abgesichert: Beenden darf nie mit Stacktrace scheitern
       const steps: (() => unknown)[] = [
+        () => mediaSetup.cancel(),
+        () => media.stop(),
         () => ingest.stop(),
         () => embed.stop(),
         () => pool.close(),

@@ -1,6 +1,7 @@
 /**
  * Kleine, zur Laufzeit generierte Test-Dateien (keine Binär-Fixtures im Repo).
  */
+import zlib from 'node:zlib';
 import { zipSync, strToU8 } from 'fflate';
 
 /* ------------------------------------------------------------------ PDF */
@@ -194,4 +195,114 @@ export function patchZipDeclaredSizes(zip: Buffer, size: number): Buffer {
     else if (sig === 0x02014b50) b.writeUInt32LE(size, i + 24);
   }
   return b;
+}
+
+/* ------------------------------------------------------------------ Phase 2: Medien */
+
+/**
+ * PDF mit Bildseiten (wie ein Scan): pro Seite optional Textzeilen und/oder ein Rasterbild (DeviceRGB, Flate).
+ * Bildinhalt ist ein einfaches Muster – OCR liefert hier nur das Mock-Ollama.
+ */
+export function makeScanPdf(pages: { lines?: string[]; image?: { w: number; h: number } }[]): Buffer {
+  const objs: Buffer[] = [];
+  const add = (b: Buffer | string) => {
+    objs.push(typeof b === 'string' ? Buffer.from(b, 'latin1') : b);
+    return objs.length;
+  };
+  const catalogId = add('');
+  const pagesId = add('');
+  const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  const pageIds: number[] = [];
+  for (const p of pages) {
+    const ops: string[] = [];
+    let xobj = '';
+    if (p.image) {
+      const { w, h } = p.image;
+      const raw = Buffer.alloc(w * h * 3);
+      for (let i = 0; i < w * h; i++) raw[i * 3] = raw[i * 3 + 1] = raw[i * 3 + 2] = (i % w) % 16 < 8 ? 20 : 235;
+      const data = zlib.deflateSync(raw);
+      const imgId = add(
+        Buffer.concat([
+          Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ${data.length} >>\nstream\n`, 'latin1'),
+          data,
+          Buffer.from('\nendstream', 'latin1'),
+        ]),
+      );
+      xobj = ` /XObject << /Im1 ${imgId} 0 R >>`;
+      ops.push('q 612 0 0 792 0 0 cm /Im1 Do Q');
+    }
+    if (p.lines?.length) {
+      ops.push('BT', '/F1 11 Tf', '14 TL', '72 760 Td', ...p.lines.map((l) => `(${pdfEscape(l)}) Tj T*`), 'ET');
+    }
+    const stream = ops.join('\n');
+    const contentId = add(`<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`);
+    pageIds.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792] /Contents ${contentId} 0 R /Resources << /Font << /F1 ${fontId} 0 R >>${xobj} >> >>`));
+  }
+  objs[catalogId - 1] = Buffer.from(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`, 'latin1');
+  objs[pagesId - 1] = Buffer.from(`<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pageIds.length} >>`, 'latin1');
+  const parts: Buffer[] = [Buffer.from('%PDF-1.4\n', 'latin1')];
+  let len = parts[0]!.length;
+  const offsets: number[] = [];
+  objs.forEach((body, i) => {
+    offsets.push(len);
+    const b = Buffer.concat([Buffer.from(`${i + 1} 0 obj\n`, 'latin1'), body, Buffer.from('\nendobj\n', 'latin1')]);
+    parts.push(b);
+    len += b.length;
+  });
+  let tail = `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offsets) tail += `${String(o).padStart(10, '0')} 00000 n \n`;
+  tail += `trailer\n<< /Size ${objs.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${len}\n%%EOF\n`;
+  parts.push(Buffer.from(tail, 'latin1'));
+  return Buffer.concat(parts);
+}
+
+/** Gültiges PNG (Graustufen-Muster) mit optionalem Textmarker (tEXt), den das Mock-Ollama als "OCR" zurückgibt. */
+export function makePng(w: number, h: number, marker?: string): Buffer {
+  const chunk = (type: string, body: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length);
+    const tb = Buffer.concat([Buffer.from(type, 'latin1'), body]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(tb) >>> 0);
+    return Buffer.concat([len, tb, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 0;
+  const raw = Buffer.alloc((w + 1) * h, 128);
+  for (let y = 0; y < h; y++) raw[y * (w + 1)] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    ...(marker ? [chunk('tEXt', Buffer.from(`Comment\0MOCKTEXT:${marker}`, 'latin1'))] : []),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+export interface FakeMediaSpec {
+  duration: number | null;
+  audio?: boolean;
+  video?: boolean;
+  drm?: boolean;
+  realDuration?: number;
+  words?: string[];
+  hangFile?: string;
+  /** nur Segmente ab dieser Startsekunde hängen */
+  hangFrom?: number;
+  grandchild?: boolean;
+  pidFile?: string;
+}
+
+/** "Mediendatei" für die Fake-Werkzeuge: echter Formatkopf (Sniffing) + Marker mit Steuerdaten. */
+export function makeFakeMedia(kind: 'mp3' | 'mp4' | 'wav', spec: FakeMediaSpec): Buffer {
+  const head =
+    kind === 'mp3'
+      ? Buffer.from([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 0])
+      : kind === 'wav'
+        ? Buffer.from('RIFF\0\0\0\0WAVEfmt ', 'latin1')
+        : Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom\0\0\0\0isommp41', 'latin1')]);
+  return Buffer.concat([head, Buffer.from(`\nFAKEMEDIA${JSON.stringify({ audio: true, video: kind === 'mp4', ...spec })}\n`, 'latin1')]);
 }

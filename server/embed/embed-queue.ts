@@ -3,6 +3,7 @@ import type { EventBus } from '../events.ts';
 import type { OllamaClient } from '../ollama/client.ts';
 import { OllamaError } from '../ollama/client.ts';
 import type { SettingsStore } from '../settings.ts';
+import type { Scheduler } from '../scheduler.ts';
 import type { VectorStore } from './vector-store.ts';
 
 export type EmbedState = 'idle' | 'running' | 'waiting_ollama' | 'model_missing' | 'error';
@@ -49,7 +50,7 @@ export class EmbedQueue {
   private lastEmit = 0;
   /** wird bei jedem Re-Index erhöht; Ergebnisse älterer Generationen werden verworfen */
   private generation = 0;
-  private readonly deps: { db: DB; store: VectorStore; client: OllamaClient; settings: SettingsStore; bus: EventBus; onProgress?: () => void };
+  private readonly deps: { db: DB; store: VectorStore; client: OllamaClient; settings: SettingsStore; bus: EventBus; scheduler?: Scheduler; onProgress?: () => void };
 
   constructor(deps: EmbedQueue['deps']) {
     this.deps = deps;
@@ -178,8 +179,13 @@ export class EmbedQueue {
       if (this.st.state !== 'running') this.setState('running');
       const gen = this.generation;
       const signal = this.abort.signal;
+      // Priorität: ein streamender Chat geht vor; GPU-Arbeit im Hintergrund seriell (Scheduler)
+      let release: (() => void) | null = null;
       try {
+        release = (await this.deps.scheduler?.acquire('embed', signal)) ?? null;
         const vectors = await client.embed(model, rows.map((r) => this.docText(model, r)), { signal });
+        release?.();
+        release = null;
         // Während des Wartens Re-Index/Modellwechsel? -> Ergebnis des alten Modells verwerfen
         if (gen !== this.generation || store.info().model !== model) continue;
         const dim = vectors[0]?.length ?? 0;
@@ -194,6 +200,8 @@ export class EmbedQueue {
         this.backoffMs = 0;
         this.emit();
       } catch (err) {
+        release?.(); // Slot nie über Wartezeiten/Backoff halten
+        release = null;
         if (this.stopped) break;
         if (gen !== this.generation) continue; // durch Re-Index abgebrochen -> sofort mit neuem Modell weiter
         const e = err instanceof OllamaError ? err : new OllamaError('http', (err as Error).message);
@@ -217,6 +225,8 @@ export class EmbedQueue {
           }
           this.setState('error', e.message);
         }
+      } finally {
+        release?.();
       }
     }
   }

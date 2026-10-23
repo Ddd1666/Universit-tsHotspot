@@ -81,7 +81,8 @@ describe('ZIP-Import (End-to-End)', () => {
     expect(children.every((c) => c.subjectId === subject.id)).toBe(true);
     const md = children.find((c) => c.relPath.endsWith('.md'))!;
     expect((await waitForSource(app, md.id)).status).toBe('ready');
-    expect(children.find((c) => c.relPath.endsWith('.png'))!.statusDetail).toBe('phase2_media');
+    // Bild aus dem Archiv läuft durch die Medien-Pipeline (hier nur ein PNG-Kopf -> sauberer Fehlercode)
+    expect((await waitForSource(app, children.find((c) => c.relPath.endsWith('.png'))!.id)).statusDetail).toBe('media_corrupt');
     expect(children.find((c) => c.relPath.endsWith('.zip'))!.statusDetail).toBe('nested_archive');
   });
 

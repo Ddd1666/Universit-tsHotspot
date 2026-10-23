@@ -20,6 +20,7 @@ interface Piece {
   loc?: BlockLocation;
   heading?: string;
   role?: TextBlock['role'];
+  origin?: TextBlock['origin'];
   overlap?: boolean;
 }
 
@@ -81,8 +82,10 @@ function tailForOverlap(text: string, overlapChars: number): string {
  */
 const hardKey = (p: Piece) => {
   const kind = p.loc?.kind ?? '';
-  const unit = kind === 'page' || kind === 'slide' ? `|${p.loc?.index ?? ''}` : '';
-  return `${kind}|${p.loc?.label ?? ''}${unit}`;
+  // Keyframe-Beschreibungen (Zeitpunkt) bleiben je Bild ein eigener Abschnitt
+  const unit = kind === 'page' || kind === 'slide' || (kind === 'time' && p.origin === 'vision') ? `|${p.loc?.index ?? ''}` : '';
+  // KI-generierter Text (OCR/Beschreibung/Transkript) wird nie mit Dateitext oder anderer Herkunft gemischt
+  return `${kind}|${p.loc?.label ?? ''}${unit}|${p.origin ?? ''}`;
 };
 
 /**
@@ -110,7 +113,7 @@ export function chunkBlocks(blocks: TextBlock[], options: Partial<ChunkOptions> 
       const clean = para.replace(/[ \t]+/g, ' ').trim();
       if (!clean) continue;
       for (const part of splitLong(clean, targetChars, maxChars)) {
-        pieces.push({ text: part, loc: b.loc, heading: b.heading, role: b.role });
+        pieces.push({ text: part, loc: b.loc, heading: b.heading, role: b.role, origin: b.origin });
       }
     }
   }
@@ -145,6 +148,7 @@ export function chunkBlocks(blocks: TextBlock[], options: Partial<ChunkOptions> 
       locEnd: end,
       locLabel: first.loc?.label ?? null,
       tokenEst: estimateTokens(text),
+      origin: first.origin ?? null,
     });
     const last = cur[cur.length - 1]!;
     cur = [];
@@ -152,7 +156,7 @@ export function chunkBlocks(blocks: TextBlock[], options: Partial<ChunkOptions> 
     if (withOverlap && last.loc?.kind !== 'slide' && last.role !== 'table') {
       const tail = tailForOverlap(last.text, overlapChars);
       if (tail && tail.length < last.text.length) {
-        cur.push({ text: tail, loc: last.loc, heading: last.heading, overlap: true });
+        cur.push({ text: tail, loc: last.loc, heading: last.heading, origin: last.origin, overlap: true });
         curChars = tail.length;
       }
     }
@@ -194,7 +198,18 @@ export function locationLabel(c: { locKind: string | null; locStart: number | nu
       return range ? `lines ${range}` : '';
     case 'section':
       return c.locLabel ?? '';
+    case 'time':
+      return c.locStart !== null ? `time ${formatClock(c.locStart)}-${formatClock(c.locEnd ?? c.locStart)}` : '';
     default:
       return '';
   }
+}
+
+/** Sekunden -> "mm:ss" bzw. "h:mm:ss" (ab einer Stunde). */
+export function formatClock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
 }

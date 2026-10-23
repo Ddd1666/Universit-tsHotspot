@@ -207,7 +207,7 @@ export class Library {
   chunkPreview(
     sourceId: number,
     opts: { limit?: number; aroundChunkId?: number } = {},
-  ): { id: number; ord: number; text: string; heading: string | null; locKind: string | null; locStart: number | null; locEnd: number | null; locLabel: string | null; embedState: number }[] {
+  ): { id: number; ord: number; text: string; heading: string | null; locKind: string | null; locStart: number | null; locEnd: number | null; locLabel: string | null; embedState: number; origin: string | null }[] {
     const limit = opts.limit ?? 40;
     let fromOrd = 0;
     if (opts.aroundChunkId) {
@@ -216,7 +216,7 @@ export class Library {
     }
     return this.db
       .prepare(
-        `SELECT id, ord, text, heading, loc_kind AS locKind, loc_start AS locStart, loc_end AS locEnd, loc_label AS locLabel, embed_state AS embedState
+        `SELECT id, ord, text, heading, loc_kind AS locKind, loc_start AS locStart, loc_end AS locEnd, loc_label AS locLabel, embed_state AS embedState, origin
          FROM chunks WHERE source_id = ? AND ord >= ? ORDER BY ord LIMIT ?`,
       )
       .all(sourceId, fromOrd, limit) as never;

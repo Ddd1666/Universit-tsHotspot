@@ -17,6 +17,17 @@ export interface Settings {
   zipMaxTotalMB: number;
   ingestConcurrency: number;
   embedBatchSize: number;
+  /* Phase 2 – Medien */
+  visionModel: string;
+  mediaImages: boolean;
+  mediaAudio: boolean;
+  mediaVideo: boolean;
+  mediaScanOcr: boolean;
+  mediaKeyframes: boolean;
+  mediaEmbeddedImages: boolean;
+  mediaLanguage: 'auto' | 'de' | 'en';
+  whisperModel: string;
+  mediaMaxDurationMin: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -37,6 +48,18 @@ export const DEFAULT_SETTINGS: Settings = {
   zipMaxTotalMB: 1024,
   ingestConcurrency: 1,
   embedBatchSize: 16,
+  visionModel: 'gemma3:4b',
+  mediaImages: true,
+  mediaAudio: true,
+  mediaVideo: true,
+  mediaScanOcr: true,
+  // teuer (viele Vision-Aufrufe) -> standardmäßig aus
+  mediaKeyframes: false,
+  mediaEmbeddedImages: false,
+  mediaLanguage: 'auto',
+  // Default bis zur Laptop-Messung (small vs. medium-q5_0): schnellere Variante
+  whisperModel: 'small',
+  mediaMaxDurationMin: 240,
 };
 
 type Validator = (v: unknown) => unknown;
@@ -101,6 +124,19 @@ const VALIDATORS: Record<keyof Settings, Validator> = {
   zipMaxTotalMB: int(1, 16384),
   ingestConcurrency: int(1, 2),
   embedBatchSize: int(1, 128),
+  visionModel: modelName,
+  mediaImages: bool,
+  mediaAudio: bool,
+  mediaVideo: bool,
+  mediaScanOcr: bool,
+  mediaKeyframes: bool,
+  mediaEmbeddedImages: bool,
+  mediaLanguage: oneOf('auto', 'de', 'en'),
+  whisperModel: (v) => {
+    if (typeof v !== 'string' || !/^[a-z0-9._-]{1,40}$/.test(v)) throw new Error('ungültiger Modellname');
+    return v;
+  },
+  mediaMaxDurationMin: int(1, 1440),
 };
 
 export class SettingsStore {

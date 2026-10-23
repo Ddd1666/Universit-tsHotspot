@@ -36,6 +36,8 @@ export interface RunningModel {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Base64-Bilder (Vision-Modelle) */
+  images?: string[];
 }
 
 export interface ChatRequest {
@@ -44,6 +46,8 @@ export interface ChatRequest {
   think?: boolean;
   options?: Record<string, unknown>;
   keep_alive?: string;
+  /** strukturierte Ausgabe: JSON-Schema */
+  format?: unknown;
 }
 
 export interface ChatDelta {
@@ -219,10 +223,11 @@ export class OllamaClient {
   }
 
   /** Nicht-streamender, kurzer Chat-Aufruf (z. B. Auto-Titel). */
-  async chatOnce(req: ChatRequest, timeoutMs: number): Promise<string> {
+  async chatOnce(req: ChatRequest, timeoutMs: number, signal?: AbortSignal): Promise<string> {
     const r = await this.request<{ message?: { content?: string } }>('/api/chat', {
       body: { ...req, stream: false },
       timeoutMs,
+      signal,
       model: req.model,
     });
     return r.message?.content ?? '';

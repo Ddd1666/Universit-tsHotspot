@@ -8,6 +8,7 @@ import { hasModel } from '../ollama/status.ts';
 import { TooLargeError } from '../storage.ts';
 import { DEFAULT_SETTINGS } from '../settings.ts';
 import { hybridSearch, parseScope } from '../search/hybrid.ts';
+import { estimateTokens } from '../ingest/chunker.ts';
 import { openSse } from './sse.ts';
 import type { Services } from '../app.ts';
 
@@ -19,10 +20,14 @@ function contentDisposition(kind: 'inline' | 'attachment', name: string): string
   return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
+/** Audio/Video, die der Player inline abspielen darf (MIME stammt aus der eigenen Erkennung, nie aus der Anfrage). */
+const MEDIA_INLINE = ['audio/mpeg', 'audio/wav', 'audio/mp4', 'audio/ogg', 'audio/flac', 'audio/aac', 'video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska', 'video/x-msvideo'];
+
 /** Nur diese Typen dürfen im Browser "geöffnet" werden; alles andere wird als Download erzwungen (kein HTML/SVG -> kein XSS). */
 function inlineType(kind: string, mime: string): string | null {
   if (kind === 'pdf') return 'application/pdf';
-  if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) return mime;
+  if (['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'].includes(mime)) return mime;
+  if ((kind === 'audio' || kind === 'video') && MEDIA_INLINE.includes(mime)) return mime;
   if (['text', 'markdown', 'code', 'json', 'csv'].includes(kind)) return 'text/plain; charset=utf-8';
   return null;
 }
@@ -247,9 +252,107 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
         reply.header('content-security-policy', "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'");
       }
       reply.type(inline ?? 'application/octet-stream');
+      // HTTP-Range (Player springt zur Zitatstelle): genau ein Bereich; Mehrfachbereiche werden ignoriert (200, ganze Datei)
+      const size = fs.statSync(file).size;
+      reply.header('accept-ranges', 'bytes');
+      const range = req.headers.range;
+      const m = typeof range === 'string' && !range.includes(',') ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null;
+      if (m && (m[1] !== '' || m[2] !== '')) {
+        const start = m[1] === '' ? Math.max(0, size - Number(m[2])) : Number(m[1]);
+        const end = m[1] === '' || m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) {
+          return reply.code(416).header('content-range', `bytes */${size}`).type('application/json').send({ error: 'range_not_satisfiable', message: 'Bereich ungültig' });
+        }
+        reply.code(206).header('content-range', `bytes ${start}-${end}/${size}`).header('content-length', end - start + 1);
+        return reply.send(fs.createReadStream(file, { start, end }));
+      }
+      reply.header('content-length', size);
       return reply.send(fs.createReadStream(file));
     },
   );
+
+  /* ------------------------------------------------------------ KI-generierte Abschnitte (bearbeiten/löschen) */
+
+  const aiChunk = (id: number) => {
+    const row = s.db.prepare('SELECT id, source_id AS sourceId, origin FROM chunks WHERE id = ?').get(id) as { id: number; sourceId: number; origin: string | null } | undefined;
+    if (!row) throw new HttpError(404, 'not_found', 'Abschnitt nicht gefunden');
+    if (!row.origin) throw new HttpError(409, 'chunk_not_ai', 'Nur KI-generierte Abschnitte sind bearbeitbar');
+    return row;
+  };
+  const emitSource = (id: number) => {
+    const source = s.library.getSource(id);
+    if (source) s.bus.emit({ type: 'source', source });
+  };
+
+  app.patch(
+    '/api/chunks/:id',
+    { schema: { params: idParam, body: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 20000 } }, required: ['text'], additionalProperties: false } } },
+    async (req) => {
+      const row = aiChunk((req.params as { id: number }).id);
+      const text = (req.body as { text: string }).text.trim();
+      if (!text) throw new HttpError(400, 'empty', 'Text ist leer');
+      // Text geändert -> Vektor ist veraltet: verwerfen und neu einbetten lassen (FTS folgt per Trigger)
+      s.db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(row.id);
+      s.db.prepare('UPDATE chunks SET text = ?, token_est = ?, embed_state = 0 WHERE id = ?').run(text, estimateTokens(text), row.id);
+      s.vectors.invalidate();
+      s.embed.notify();
+      emitSource(row.sourceId);
+      return { ok: true };
+    },
+  );
+
+  app.delete('/api/chunks/:id', { schema: { params: idParam } }, async (req) => {
+    const row = aiChunk((req.params as { id: number }).id);
+    s.db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(row.id);
+    s.db.prepare('DELETE FROM chunks WHERE id = ?').run(row.id);
+    s.db.prepare('UPDATE sources SET chunk_count = max(0, chunk_count - 1) WHERE id = ?').run(row.sourceId);
+    s.vectors.invalidate();
+    emitSource(row.sourceId);
+    return { ok: true };
+  });
+
+  /* ------------------------------------------------------------ Medien: Jobs & Werkzeuge */
+
+  app.get('/api/jobs', async () => ({ jobs: s.media.list(), counts: s.media.counts(), scheduler: s.scheduler.snapshot() }));
+
+  app.post('/api/jobs/:id/cancel', { schema: { params: idParam } }, async (req) => {
+    if (!s.media.cancel((req.params as { id: number }).id)) throw new HttpError(409, 'job_not_active', 'Job läuft nicht (mehr)');
+    return { ok: true };
+  });
+
+  app.post('/api/jobs/:id/retry', { schema: { params: idParam } }, async (req) => {
+    if (!s.media.retry((req.params as { id: number }).id)) throw new HttpError(409, 'job_not_retryable', 'Job kann nicht erneut gestartet werden');
+    return { ok: true };
+  });
+
+  app.get('/api/media/status', async () => {
+    const t = s.media.tools();
+    return { tools: { ffmpeg: !!t.ffmpeg, whisper: !!t.whisper, models: Object.keys(t.models).sort() }, ...s.mediaSetup.status() };
+  });
+
+  app.post(
+    '/api/media/setup',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { ids: { type: 'array', items: { type: 'string', maxLength: 60 }, maxItems: 20 }, confirm: { type: 'boolean' } },
+          required: ['ids'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (req) => {
+      const b = req.body as { ids: string[]; confirm?: boolean };
+      s.mediaSetup.start(b.ids, b.confirm === true);
+      return { ok: true };
+    },
+  );
+
+  app.post('/api/media/setup/cancel', async () => {
+    await s.mediaSetup.cancel();
+    return { ok: true };
+  });
 
   /* ------------------------------------------------------------ Import */
 

@@ -56,6 +56,8 @@ export class IngestService {
   private active = new Map<number, { cancel: () => void; batchId: string | null; name: string }>();
   /** vom Nutzer abgebrochene/gelöschte Jobs (im Unterschied zum Abbruch durch Beenden der App) */
   private userCancelled = new Set<number>();
+  /** Medien-Pipeline (Phase 2): übernimmt Bilder/Audio/Video und Scan-Seiten von PDFs */
+  media: { handleSource(row: { id: number; kind: string; mime: string }): void; afterPdf(sourceId: number, ocrPages: number[], pages: number | null): void } | null = null;
   private readonly deps: {
     db: DB;
     blobs: BlobStore;
@@ -103,6 +105,11 @@ export class IngestService {
     return true;
   }
 
+  /** Neu eingereihte Quellen (z. B. nach Installation der Medien-Werkzeuge) sofort verarbeiten. */
+  wakeUp(): void {
+    this.wake();
+  }
+
   private wake(): void {
     for (const w of [...this.wakers]) w();
   }
@@ -124,7 +131,7 @@ export class IngestService {
     const dup = library.findBySha(put.sha256);
     if (dup) return { status: 'duplicate', source: dup };
     const det = detectKind(name, put.head);
-    const reason = unsupportedReason(det.kind);
+    const reason = det.reason ?? unsupportedReason(det.kind, det.mime);
     const r = db
       .prepare(
         `INSERT INTO sources(subject_id, parent_id, sha256, name, rel_path, size, mime, kind, status, status_detail, batch_id, imported_at)
@@ -157,7 +164,9 @@ export class IngestService {
     const { db, library, bus } = this.deps;
     const src = library.getSource(id);
     if (!src) throw new HttpError(404, 'not_found', 'Quelle nicht gefunden');
-    if (!['error', 'cancelled', 'ready'].includes(src.status)) throw new HttpError(409, 'not_retryable', 'Quelle kann nicht erneut verarbeitet werden');
+    // "nur gespeicherte" Medien (Werkzeuge fehlten / Typ war aus) dürfen ebenfalls erneut versucht werden
+    const media = ['image', 'audio', 'video'].includes(src.kind) && src.status === 'unsupported' && src.statusDetail !== 'image_format_unsupported';
+    if (!['error', 'cancelled', 'ready'].includes(src.status) && !media) throw new HttpError(409, 'not_retryable', 'Quelle kann nicht erneut verarbeitet werden');
     db.prepare("UPDATE sources SET status = 'queued', status_detail = NULL WHERE id = ?").run(id);
     const updated = library.getSource(id)!;
     bus.emit({ type: 'source', source: updated });
@@ -193,6 +202,7 @@ export class IngestService {
       this.deps.onQueueChange();
       try {
         if (row.kind === 'zip') await this.expandZip(row);
+        else if (['image', 'audio', 'video'].includes(row.kind)) this.handleMedia(row);
         else await this.extract(row);
       } catch (err) {
         if (this.stopped && !this.userCancelled.has(row.id)) {
@@ -238,6 +248,11 @@ export class IngestService {
     if (s) this.deps.bus.emit({ type: 'source', source: s });
   }
 
+  private handleMedia(row: SourceRow): void {
+    if (this.media) this.media.handleSource(row);
+    else this.setStatus(row.id, 'unsupported', 'media_tools_missing');
+  }
+
   private async extract(row: SourceRow): Promise<void> {
     const { blobs, pool } = this.deps;
     const handle = pool.run(
@@ -249,6 +264,7 @@ export class IngestService {
     let cancelled = false;
     this.active.set(row.id, { cancel: () => (cancelled = true), batchId: row.batch_id, name: row.name });
     await this.storeChunks(row.id, out, () => cancelled || this.stopped);
+    if (out.ocrPages?.length && !cancelled && !this.stopped) this.media?.afterPdf(row.id, out.ocrPages, out.pages);
   }
 
   /**
@@ -256,9 +272,9 @@ export class IngestService {
    * blockieren so weder API noch Chat-Streaming. FTS-Trigger aktualisieren den Volltextindex automatisch.
    * Bei Abbruch/Löschen werden bereits geschriebene Chunks wieder entfernt.
    */
-  async storeChunks(sourceId: number, out: ExtractOutput, isCancelled: () => boolean = () => false): Promise<void> {
+  async storeChunks(sourceId: number, out: ExtractOutput, isCancelled: () => boolean = () => false, expectStatus = 'processing'): Promise<void> {
     const { db } = this.deps;
-    const stillProcessing = () => !isCancelled() && !!db.prepare("SELECT 1 FROM sources WHERE id = ? AND status = 'processing'").get(sourceId);
+    const stillProcessing = () => !isCancelled() && !!db.prepare('SELECT 1 FROM sources WHERE id = ? AND status = ?').get(sourceId, expectStatus);
     if (!stillProcessing()) return; // zwischenzeitlich gelöscht/abgebrochen
     tx(db, () => {
       const old = db.prepare('DELETE FROM embeddings WHERE source_id = ?').run(sourceId);
@@ -266,8 +282,8 @@ export class IngestService {
       if (Number(old.changes) > 0) this.deps.onChunksReplaced();
     });
     const ins = db.prepare(
-      `INSERT INTO chunks(source_id, ord, text, heading, loc_kind, loc_start, loc_end, loc_label, token_est, embed_state)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO chunks(source_id, ord, text, heading, loc_kind, loc_start, loc_end, loc_label, token_est, embed_state, origin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
     );
     try {
       for (let start = 0; start < out.chunks.length; start += STORE_BATCH) {
@@ -279,7 +295,7 @@ export class IngestService {
           const end = Math.min(out.chunks.length, start + STORE_BATCH);
           for (let i = start; i < end; i++) {
             const c = out.chunks[i]!;
-            ins.run(sourceId, i, c.text, c.heading, c.locKind, c.locStart, c.locEnd, c.locLabel, c.tokenEst);
+            ins.run(sourceId, i, c.text, c.heading, c.locKind, c.locStart, c.locEnd, c.locLabel, c.tokenEst, c.origin ?? null);
           }
         });
       }
@@ -292,12 +308,13 @@ export class IngestService {
       throw err;
     }
     const detail = out.chunks.length === 0 ? 'no_text' : out.warnings.filter((w) => w !== 'no_text').join(',') || null;
-    db.prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, page_count = ?, processed_at = ? WHERE id = ? AND status = 'processing'").run(
+    db.prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, page_count = coalesce(?, page_count), processed_at = ? WHERE id = ? AND status = ?").run(
       detail,
       out.chunks.length,
       out.pages,
       Date.now(),
       sourceId,
+      expectStatus,
     );
     if (out.chunks.length) this.deps.onChunksStored();
   }
@@ -341,7 +358,7 @@ export class IngestService {
         }
         const name = sanitizeFileName(entry.name);
         const det = detectKind(name, put.head);
-        const reason = det.kind === 'zip' ? 'nested_archive' : unsupportedReason(det.kind);
+        const reason = det.kind === 'zip' ? 'nested_archive' : (det.reason ?? unsupportedReason(det.kind, det.mime));
         const r = insert.run(
           row.subject_id,
           row.id,

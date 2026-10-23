@@ -6,6 +6,7 @@ export interface ExtractOutput {
   chunks: ChunkDraft[];
   pages: number | null;
   warnings: string[];
+  ocrPages?: number[];
 }
 
 /** Extraktion + Chunking (CPU-lastig) – läuft im Worker-Thread. */
@@ -14,5 +15,5 @@ export async function runExtraction(input: ExtractInput, limits: ExtractLimits):
   if (!extractor) throw codedError(`Kein Extractor für ${input.kind}`, 'no_extractor');
   const result = await extractor.extract(input, limits);
   const chunks = chunkBlocks(result.blocks);
-  return { chunks, pages: result.meta?.pages ?? null, warnings: result.warnings ?? [] };
+  return { chunks, pages: result.meta?.pages ?? null, warnings: result.warnings ?? [], ocrPages: result.ocrPages };
 }

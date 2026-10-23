@@ -58,6 +58,8 @@ export async function startTestApp(overrides: Partial<AppConfig> = {}): Promise<
     webDir: null,
     logToFile: false,
     extractInWorker: true,
+    // nie die echten Werkzeuge des Entwicklerrechners benutzen
+    toolsDir: path.join(dataDir, 'tools'),
     ...overrides,
   });
   const hotspot = await createHotspot(config);

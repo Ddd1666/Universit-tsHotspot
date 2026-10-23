@@ -74,6 +74,7 @@ export const pdfExtractor: Extractor = {
     const blocks: TextBlock[] = [];
     const warnings: string[] = [];
     let emptyPages = 0;
+    const ocrPages: number[] = [];
     const numPages = pdf.numPages;
     try {
       for (let p = 1; p <= numPages; p++) {
@@ -81,6 +82,8 @@ export const pdfExtractor: Extractor = {
         const content = await page.getTextContent();
         const paragraphs = itemsToParagraphs(content.items as PdfTextItem[]);
         if (!paragraphs.length) emptyPages++;
+        // Seite ohne nennenswerte Textschicht -> Kandidat für Scan-OCR (pro Seite entschieden, nicht pro Datei)
+        if (paragraphs.join('').replace(/\s+/g, '').length < MIN_TEXT_CHARS) ocrPages.push(p);
         for (const text of paragraphs) blocks.push({ text, loc: { kind: 'page', index: p } });
         page.cleanup();
       }
@@ -89,6 +92,9 @@ export const pdfExtractor: Extractor = {
     }
     if (emptyPages > 0 && emptyPages === numPages) warnings.push('no_text');
     else if (emptyPages > numPages / 2) warnings.push('partial_text');
-    return { blocks, meta: { pages: numPages }, warnings };
+    return { blocks, meta: { pages: numPages }, warnings, ocrPages };
   },
 };
+
+/** Weniger sichtbare Zeichen auf einer Seite = "kein Text" (Scan, ggf. mit Seitenzahl/Kopfzeile). */
+export const MIN_TEXT_CHARS = 40;

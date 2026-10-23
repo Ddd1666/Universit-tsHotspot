@@ -83,9 +83,48 @@ export interface Detected {
   kind: SourceKind;
   mime: string;
   ext: string;
+  /** Grund, warum die Datei nur gespeichert wird (z. B. Endung passt nicht zum Inhalt) */
+  reason?: string;
 }
 
-/** Formaterkennung: Dateiendung + Magic Bytes (Endung kann lügen; Inhalt hat Vorrang bei PDF/ZIP/Bildern). */
+/**
+ * Medien-Signaturen (Magic Bytes). Inhalt hat Vorrang vor der Endung; Medien-Endung ohne passende Signatur
+ * wird nicht an ffmpeg/Vision gegeben (Sniffing: "Endung ≠ Inhalt").
+ */
+export function sniffMedia(h: Buffer, ext = ''): { kind: 'image' | 'audio' | 'video'; mime: string } | null {
+  const at = (o: number, s: string) => h.length >= o + s.length && h.subarray(o, o + s.length).toString('latin1') === s;
+  if (at(0, 'GIF87a') || at(0, 'GIF89a')) return { kind: 'image', mime: 'image/gif' };
+  if (at(0, 'RIFF') && at(8, 'WEBP')) return { kind: 'image', mime: 'image/webp' };
+  if (at(0, 'RIFF') && at(8, 'WAVE')) return { kind: 'audio', mime: 'audio/wav' };
+  if (at(0, 'RIFF') && at(8, 'AVI ')) return { kind: 'video', mime: 'video/x-msvideo' };
+  if (at(0, 'BM') && h.length >= 18 && [12, 40, 52, 56, 108, 124].includes(h.readUInt32LE(14))) return { kind: 'image', mime: 'image/bmp' };
+  if (at(0, 'II*\0') || at(0, 'MM\0*')) return { kind: 'image', mime: 'image/tiff' };
+  if (at(4, 'ftyp')) {
+    const brand = h.subarray(8, 12).toString('latin1');
+    if (/^(heic|heix|hevc|heim|heis|mif1|msf1|avif)$/.test(brand)) return { kind: 'image', mime: 'image/heic' };
+    if (/^M4[ABP] $/.test(brand)) return { kind: 'audio', mime: 'audio/mp4' };
+    if (brand === 'qt  ') return { kind: 'video', mime: 'video/quicktime' };
+    // MP4-Container: Endung entscheidet zwischen Audio (.m4a) und Video
+    return EXT_KIND[ext]?.[0] === 'audio' ? { kind: 'audio', mime: 'audio/mp4' } : { kind: 'video', mime: 'video/mp4' };
+  }
+  if (h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3) {
+    return h.subarray(0, 64).includes('webm') ? { kind: 'video', mime: 'video/webm' } : { kind: 'video', mime: 'video/x-matroska' };
+  }
+  if (at(0, 'OggS')) return { kind: 'audio', mime: 'audio/ogg' };
+  if (at(0, 'fLaC')) return { kind: 'audio', mime: 'audio/flac' };
+  if (at(0, 'ID3')) return { kind: 'audio', mime: 'audio/mpeg' };
+  // MPEG-Frame-Sync ohne ID3 ist ein schwaches Signal (kollidiert z. B. mit UTF-16-BOM) -> nur zusammen mit Audio-Endung
+  if (h[0] === 0xff && h[1] !== undefined && (h[1] & 0xe0) === 0xe0 && EXT_KIND[ext]?.[0] === 'audio') {
+    if ((h[1] & 0xf6) === 0xf0) return { kind: 'audio', mime: 'audio/aac' };
+    if ((h[1] & 0x06) !== 0) return { kind: 'audio', mime: 'audio/mpeg' };
+  }
+  return null;
+}
+
+/** Diese Bildformate gibt Uni-Hotspot an das Vision-Modell (TIFF/HEIC/SVG bräuchten Konverter -> nur gespeichert). */
+export const VISION_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'];
+
+/** Formaterkennung: Dateiendung + Magic Bytes (Endung kann lügen; Inhalt hat Vorrang bei PDF/ZIP/Medien). */
 export function detectKind(name: string, head: Buffer): Detected {
   const ext = extOf(name);
   const magic = head.subarray(0, 8);
@@ -98,8 +137,14 @@ export function detectKind(name: string, head: Buffer): Detected {
   if (isPdf) return { kind: 'pdf', mime: 'application/pdf', ext };
   if (isPng) return { kind: 'image', mime: 'image/png', ext };
   if (isJpeg) return { kind: 'image', mime: 'image/jpeg', ext };
+  const media = sniffMedia(head, ext);
+  if (media) return { ...media, ext };
 
   const known = EXT_KIND[ext];
+  // SVG ist Text (XML) – gespeichert, aber nicht an das Vision-Modell
+  if (ext === 'svg' && looksLikeText(head)) return { kind: 'image', mime: 'image/svg+xml', ext };
+  // Medien-Endung, aber Inhalt passt zu keinem Medienformat (z. B. umbenannte HTML-/EXE-Datei)
+  if (known && ['image', 'audio', 'video'].includes(known[0])) return { kind: 'other', mime: 'application/octet-stream', ext, reason: 'media_mismatch' };
   if (isZip) {
     if (known && ['docx', 'pptx', 'xlsx', 'odt', 'odp', 'ods'].includes(known[0])) return { kind: known[0], mime: known[1], ext };
     return { kind: 'zip', mime: 'application/zip', ext };
@@ -112,7 +157,7 @@ export function detectKind(name: string, head: Buffer): Detected {
   if (known) {
     // Office-Endung ohne ZIP-Signatur -> beschädigt/fremd: als "other" speichern
     if (['docx', 'pptx', 'xlsx', 'odt', 'odp', 'ods', 'zip'].includes(known[0])) return { kind: 'other', mime: 'application/octet-stream', ext };
-    if (['image', 'audio', 'video', 'legacy-office'].includes(known[0])) return { kind: known[0], mime: known[1], ext };
+    if (known[0] === 'legacy-office') return { kind: known[0], mime: known[1], ext };
     if (looksLikeText(head)) return { kind: known[0], mime: known[1], ext };
     return { kind: 'other', mime: 'application/octet-stream', ext };
   }
@@ -121,13 +166,14 @@ export function detectKind(name: string, head: Buffer): Detected {
   return { kind: 'other', mime: 'application/octet-stream', ext };
 }
 
-/** Gründe, warum eine Datei (in Phase 1) nur gespeichert, aber nicht indexiert wird. */
-export function unsupportedReason(kind: SourceKind): string | null {
+/**
+ * Gründe, warum eine Datei nur gespeichert, aber nicht indexiert wird. Bilder/Audio/Video laufen über die
+ * Medien-Pipeline (Entscheidung beim Verarbeiten: Werkzeuge vorhanden? Typ eingeschaltet?).
+ */
+export function unsupportedReason(kind: SourceKind, mime = ''): string | null {
   switch (kind) {
     case 'image':
-    case 'audio':
-    case 'video':
-      return 'phase2_media';
+      return VISION_IMAGE_MIMES.includes(mime) ? null : 'image_format_unsupported';
     case 'legacy-office':
       return 'legacy_office';
     case 'encrypted-office':

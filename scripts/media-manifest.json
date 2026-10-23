@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "platform": "win32-x64",
+  "_comment": "Bestätigte Downloads für Phase 2 (Medien). SHA-256 und Größen aus den Release-Metadaten (GitHub-Asset-Digest bzw. Hugging-Face-LFS-OID), Stand 2026-10-23. Nur diese URLs werden geladen; Ziel ist immer <Projektordner>/tools.",
+  "items": [
+    {
+      "id": "whisper",
+      "label": "whisper.cpp v1.9.2 – CPU-Build Windows x64 (whisper-cli.exe + DLLs)",
+      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip",
+      "sha256": "49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a",
+      "size": 8194445,
+      "type": "zip",
+      "target": "whisper",
+      "files": ["*.exe", "*.dll"],
+      "check": "whisper/whisper-cli.exe"
+    },
+    {
+      "id": "ffmpeg",
+      "label": "ffmpeg 9.0.2 essentials (gyan.dev, Windows x64) – nur ffmpeg.exe",
+      "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+      "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+      "size": 114768076,
+      "type": "zip",
+      "target": "ffmpeg",
+      "files": ["bin/ffmpeg.exe"],
+      "check": "ffmpeg/ffmpeg.exe"
+    },
+    {
+      "id": "model-small",
+      "label": "Whisper-Modell „small“ (mehrsprachig, Standard)",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+      "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "size": 487601967,
+      "type": "file",
+      "target": "models/ggml-small.bin",
+      "check": "models/ggml-small.bin"
+    },
+    {
+      "id": "model-medium-q5_0",
+      "label": "Whisper-Modell „medium“ quantisiert q5_0 (besser für Deutsch, langsamer)",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
+      "sha256": "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+      "size": 539212467,
+      "type": "file",
+      "target": "models/ggml-medium-q5_0.bin",
+      "check": "models/ggml-medium-q5_0.bin"
+    }
+  ]
+}

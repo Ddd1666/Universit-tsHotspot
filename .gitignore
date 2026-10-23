@@ -8,6 +8,8 @@ data/
 .tmp/
 .cache/
 hotspot.config.json
+# Medien-Werkzeuge (whisper.cpp, ffmpeg, Modelle) – per scripts/setup-media.mjs geladen
+tools/
 
 # Logs
 *.log

@@ -26,7 +26,11 @@ export type SourceKind =
   | 'encrypted-office'
   | 'other';
 
-export type LocKind = 'page' | 'slide' | 'sheet' | 'rows' | 'lines' | 'section';
+/** 'time' = Zeitbereich in Sekunden (Audio/Video-Transkript, Keyframes) */
+export type LocKind = 'page' | 'slide' | 'sheet' | 'rows' | 'lines' | 'section' | 'time';
+
+/** Herkunft KI-generierter Abschnitte (null/undefined = Text aus der Datei). */
+export type ChunkOrigin = 'ocr' | 'vision' | 'transcript';
 
 export interface BlockLocation {
   kind: LocKind;
@@ -44,12 +48,15 @@ export interface TextBlock {
   /** nächstliegende Überschrift (Abschnitt / Folientitel) */
   heading?: string;
   role?: 'heading' | 'body' | 'notes' | 'table';
+  origin?: ChunkOrigin;
 }
 
 export interface ExtractResult {
   blocks: TextBlock[];
   meta?: { pages?: number; title?: string };
   warnings?: string[];
+  /** PDF: Seiten ohne/mit sehr wenig Textschicht (Kandidaten für Scan-OCR) */
+  ocrPages?: number[];
 }
 
 export interface ExtractInput {
@@ -90,6 +97,7 @@ export interface ChunkDraft {
   locEnd: number | null;
   locLabel: string | null;
   tokenEst: number;
+  origin?: ChunkOrigin | null;
 }
 
 /**
