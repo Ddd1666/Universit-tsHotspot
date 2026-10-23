@@ -343,6 +343,34 @@ describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', () => {
   });
 });
 
+describe('Datei-Route mit HTTP-Range', () => {
+  it('Suffix-, offene und ungültige Bereiche; Token- und ID-Schutz bleiben', async () => {
+    const app = await start({}, {});
+    await app.api('PUT', '/api/settings', { mediaAudio: false }); // nur speichern
+    const data = media({ duration: 10 });
+    const r = await app.upload('clip.mp3', data);
+    const url = (q = '') => `${app.url}/api/sources/${r.data.source.id}/file?t=${app.token}${q}`;
+    const get = (range?: string, u = url()) => fetch(u, { headers: range ? { range } : {} });
+    const n = data.length;
+    const suffix = await get('bytes=-4');
+    expect([suffix.status, suffix.headers.get('content-range')]).toEqual([206, `bytes ${n - 4}-${n - 1}/${n}`]);
+    expect(Buffer.from(await suffix.arrayBuffer())).toEqual(data.subarray(n - 4));
+    const open = await get('bytes=10-');
+    expect([open.status, Number(open.headers.get('content-length'))]).toEqual([206, n - 10]);
+    const past = await get(`bytes=${n + 5}-`);
+    expect([past.status, past.headers.get('content-range')]).toEqual([416, `bytes */${n}`]);
+    expect((await get('bytes=5-2')).status).toBe(416);
+    // Mehrfachbereiche/Unsinn: ganze Datei (200), kein Fehler
+    expect((await get('bytes=0-1,4-5')).status).toBe(200);
+    expect((await get('items=0-1')).status).toBe(200);
+    const full = await get();
+    expect([full.status, full.headers.get('accept-ranges'), Number(full.headers.get('content-length'))]).toEqual([200, 'bytes', n]);
+    expect(full.headers.get('content-security-policy')).toContain('sandbox');
+    expect((await fetch(`${app.url}/api/sources/${r.data.source.id}/file`, { headers: { range: 'bytes=0-1' } })).status).toBe(401);
+    expect([400, 401, 404]).toContain((await fetch(`${app.url}/api/sources/..%2F..%2Fhotspot.sqlite/file?t=${app.token}`)).status);
+  });
+});
+
 describe('Priorität und KI-Kennzeichnung', () => {
   it('Chat hat Vorrang: während eine Antwort streamt, startet kein Vision-Aufruf', async () => {
     const app = await start();

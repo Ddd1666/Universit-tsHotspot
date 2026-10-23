@@ -3,7 +3,6 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
 import { codedError } from '../ingest/types.ts';
 import { openZip } from '../ingest/zip.ts';
 
@@ -140,25 +139,27 @@ export async function download(
       const append = res.status === 206 && have > 0;
       if (!append) have = 0;
       let received = have;
-      const meter = new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, ctrl) {
+      // Jeder empfangene Block wird sofort geschrieben: bricht die Verbindung ab, bleibt der Teil-Download erhalten
+      const fh = await fsp.open(part, append ? 'a' : 'w');
+      let tooBig = false;
+      try {
+        for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
           received += chunk.byteLength;
           if (received > item.size) {
-            ctrl.error(codedError('Datei größer als im Manifest angegeben', 'download_size_mismatch'));
-            return;
+            tooBig = true;
+            break;
           }
+          await fh.write(chunk);
           opts.onProgress?.(received, item.size);
-          ctrl.enqueue(chunk);
-        },
-      });
-      try {
-        await pipeline(Readable.fromWeb(res.body.pipeThrough(meter) as never), fs.createWriteStream(part, { flags: append ? 'a' : 'w' }));
-      } catch (err) {
-        if ((err as { code?: string }).code === 'download_size_mismatch') {
-          await fsp.rm(part, { force: true });
-          throw err;
         }
+      } catch (err) {
         throw networkError(err); // Teil-Download bleibt liegen -> nächster Versuch setzt fort
+      } finally {
+        await fh.close().catch(() => {});
+      }
+      if (tooBig) {
+        await fsp.rm(part, { force: true });
+        throw codedError('Datei größer als im Manifest angegeben', 'download_size_mismatch');
       }
     }
   }
