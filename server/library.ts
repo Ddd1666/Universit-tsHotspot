@@ -277,12 +277,18 @@ export class Library {
     return all.length;
   }
 
-  /** Verwaiste Originaldateien (z. B. nach Absturz oder gesperrter Datei) entfernen. */
-  async gcOrphanBlobs(): Promise<number> {
+  /**
+   * Verwaiste Originaldateien (z. B. nach Absturz oder gesperrter Datei) entfernen.
+   * Nur Dateien, die älter als `minAgeMs` sind: Ein Upload benennt seine Datei im libuv-Threadpool um, BEVOR der
+   * JS-Code die Quelle in die DB schreibt – läuft die GC genau dazwischen, hätte sie die frische Datei gelöscht
+   * (unter Last beobachtet: indexierte Quelle ohne Originaldatei).
+   */
+  async gcOrphanBlobs(minAgeMs = 60 * 60 * 1000): Promise<number> {
     const known = new Set((this.db.prepare('SELECT sha256 FROM sources').all() as { sha256: string }[]).map((r) => r.sha256));
     let removed = 0;
     for (const h of this.blobs.listHashes()) {
-      if (!known.has(h) && (await this.blobs.delete(h))) removed++;
+      if (known.has(h) || this.blobs.ageMs(h) < minAgeMs) continue;
+      if (await this.blobs.delete(h)) removed++;
     }
     return removed;
   }

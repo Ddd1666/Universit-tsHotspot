@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -124,5 +125,21 @@ describe('Beenden ohne Nachzügler', () => {
     await new Promise((r) => setTimeout(r, 400));
     uncaught.stop();
     expect(uncaught.errors).toEqual([]);
+  });
+});
+
+describe('Beenden mit offenen Verbindungen', () => {
+  it('Regression: offener SSE-Stream (Browser-Tab) blockiert close() nicht (vorher: Strg+C hing, Sperrdatei blieb)', async () => {
+    const app = await startTestApp();
+    const ctrl = new AbortController();
+    const res = await fetch(`${app.url}/api/events?t=${app.token}`, { signal: ctrl.signal });
+    const reader = res.body!.getReader();
+    await reader.read(); // "hello" empfangen -> Stream ist offen
+    let closed = false;
+    const done = app.close().then(() => (closed = true));
+    await waitFor(() => closed, { message: 'close() mit offenem SSE-Stream' });
+    await done;
+    ctrl.abort();
+    expect(fs.existsSync(path.join(app.dataDir, 'hotspot.lock'))).toBe(false);
   });
 });

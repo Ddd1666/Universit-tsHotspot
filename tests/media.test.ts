@@ -55,7 +55,7 @@ const alive = (pid: number) => {
 };
 const media = (spec: FakeMediaSpec, kind: 'mp3' | 'mp4' | 'wav' = 'mp3') => makeFakeMedia(kind, spec);
 
-describe('Bilder (Vision: OCR + Beschreibung)', () => {
+describe('Bilder (Vision: OCR + Beschreibung)', { timeout: 120_000 }, () => {
   it('Foto/Screenshot -> Text und Beschreibung als KI-gekennzeichnete Abschnitte, durchsuchbar', async () => {
     const app = await start();
     const r = await app.upload('Tafelbild.png', makePng(64, 48, 'Entropie nimmt in abgeschlossenen Systemen zu'));
@@ -124,7 +124,7 @@ describe('Bilder (Vision: OCR + Beschreibung)', () => {
   });
 });
 
-describe('Gescannte PDFs (pro Seite)', () => {
+describe('Gescannte PDFs (pro Seite)', { timeout: 120_000 }, () => {
   it('Seiten ohne Textschicht werden per Vision gelesen, seitengenau zitierbar und richtig einsortiert', async () => {
     const app = await start();
     const pdf = makeScanPdf([
@@ -157,7 +157,7 @@ describe('Gescannte PDFs (pro Seite)', () => {
   });
 });
 
-describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', () => {
+describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', { timeout: 120_000 }, () => {
   it('MP3 -> Transkript mit Zeitbereichen in Segmenten, Zitat mit Zeit, Range-Auslieferung für den Player', async () => {
     const app = await start();
     const r = await app.upload('Vorlesung-Thermo.mp3', media({ duration: 1500, words: ['Thermodynamik', 'Entropie', 'Wärmelehre'] }));
@@ -346,7 +346,7 @@ describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', () => {
   });
 });
 
-describe('Datei-Route mit HTTP-Range', () => {
+describe('Datei-Route mit HTTP-Range', { timeout: 120_000 }, () => {
   it('Suffix-, offene und ungültige Bereiche; Token- und ID-Schutz bleiben', async () => {
     const app = await start({}, {});
     await app.api('PUT', '/api/settings', { mediaAudio: false }); // nur speichern
@@ -374,7 +374,7 @@ describe('Datei-Route mit HTTP-Range', () => {
   });
 });
 
-describe('Priorität und KI-Kennzeichnung', () => {
+describe('Priorität und KI-Kennzeichnung', { timeout: 120_000 }, () => {
   it('Chat hat Vorrang: während eine Antwort streamt, startet kein Vision-Aufruf', async () => {
     const app = await start();
     await app.upload('vorher.txt', 'Kurzer Text über Kreisprozesse für den Chat.');

@@ -34,14 +34,14 @@ describe('Import & Verarbeitung', () => {
       const r = await app.upload(name, data);
       expect(r.status, name).toBe(200);
       const s = await waitForSource(app, r.data.source.id);
-      expect(s.status, name).toBe(expected);
+      expect(s.status, `${name}: ${s.statusDetail}`).toBe(expected);
       if (expected === 'ready') expect(s.chunkCount, name).toBeGreaterThan(0);
     }
     const list = (await app.api<{ items: { name: string; sha256: string; size: number; mime: string; importedAt: number }[] }>('GET', '/api/sources')).data.items;
     expect(list).toHaveLength(files.length);
     for (const s of list) {
       expect(s.sha256).toMatch(/^[a-f0-9]{64}$/);
-      expect(fs.existsSync(app.hotspot.services.blobs.pathFor(s.sha256))).toBe(true);
+      expect(fs.existsSync(app.hotspot.services.blobs.pathFor(s.sha256)), `${s.name}: Originaldatei fehlt`).toBe(true);
     }
     const img = list.find((s) => s.name === 'foto.jpg') as unknown as { statusDetail: string; mime: string };
     expect(img.statusDetail).toBe('media_corrupt');

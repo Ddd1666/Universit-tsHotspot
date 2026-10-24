@@ -100,6 +100,9 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     logger: logStream ? { level: config.logLevel, stream: logStream } : false,
     bodyLimit: 1024 * 1024,
     trustProxy: false,
+    // Beim Beenden ALLE Verbindungen trennen: sonst wartete close() ewig auf offene SSE-Streams (jeder offene
+    // Browser-Tab) oder halb gesendete Uploads -> Strg+C hing, Sperrdatei blieb liegen (Regressionstest in shutdown.test.ts)
+    forceCloseConnections: true,
     logController: new LogController({ disableRequestLogging: config.logLevel !== 'debug' }),
   });
   const log = (msg: string, extra?: unknown) => app.log.info({ extra }, msg);

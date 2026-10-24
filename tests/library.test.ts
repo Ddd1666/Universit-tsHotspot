@@ -90,8 +90,19 @@ describe('Löschkonsistenz', () => {
     const orphan = app.hotspot.services.blobs.pathFor('a'.repeat(64));
     fs.mkdirSync(path.dirname(orphan), { recursive: true });
     fs.writeFileSync(orphan, 'verwaist');
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(orphan, old, old);
     expect(await app.hotspot.services.library.gcOrphanBlobs()).toBe(1);
     expect(fs.existsSync(orphan)).toBe(false);
+  });
+
+  it('Regression: GC löscht keine gerade hochgeladene Datei, deren Quelle noch nicht in der DB steht', async () => {
+    // Zustand zwischen "Datei umbenannt" (Threadpool) und "Quelle eingefügt" (JS) – unter Last beobachtet
+    const fresh = app.hotspot.services.blobs.pathFor('b'.repeat(64));
+    fs.mkdirSync(path.dirname(fresh), { recursive: true });
+    fs.writeFileSync(fresh, 'Upload läuft gerade');
+    expect(await app.hotspot.services.library.gcOrphanBlobs()).toBe(0);
+    expect(fs.existsSync(fresh)).toBe(true);
   });
 });
 

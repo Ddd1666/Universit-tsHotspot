@@ -110,6 +110,15 @@ export class BlobStore {
     return { sha256, size, existed, head: Buffer.concat(headParts) };
   }
 
+  /** Alter der Datei (letzte Änderung) in ms; fehlt sie, gilt sie als neu (nicht löschen). */
+  ageMs(sha256: string): number {
+    try {
+      return Date.now() - fs.statSync(this.pathFor(sha256)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
   async delete(sha256: string): Promise<boolean> {
     try {
       await withFsRetry(() => fsp.rm(this.pathFor(sha256), { force: true }));

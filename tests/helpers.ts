@@ -22,7 +22,8 @@ export function writeTmp(dir: string, name: string, data: string | Buffer): stri
 }
 
 export async function waitFor<T>(fn: () => T | Promise<T>, opts: { timeout?: number; interval?: number; message?: string } = {}): Promise<NonNullable<T>> {
-  const end = Date.now() + (opts.timeout ?? 10_000);
+  // Obergrenze (kein Zeit-Assert): unter Volllast (23 Testdateien parallel, viele Kindprozesse) dauert es länger
+  const end = Date.now() + (opts.timeout ?? 25_000);
   let last: T | undefined;
   while (Date.now() < end) {
     last = await fn();

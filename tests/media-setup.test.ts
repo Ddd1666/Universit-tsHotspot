@@ -49,7 +49,7 @@ function serve(name: string, data: Buffer, extra: Partial<ManifestItem> = {}): M
   return { id: name.replace(/\W/g, '-'), label: name, url: `${base}/${name}`, sha256: sha(data), size: data.length, type: 'file', target: `models/${name}`, check: `models/${name}`, ...extra };
 }
 
-describe('Werkzeug-Download (SHA-256, Fortsetzen, nur tools/)', () => {
+describe('Werkzeug-Download (SHA-256, Fortsetzen, nur tools/)', { timeout: 120_000 }, () => {
   it('ZIP: nur die genannten Dateien, flach in den Zielordner; Download-Reste werden entfernt', async () => {
     const tools = tmpDir('tools');
     const zip = makeZip({ 'pkg-1/bin/tool.exe': 'EXE', 'pkg-1/bin/helper.dll': 'DLL', 'pkg-1/doc/readme.txt': 'nicht nötig' });
@@ -105,7 +105,7 @@ describe('Werkzeug-Download (SHA-256, Fortsetzen, nur tools/)', () => {
   });
 });
 
-describe('scripts/setup-media.mjs (CLI)', () => {
+describe('scripts/setup-media.mjs (CLI)', { timeout: 120_000 }, () => {
   function cli(args: string[], env: Record<string, string>, stdin = ''): Promise<{ code: number | null; out: string }> {
     return new Promise((resolve) => {
       const c = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(PROJECT_ROOT, 'scripts', 'setup-media.mjs'), ...args], {
@@ -140,7 +140,7 @@ describe('scripts/setup-media.mjs (CLI)', () => {
   });
 });
 
-describe('Einstellungen: Installation nur nach Bestätigung, danach automatische Verarbeitung', () => {
+describe('Einstellungen: Installation nur nach Bestätigung, danach automatische Verarbeitung', { timeout: 120_000 }, () => {
   it('ohne Bestätigung nichts; mit Bestätigung installiert; gespeicherte Medien werden verarbeitet', async () => {
     const dir = tmpDir('setup');
     const toolsDir = path.join(dir, 'tools');
