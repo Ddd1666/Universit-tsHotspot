@@ -19,7 +19,9 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
     "mock-ollama": "node --disable-warning=ExperimentalWarning scripts/mock-ollama.ts",
     "bench": "node --disable-warning=ExperimentalWarning scripts/bench.ts",
-    "e2e": "node scripts/e2e-browser.mjs"
+    "e2e": "node scripts/e2e-browser.mjs",
+    "bench:media": "node --disable-warning=ExperimentalWarning scripts/bench-media.ts",
+    "setup-media": "node scripts/setup-media.mjs"
   },
   "dependencies": {
     "fastify": "^5.12.5",
