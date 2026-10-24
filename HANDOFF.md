@@ -2,9 +2,10 @@
 
 Für einen Claude-Chat, der dem Nutzer bei der lokalen Installation hilft. Zielrechner: Windows, Ryzen 7 5800H, 16 GB RAM,
 RTX 3060 Laptop (6 GB VRAM), Ollama installiert (`http://127.0.0.1:11434`). Der Nutzer hat das Repo heruntergeladen (Git oder ZIP).
-Hintergrund: Phase 1 (inkl. Korrekturrunden 1 und 2) wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet
-(148 Unit-/Integrationstests, 30× hintereinander grün, + Browser-E2E mit 19 Schritten).
-Auf dem Laptop zählt der Test gegen **echtes** Ollama.
+Hintergrund: Phase 1 wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet. **Phase 2** (Bilder, Scans, Audio/Video) wurde unter
+Windows 11 entwickelt, aber ebenfalls **nur gegen Mock-Ollama und Fake-Werkzeuge** (Node-Skripte statt whisper.cpp/ffmpeg) getestet:
+206 Unit-/Integrationstests (30× hintereinander grün), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
+VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 6. Auf dem Laptop zählt der Test gegen **echtes** Ollama.
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen
 
@@ -105,6 +106,56 @@ Checkliste (Ergebnis jeweils notieren):
 - [ ] **Update ohne Internet** (optional): WLAN aus, in `package-lock.json` nichts ändern → normaler Start. Nur wenn ein Update ansteht:
       Meldung „Update braucht Internet“, App startet trotzdem mit dem bisherigen Stand.
 
+## 6. Laptop-Checkliste Phase 2 (Medien) – erst nach Abschnitt 3
+
+Vorher: **Backup des Datenordners** (Regel 3). Beim ersten Start mit Phase 2 migriert die App die Datenbank (Schema v2 → v3) und legt
+**automatisch** eine Kopie unter `%USERPROFILE%\Uni-Hotspot-Daten\backups\hotspot-v2-<Datum>.sqlite` an. In Phase 1 nur gespeicherte
+Bilder/Audio/Video und Scan-PDFs werden danach automatisch neu eingereiht.
+
+**6.1 Migration (nur lesend prüfen)**
+- [ ] Nach dem Start: `Get-ChildItem "$env:USERPROFILE\Uni-Hotspot-Daten\backups"` → genau eine Datei `hotspot-v2-…sqlite`.
+- [ ] Bibliothek/Chats wie vorher vorhanden; Bilder/Audio aus Phase 1 erscheinen unter *Aufgaben* bzw. „nur gespeichert – Werkzeuge fehlen“.
+
+**6.2 Bilder & Scans (braucht nur `gemma3:4b`)**
+- [ ] *Einstellungen → Medien*: Vision-Modell `gemma3:4b`, Schalter Bilder + Scan-OCR an.
+- [ ] Kleine Testmenge importieren und Ergebnis **pro Datei notieren** (Qualität 1–5, Dauer aus *Aufgaben*):
+      Foto einer Tafel/Whiteboard · gescannte Buchseite (deutsch) · Screenshot (englisch) · handschriftliche Notiz · Diagramm/Formel.
+      Erwartung: Vorschau zeigt „KI-generiert · Text im Bild (OCR)“ und „· Bildbeschreibung“; Suche nach einem Wort aus dem Bild findet es.
+- [ ] Gescanntes PDF (ohne Textschicht, mehrere Seiten): Suche nach einem Wort von Seite 3 → Treffer „S. 3“, „KI-generiert“.
+- [ ] Je eine **WebP-, GIF- und BMP**-Datei: verarbeitet oder Meldung „als PNG/JPG speichern“? (Ollama-Decoder unbekannt) → melden.
+- [ ] **VRAM:** während eine Bildanalyse läuft `ollama ps` → `gemma3:4b` mit `100% GPU`, **kein zweites Modell** und kein Neuladen
+      (gleiche `num_ctx` wie im Chat). Sekunden pro Bild notieren.
+- [ ] **OCR-Entscheidung:** Ist die deutsche OCR des Vision-Modells brauchbar (Umlaute, Fachwörter, Handschrift)? Wenn deutlich schlecht:
+      melden – dann wird `tesseract.js` (WASM, ~31 MB + bestätigter Download der Sprachdaten) als Alternative nachgerüstet.
+
+**6.3 Werkzeuge für Audio/Video (Download nur mit Zustimmung des Nutzers!)**
+- [ ] Nutzer fragen. Dann *Einstellungen → Medien → Herunterladen* (Dialog zeigt Dateien, Größen, Ziel `…\tools`) **oder**
+      `node scripts\setup-media.mjs` (fragt „j/N“). Standard-Paket: whisper.cpp (8 MB), ffmpeg (115 MB), Modell `small` (488 MB).
+      Erwartung: „SHA-256 ok, installiert“; danach Status „installiert“. Proxy-Fehler ⇒ verständliche Meldung, erneuter Start setzt fort.
+- [ ] Smart App Control / SmartScreen blockiert `tools\whisper\whisper-cli.exe` oder `tools\ffmpeg\ffmpeg.exe`? → Fehler im Job
+      „Medien-Werkzeug ist fehlgeschlagen“; Meldung + Log melden (nichts an Windows-Einstellungen ändern).
+- [ ] Prüfen: `& ".\tools\whisper\whisper-cli.exe" -h` und `& ".\tools\ffmpeg\ffmpeg.exe" -version` laufen (nur lesend).
+
+**6.4 Transkription – Messung entscheidet den Standard**
+- [ ] Je eine **5-min-Aufnahme deutsch** und **englisch** (MP3/M4A) importieren. *Aufgaben*: Dauer bis „fertig“ notieren ⇒
+      **Rechenzeit pro Audio-Minute** = Dauer / 5. Taskmanager: CPU-Last, RAM von `whisper-cli.exe`.
+- [ ] Dasselbe mit Modell `medium-q5_0` (Nutzer lädt es in *Einstellungen → Medien*, Whisper-Modell umstellen, Quelle „Erneut verarbeiten“).
+      Qualität (Wörter falsch pro Minute, Fachbegriffe) und Zeit vergleichen ⇒ Empfehlung für den Standard melden.
+- [ ] **Lange Vorlesung (≥ 60 min, MP4 oder MKV):** Fortschritt + Restzeit in *Aufgaben*; nach dem ersten Segment die App beenden
+      (Konsole Strg+C) und neu starten ⇒ Job läuft **beim nächsten Segment** weiter (Fortschritt nicht bei 0).
+- [ ] **Abbrechen** in *Aufgaben* während eines Segments ⇒ Status „abgebrochen“; im Taskmanager kein `whisper-cli.exe`/`ffmpeg.exe` mehr.
+- [ ] **Chat-Priorität:** während eine Transkription läuft, eine Chatfrage stellen ⇒ Antwort streamt flüssig; Job zeigt kurz
+      „pausiert – Chat hat Vorrang“. `ollama ps` während Chat + Bildanalyse: nur `gemma3:4b` (+ Embedding-Modell), beide `100% GPU`?
+- [ ] **Zitat mit Zeit:** Frage zu einer Aussage aus der Aufnahme ⇒ Zitat zeigt `mm:ss–mm:ss`; Klick ⇒ Player im Quellen-Panel springt
+      dorthin (auch in der Desktop-App testen). Stimmt die Stelle (± 10 s)?
+- [ ] Video mit **Keyframes** (Schalter an, optional): bis 12 Einzelbilder werden beschrieben; Dauer notieren.
+- [ ] Defekte Datei (z. B. abgeschnittenes MP3) und DRM-geschützte Datei (iTunes-M4P, falls vorhanden) ⇒ klare Fehlermeldung, kein Absturz.
+- [ ] **Löschen** einer Quelle während der Transkription ⇒ Job verschwindet, `%USERPROFILE%\Uni-Hotspot-Daten\tmp\media` leer.
+
+**Was melden (Phase 2):** Ausgaben von `ollama ps` (während Bild- und Chat-Last), Sekunden pro Bild, Rechenzeit pro Audio-Minute
+für `small` und `medium-q5_0` (deutsch/englisch), Qualitätsnoten der Testmenge, ob WebP/GIF/BMP gingen, ob SmartScreen/Smart App
+Control die Werkzeuge blockierte, Neustart-/Abbruch-Ergebnis, letzte 100 Zeilen `logs\server.log`.
+
 ## 4. Bekannte Windows-Risiken & Abhilfe
 
 | Risiko | Symptom | Abhilfe (reversibel) |
@@ -122,6 +173,9 @@ Checkliste (Ergebnis jeweils notieren):
 | „läuft bereits“, obwohl sicher nichts läuft | Meldung erscheint bei jedem Start | prüfen: kein Uni-Hotspot-Fenster/Konsolenfenster offen, `http://127.0.0.1:<Port>` nicht erreichbar → dann `hotspot.lock` im Datenordner (Pfad steht in der Meldung) **manuell löschen** und neu starten – nur mit Zustimmung des Nutzers |
 | Update ohne Internet | „Update braucht Internet“ | kein Fehler: App läuft mit dem bisherigen Stand; Update beim nächsten Start mit Internet |
 | ZIP nicht entpackt / OneDrive / Downloads | `npm ci` scheitert mit `EPERM`/`EBUSY`, Start aus `…\Temp\…` | Ordner vollständig entpacken und nach `%USERPROFILE%\Uni-Hotspot` legen (s. Abschnitt 1) |
+| Werkzeug-Download blockiert (Proxy/Firewall) | „Download fehlgeschlagen (Internet/Proxy prüfen)“ | `$env:HTTPS_PROXY="http://proxy:port"; $env:NODE_USE_ENV_PROXY="1"; node scripts\setup-media.mjs` – setzt Teil-Downloads fort |
+| whisper-cli.exe/ffmpeg.exe durch Smart App Control blockiert | Medien-Job „Werkzeug fehlgeschlagen“ | melden; nicht an Windows-Sicherheitseinstellungen drehen. Bilder/Scans funktionieren weiter (brauchen nur Ollama) |
+| Werkzeuge entfernen | – | Ordner `tools` im Projektordner löschen (App beendet); Audio/Video werden dann wieder nur gespeichert |
 | Firewall-Dialog | Windows fragt nach Netzwerkzugriff | sollte nicht erscheinen (nur 127.0.0.1); falls doch: „Abbrechen“ – Freigabe ist nicht nötig |
 
 ## 5. Was bei Problemen zu melden ist
