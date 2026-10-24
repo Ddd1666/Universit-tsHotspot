@@ -4,7 +4,7 @@ Für einen Claude-Chat, der dem Nutzer bei der lokalen Installation hilft. Zielr
 RTX 3060 Laptop (6 GB VRAM), Ollama installiert (`http://127.0.0.1:11434`). Der Nutzer hat das Repo heruntergeladen (Git oder ZIP).
 Hintergrund: Phase 1 wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet. **Phase 2** (Bilder, Scans, Audio/Video) wurde unter
 Windows 11 entwickelt, aber ebenfalls **nur gegen Mock-Ollama und Fake-Werkzeuge** (Node-Skripte statt whisper.cpp/ffmpeg) getestet:
-208 Unit-/Integrationstests (30× hintereinander grün, Log: `docs/test-logs/phase2.txt`), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
+229 Unit-/Integrationstests (30× hintereinander grün, Log: `docs/test-logs/phase2.txt`), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
 VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop zählt der Test gegen **echtes** Ollama.
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen
@@ -122,6 +122,7 @@ Bilder/Audio/Video und Scan-PDFs werden danach automatisch neu eingereiht.
       Foto einer Tafel/Whiteboard · gescannte Buchseite (deutsch) · Screenshot (englisch) · handschriftliche Notiz · Diagramm/Formel.
       Erwartung: Vorschau zeigt „KI-generiert · Text im Bild (OCR)“ und „· Bildbeschreibung“; Suche nach einem Wort aus dem Bild findet es.
 - [ ] Gescanntes PDF (ohne Textschicht, mehrere Seiten): Suche nach einem Wort von Seite 3 → Treffer „S. 3“, „KI-generiert“.
+      Zusätzlich ein **Schwarz-Weiß-Scan** (typischer Kopierer-/Fax-Scan, 1 Bit) – wird er ebenfalls gelesen? Die PDF bleibt währenddessen „indexiert“.
 - [ ] Je eine **WebP-, GIF- und BMP**-Datei: verarbeitet oder Meldung „als PNG/JPG speichern“? (Ollama-Decoder unbekannt) → melden.
 - [ ] **VRAM:** während eine Bildanalyse läuft `ollama ps` → `gemma3:4b` mit `100% GPU`, **kein zweites Modell** und kein Neuladen
       (gleiche `num_ctx` wie im Chat). Sekunden pro Bild notieren.

@@ -218,7 +218,18 @@ try {
     const sec = page.locator('section[aria-labelledby=media-settings]');
     await sec.waitFor();
     await sec.scrollIntoViewIfNeeded();
-    if (!(await sec.innerText()).includes('installiert')) throw new Error('Werkzeug-Status fehlt');
+    const secText = await sec.innerText();
+    if (!secText.includes('installiert')) throw new Error('Werkzeug-Status fehlt');
+    // T7: Hinweistexte nicht zusammengeklebt
+    if (/Ollama\.Alternativ|nach\):node/.test(secText)) throw new Error('Hinweistexte ohne Abstand');
+    // K11: Audio-Datei direkt geöffnet darf abspielen (media-src in der Sandbox-CSP)
+    const csp = await page.evaluate(async () => {
+      const t = document.querySelector('meta[name=hotspot-token]').content;
+      const list = await (await fetch('/api/sources?q=Vorlesung-Thermo', { headers: { 'x-hotspot-token': t } })).json();
+      const r = await fetch(`/api/sources/${list.items[0].id}/file?t=${t}`, { headers: { range: 'bytes=0-15' } });
+      return r.headers.get('content-security-policy');
+    });
+    if (!/media-src 'self'/.test(csp ?? '')) throw new Error('media-src fehlt: ' + csp);
     await page.waitForTimeout(300);
     await sec.screenshot({ path: path.join(OUT, '17-einstellungen-medien.png') });
   });

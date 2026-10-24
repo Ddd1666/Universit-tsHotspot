@@ -26,7 +26,9 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
 - **Medien (Phase 2):**
   - **Bilder** (PNG/JPG/GIF/WebP/BMP): ein Vision-Aufruf (Standard `gemma3:4b`) liefert Text im Bild (OCR) **und** eine Beschreibung
     (strukturierte Ausgabe per JSON-Schema, Validierung, max. 3 Versuche). TIFF/HEIC/SVG werden nur gespeichert (Hinweis „als PNG/JPG exportieren“).
-  - **Gescannte PDFs:** pro Seite entschieden – Seiten mit < 40 sichtbaren Zeichen Textschicht gehen an das Vision-Modell; Treffer bleiben seitengenau („S. 2“).
+  - **Gescannte PDFs:** pro Seite entschieden – Seiten mit < 40 sichtbaren Zeichen Textschicht **und** einem Bild gehen an das Vision-Modell
+    (auch Schwarz-Weiß-/Fax-Scans mit 1 Bit/Pixel, Bildmasken und Inline-Bilder); Treffer bleiben seitengenau („S. 2“). Die PDF bleibt
+    währenddessen „indexiert“ und durchsuchbar, der OCR-Fortschritt steht unter *Aufgaben*. Bilder über 50 Megapixel dekodiert pdf.js gar nicht (Bomben-Schutz).
   - **Audio/Video** (MP3/WAV/M4A/OGG/FLAC/MP4/MKV/WebM …): ffmpeg (16-kHz-Mono) + whisper.cpp als Kindprozess mit festen Argumenten,
     10-min-Segmente mit 5 s Überlappung, Fortschritt bleibt über Neustarts erhalten; Transkript-Abschnitte ≤ 2 min mit Zeitbereich `mm:ss–mm:ss`.
     Zitat anklicken → Player im Quellen-Panel springt an die Stelle. Optional (aus): Video-Keyframes (≤ 12) und eingebettete PDF-Bilder (≤ 30) beschreiben.
@@ -198,7 +200,7 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (208 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
+npm test            # vitest (229 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
@@ -270,9 +272,11 @@ und Laufzeit sagt das nichts.
 | Messung | Ergebnis |
 |---|---|
 | Gescanntes PDF, 40 Seiten à 1700×2200 px: Seitenbild holen + verkleinern + PNG (Worker) | ~105 ms/Seite (4,2 s gesamt); Event-Loop max 32 ms, p99 20 ms |
-| 3-h-Aufnahme, 18 Segmente (Fake-ffmpeg/-whisper) | ~256 ms Overhead/Segment (2 Prozessstarts); Event-Loop max 23 ms |
-| Chunking eines 3-h-Transkripts (2160 Sätze) | 6 ms → 90 Abschnitte à ≤ 2 min |
-| Player-Sprung: Range-Request 1 MB aus 50-MB-Video | p50 7,4 ms, p95 15,4 ms |
+| … nach Korrekturrunde 1 (eigene Operatorlisten-Auswertung, Bildprüfung schon bei der Extraktion) | ~92 ms/Seite (3,7 s gesamt); Event-Loop max 20 ms |
+| 3-h-Aufnahme, 18 Segmente (Fake-ffmpeg/-whisper) | ~196–256 ms Overhead/Segment (2 Prozessstarts); Event-Loop max 19–23 ms |
+| Chunking eines 3-h-Transkripts (2160 Sätze) | 5–6 ms → 90 Abschnitte à ≤ 2 min |
+| Player-Sprung: Range-Request 1 MB aus 50-MB-Video | p50 7–9 ms, p95 15–17 ms |
+| PDF-Bildbombe 9000×9000 px (~240 MB entpackt, 0,3 MB Datei) | wird nicht dekodiert; RAM-Zuwachs im Test < 150 MB (vorher: volle Dekodierung) |
 | Phase-1-Werte (Suche, Bibliothek, Import) | unverändert (keine Änderung an diesen Pfaden außer zwei zusätzlichen Spalten im Treffer) |
 
 Echte Werte (Sekunden pro Bild, Minuten Rechenzeit pro Audio-Minute, VRAM) misst die Laptop-Checkliste in `HANDOFF.md`.
@@ -288,6 +292,9 @@ Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der 
 ## Bekannte Grenzen
 
 - Nur mit Mock-Ollama getestet – echte Modellqualität, VRAM-Verhalten und Geschwindigkeit sind erst auf dem Laptop prüfbar (siehe `HANDOFF.md`).
+- **Migration aus Phase 1:** neu eingereiht werden nur Bilder/Audio/Video und PDFs, die als „kein/wenig Text“ markiert waren. Eine PDF mit
+  überwiegend Text und **einzelnen** gescannten Seiten wird nicht automatisch neu verarbeitet (das würde alle Vektoren neu berechnen) –
+  bei Bedarf in der Bibliothek „Erneut verarbeiten“.
 - Medien: Erkennungsqualität (OCR deutsch/englisch, Handschrift, Transkript) und Dauer sind **nur mit Mock** geprüft. TIFF/HEIC/SVG werden nur
   gespeichert. Scan-Seiten ohne eingebettetes Bild (reine Vektorgrafik) bekommen keine OCR. Eingebettete Bilder nur aus PDFs (nicht aus PPTX/DOCX).
   Ob Ollama WebP/GIF/BMP annimmt, ist auf dem Laptop zu prüfen (sonst Hinweis „als PNG/JPG speichern“). Die laufende Restzeit-Anzeige
