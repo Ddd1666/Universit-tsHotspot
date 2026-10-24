@@ -31,6 +31,8 @@ const clock = (s) => {
 const out = args[args.length - 1];
 const isProbe = args.length >= 2 && args[args.length - 2] === '-i';
 if (isProbe) {
+  // defektes/blockiertes Werkzeug: endet ohne jede Ausgabe mit ungewöhnlichem Code
+  if (spec?.crash) process.exit(3);
   if (!spec) {
     process.stderr.write(`${input}: Invalid data found when processing input\n`);
     process.exit(1);

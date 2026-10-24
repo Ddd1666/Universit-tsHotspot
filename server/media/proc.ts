@@ -18,6 +18,20 @@ export interface RunResult {
 const MAX_OUTPUT = 256 * 1024;
 
 /**
+ * Kurzer stderr-Auszug fürs Log bei Werkzeugfehlern: nur Fehlerzeilen, ohne Metadaten-Zeilen (Titel, Künstler,
+ * Kommentar … können Inhalte der Nutzerdatei enthalten), höchstens `max` Zeichen.
+ */
+export function stderrExcerpt(stderr: string, max = 300): string {
+  return stderr
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /error|fail|invalid|unable|cannot|denied|not found|corrupt|unsupported/i.test(l))
+    .filter((l) => !/^(title|artist|album|album_artist|comment|description|lyrics|composer|genre|encoder|copyright|synopsis)\s*:/i.test(l))
+    .join(' | ')
+    .slice(0, max);
+}
+
+/**
  * Prozessbaum hart beenden. Windows: `taskkill /T /F` auf die EIGENE Kind-PID (kein Admin nötig, kein Musterabgleich);
  * POSIX: Signal an die eigene Prozessgruppe (Kind wurde mit detached gestartet).
  */

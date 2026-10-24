@@ -86,7 +86,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
   const settings = new SettingsStore(db);
   const bus = new EventBus();
   const blobs = new BlobStore(config.dataDir);
-  blobs.init();
+  const tmpProblem = blobs.init();
 
   const mock = config.mockOllama ? await startMockOllama() : null;
   const client = new OllamaClient(() => config.ollamaUrlOverride ?? mock?.url ?? settings.get().ollamaUrl);
@@ -106,6 +106,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     logController: new LogController({ disableRequestLogging: config.logLevel !== 'debug' }),
   });
   const log = (msg: string, extra?: unknown) => app.log.info({ extra }, msg);
+  if (tmpProblem) log(tmpProblem);
 
   let queueTimer: NodeJS.Timeout | null = null;
   // Ab close(): keine neuen Queue-Timer mehr (Stop-Schritte melden noch Änderungen, die DB ist danach zu)

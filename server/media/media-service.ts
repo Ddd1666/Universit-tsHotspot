@@ -781,7 +781,7 @@ export class MediaService {
 }
 
 /** Ein Worker pro Scan-Job; Zeitlimit je Seite, Absturz einer Seite überspringt nur diese Seite. */
-class PageImages {
+export class PageImages {
   private worker: Worker | null = null;
   private nextId = 1;
   private readonly file: string;

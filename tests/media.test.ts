@@ -591,3 +591,60 @@ describe('Korrekturrunde 1: Scans, Status, Atomarität', { timeout: 120_000 }, (
     expect((await waitForSource(second, r.data.source.id, ['ready', 'error'])).status).toBe('ready');
   });
 });
+
+describe('Korrekturrunde 1: kleinere Befunde', { timeout: 120_000 }, () => {
+  it('T9: ffmpeg selbst defekt/blockiert (kein Output, Code 3) -> media_tool_failed statt "Datei beschädigt"', async () => {
+    const app = await start();
+    const r = await app.upload('werkzeug-kaputt.mp3', media({ duration: 60, crash: true }));
+    const s = await waitForSource(app, r.data.source.id);
+    expect([s.status, s.statusDetail]).toEqual(['error', 'media_tool_failed']);
+  });
+
+  it('K6: Abbruch beendet eine laufende Seitenbild-Dekodierung sofort', async () => {
+    const { PageImages } = await import('../server/media/media-service.ts');
+    const file = writeTmp(tmpDir('k6'), 'scan.pdf', makeScanPdf([{ image: { w: 2500, h: 3200 } }]));
+    const pages = new PageImages(file);
+    const ctrl = new AbortController();
+    const p = pages.get(1, { max: 1, minSide: 200, maxSide: 1600 }, ctrl.signal);
+    ctrl.abort();
+    await expect(p).rejects.toMatchObject({ code: 'media_cancelled' });
+    const pre = new AbortController();
+    pre.abort();
+    await expect(pages.get(1, { max: 1, minSide: 200, maxSide: 1600 }, pre.signal)).rejects.toMatchObject({ code: 'media_cancelled' });
+    await pages.close();
+  });
+
+  it('K11/T4: Mediendatei mit media-src in der Sandbox-CSP; HEAD mit Query-Token wie GET', async () => {
+    const app = await start();
+    await app.api('PUT', '/api/settings', { mediaAudio: false });
+    const r = await app.upload('clip2.mp3', media({ duration: 5 }));
+    const url = `${app.url}/api/sources/${r.data.source.id}/file?t=${app.token}`;
+    const get = await fetch(url);
+    expect(get.headers.get('content-security-policy')).toMatch(/sandbox;.*media-src 'self'/);
+    await get.arrayBuffer();
+    const head = await fetch(url, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('accept-ranges')).toBe('bytes');
+    expect(Number(head.headers.get('content-length'))).toBeGreaterThan(0);
+    expect((await fetch(url.replace(/\?t=.*/, ''), { method: 'HEAD' })).status).toBe(401);
+  });
+
+  it('K10: gesperrte Datei in tmp/ (Virenscanner) verhindert den Start nicht', async () => {
+    const dataDir = tmpDir('k10');
+    const tmp = path.join(dataDir, 'tmp');
+    fs.mkdirSync(tmp, { recursive: true });
+    // Sperre nachstellen: Löschen von tmp/ scheitert wie bei einer vom Virenscanner gehaltenen Datei (EBUSY)
+    const orig = fs.rmSync;
+    fs.rmSync = ((p: fs.PathLike, opts?: fs.RmOptions) => {
+      if (String(p) === tmp) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      return orig(p, opts);
+    }) as typeof fs.rmSync;
+    try {
+      const app = await startTestApp({ dataDir });
+      apps.push(app);
+      expect((await app.api('GET', '/api/health')).status).toBe(200);
+    } finally {
+      fs.rmSync = orig;
+    }
+  });
+});

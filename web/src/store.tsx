@@ -3,6 +3,7 @@ import { connectEvents, get, onConnection, onHubEvent, put } from './api';
 import { translate, type Lang, type T, type TKey } from './i18n';
 import { apiErrorText } from './lib/errors';
 import { ImportManager } from './lib/importer';
+import { pushToast } from './lib/toasts';
 import type { Bootstrap, ChatSession, HubEvent, OllamaStatus, QueueStatus, Settings, Stats, Subject } from './types';
 
 export type Route =
@@ -143,7 +144,7 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
 
   const toast = useCallback((text: string, kind: Toast['kind'] = 'info') => {
     const id = toastId.current++;
-    setToasts((ts) => [...ts.slice(-3), { id, kind, text }]);
+    setToasts((ts) => pushToast(ts, { id, kind, text }));
     setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), kind === 'error' ? 8000 : 3500);
   }, []);
   const toastError = useCallback((err: unknown) => toast(apiErrorText(t, err), 'error'), [toast, t]);

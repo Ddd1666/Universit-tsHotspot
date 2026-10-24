@@ -55,10 +55,20 @@ export class BlobStore {
     this.tmpDir = path.join(dataDir, 'tmp');
   }
 
-  init(): void {
+  /**
+   * Ordner anlegen, Reste in tmp/ entfernen. Gesperrte Reste (Virenscanner, noch offene Datei) verhindern den Start
+   * NICHT: Rückgabe = Fehlermeldung zum Loggen, sonst null.
+   */
+  init(): string | null {
     fs.mkdirSync(this.filesDir, { recursive: true });
-    fs.rmSync(this.tmpDir, { recursive: true, force: true });
+    let problem: string | null = null;
+    try {
+      fs.rmSync(this.tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (err) {
+      problem = `tmp/ konnte nicht vollständig geleert werden: ${(err as Error).message}`;
+    }
     fs.mkdirSync(this.tmpDir, { recursive: true });
+    return problem;
   }
 
   pathFor(sha256: string): string {

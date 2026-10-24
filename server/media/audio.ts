@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import { codedError } from '../ingest/types.ts';
-import { runTool, type ToolCommand } from './proc.ts';
+import { runTool, stderrExcerpt, type ToolCommand } from './proc.ts';
 
 /** Transkript-Eintrag (Sekunden, absolut in der Aufnahme). */
 export interface TranscriptEntry {
@@ -51,6 +51,9 @@ export function parseProbe(stderr: string): ProbeResult {
 
 export async function probe(ffmpeg: ToolCommand, file: string, opts: { timeouts: MediaTimeouts; signal?: AbortSignal }): Promise<ProbeResult> {
   const r = await runTool(ffmpeg, ['-hide_banner', '-nostdin', '-i', file], { timeoutMs: opts.timeouts.probeMs, signal: opts.signal });
+  // ffmpeg ohne Ausgabedatei endet regulär mit Code 1 (auch bei defekter Datei). Anderer Code oder gar keine Ausgabe
+  // = das Werkzeug selbst ist kaputt/blockiert (z. B. Smart App Control) – nicht die Datei des Nutzers.
+  if ((r.code !== 0 && r.code !== 1) || !r.stderr.trim()) throw codedError(`ffmpeg-Prüfung fehlgeschlagen (Code ${r.code}): ${stderrExcerpt(r.stderr)}`, 'media_tool_failed');
   return parseProbe(r.stderr);
 }
 
@@ -97,7 +100,7 @@ export async function extractSegment(
   );
   if (r.code !== 0) {
     if (/encrypt|drm/i.test(r.stderr)) throw codedError('Medium ist verschlüsselt/DRM-geschützt', 'media_encrypted');
-    throw codedError(`ffmpeg fehlgeschlagen (Code ${r.code})`, 'media_tool_failed');
+    throw codedError(`ffmpeg fehlgeschlagen (Code ${r.code}): ${stderrExcerpt(r.stderr)}`, 'media_tool_failed');
   }
   try {
     return (await fsp.stat(out)).size;
@@ -137,7 +140,7 @@ export async function transcribeSegment(
     timeoutMs: opts.timeoutMs,
     signal: opts.signal,
   });
-  if (r.code !== 0) throw codedError(`whisper fehlgeschlagen (Code ${r.code})`, 'media_tool_failed');
+  if (r.code !== 0) throw codedError(`whisper fehlgeschlagen (Code ${r.code}): ${stderrExcerpt(r.stderr)}`, 'media_tool_failed');
   try {
     return await fsp.readFile(`${outBase}.json`, 'utf8');
   } catch {

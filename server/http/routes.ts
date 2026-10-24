@@ -250,7 +250,8 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
       reply.header('content-disposition', contentDisposition(inline ? 'inline' : 'attachment', src.name));
       reply.header('cache-control', 'private, no-store');
       if (inline && inline !== 'application/pdf') {
-        reply.header('content-security-policy', "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'");
+        // media-src: Audio/Video direkt im Tab abspielen ("Öffnen"); weiterhin Sandbox, keine Skripte
+        reply.header('content-security-policy', "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'");
       }
       reply.type(inline ?? 'application/octet-stream');
       // HTTP-Range (Player springt zur Zitatstelle): genau ein Bereich; Mehrfachbereiche werden ignoriert (200, ganze Datei)

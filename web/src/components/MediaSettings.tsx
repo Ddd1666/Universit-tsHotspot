@@ -73,7 +73,7 @@ export function MediaSettings({ save }: { save(p: Partial<Settings>): Promise<vo
         {tool('whisper.cpp', !!st?.tools.whisper)}
         {tool(`${t('set.whisperModel')} „${settings.whisperModel}“`, !!st?.tools.models.includes(settings.whisperModel))}
       </ul>
-      <small className="muted">{t('set.mediaToolsHint')}</small>
+      <p className="muted small">{t('set.mediaToolsHint')}</p>
       {st && !st.supported && <p className="warn small">{t('set.mediaUnsupported', { dir: st.toolsDir })}</p>}
       {st?.supported && missing.length > 0 && !setup?.running && (
         <div className="row gap wrap">
@@ -94,8 +94,10 @@ export function MediaSettings({ save }: { save(p: Partial<Settings>): Promise<vo
         </div>
       )}
       {setup?.error && <p className="err small">{`${setup.error.id}: ${t(`detail.${setup.error.code}` as 'detail.download_network')}`}</p>}
-      <small className="muted">{t('set.mediaCli')}</small>
-      <code className="mono small cli-cmd">node scripts/setup-media.mjs</code>
+      <p className="muted small">{t('set.mediaCli')}</p>
+      <div className="copy-cmd">
+        <code>node scripts/setup-media.mjs</code>
+      </div>
 
       <h3>{t('set.mediaTypes')}</h3>
       {toggle('mediaImages', t('set.mediaImages'))}

@@ -269,3 +269,13 @@ describe('PDF-Seitenbilder: 1-Bit-Daten entpacken', () => {
     expect(toPixels({ width: 10_000, height: 10_000, kind: 2, data: new Uint8Array(3) }, false)).toBeNull();
   });
 });
+
+describe('stderr-Auszug fürs Log (T11)', () => {
+  it('nur Fehlerzeilen, keine Metadaten aus der Nutzerdatei, gekürzt', async () => {
+    const { stderrExcerpt } = await import('../server/media/proc.ts');
+    const stderr = ['Input #0, mp3', '    title           : Geheimes Interview mit Error im Titel', '    comment         : invalid Kommentar', '[mp3 @ 0x1] Invalid data found when processing input', 'Conversion failed!'].join('\n');
+    const ex = stderrExcerpt(stderr);
+    expect(ex).toBe('[mp3 @ 0x1] Invalid data found when processing input | Conversion failed!');
+    expect(stderrExcerpt('error '.repeat(500))).toHaveLength(300);
+  });
+});

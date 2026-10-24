@@ -68,7 +68,7 @@ export function registerSecurity(app: FastifyInstance, opts: SecurityOptions): v
 
     const headerToken = request.headers['x-hotspot-token'];
     let token = typeof headerToken === 'string' ? headerToken : '';
-    if (!token && request.method === 'GET' && QUERY_TOKEN_ROUTES.some((re) => re.test(url))) {
+    if (!token && (request.method === 'GET' || request.method === 'HEAD') && QUERY_TOKEN_ROUTES.some((re) => re.test(url))) {
       token = new URL(url, 'http://x').searchParams.get('t') ?? '';
     }
     if (!token || !safeEqual(token, opts.token)) return deny(reply, 401, 'invalid_token', 'Ungültiges oder fehlendes Zugriffstoken – Seite neu laden');

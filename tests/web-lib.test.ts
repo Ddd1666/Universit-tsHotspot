@@ -110,3 +110,14 @@ describe('Kosmetik: Größen, Status-Badge, Modellauswahl, Token', () => {
     expect(translate('de', 'set.tokens', { n: '8.192' })).toBe('8.192 Token');
   });
 });
+
+describe('Meldungen (T8)', () => {
+  it('mehrfaches gleiches „Gespeichert“ bleibt EINE Meldung; max. 4 sichtbar', async () => {
+    const { pushToast } = await import('../web/src/lib/toasts.ts');
+    let list: { id: number; kind: 'info' | 'success' | 'error'; text: string }[] = [];
+    for (let i = 1; i <= 5; i++) list = pushToast(list, { id: i, kind: 'success', text: 'Gespeichert' });
+    expect(list).toEqual([{ id: 5, kind: 'success', text: 'Gespeichert' }]);
+    for (let i = 6; i <= 12; i++) list = pushToast(list, { id: i, kind: 'info', text: `Meldung ${i}` });
+    expect(list.map((t) => t.id)).toEqual([9, 10, 11, 12]);
+  });
+});

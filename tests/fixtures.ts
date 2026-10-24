@@ -344,6 +344,8 @@ export interface FakeMediaSpec {
   hangFrom?: number;
   grandchild?: boolean;
   pidFile?: string;
+  /** Fake-ffmpeg endet bei der Prüfung ohne Ausgabe mit Code 3 */
+  crash?: boolean;
 }
 
 /** "Mediendatei" für die Fake-Werkzeuge: echter Formatkopf (Sniffing) + Marker mit Steuerdaten. */
