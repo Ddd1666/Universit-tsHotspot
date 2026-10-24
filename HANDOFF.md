@@ -5,7 +5,7 @@ RTX 3060 Laptop (6 GB VRAM), Ollama installiert (`http://127.0.0.1:11434`). Der 
 Hintergrund: Phase 1 wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet. **Phase 2** (Bilder, Scans, Audio/Video) wurde unter
 Windows 11 entwickelt, aber ebenfalls **nur gegen Mock-Ollama und Fake-Werkzeuge** (Node-Skripte statt whisper.cpp/ffmpeg) getestet:
 206 Unit-/Integrationstests (30× hintereinander grün), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
-VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 6. Auf dem Laptop zählt der Test gegen **echtes** Ollama.
+VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop zählt der Test gegen **echtes** Ollama.
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen
 
@@ -106,17 +106,17 @@ Checkliste (Ergebnis jeweils notieren):
 - [ ] **Update ohne Internet** (optional): WLAN aus, in `package-lock.json` nichts ändern → normaler Start. Nur wenn ein Update ansteht:
       Meldung „Update braucht Internet“, App startet trotzdem mit dem bisherigen Stand.
 
-## 6. Laptop-Checkliste Phase 2 (Medien) – erst nach Abschnitt 3
+## 3a. Laptop-Checkliste Phase 2 (Medien) – nach Abschnitt 3
 
 Vorher: **Backup des Datenordners** (Regel 3). Beim ersten Start mit Phase 2 migriert die App die Datenbank (Schema v2 → v3) und legt
 **automatisch** eine Kopie unter `%USERPROFILE%\Uni-Hotspot-Daten\backups\hotspot-v2-<Datum>.sqlite` an. In Phase 1 nur gespeicherte
 Bilder/Audio/Video und Scan-PDFs werden danach automatisch neu eingereiht.
 
-**6.1 Migration (nur lesend prüfen)**
+**3a.1 Migration (nur lesend prüfen)**
 - [ ] Nach dem Start: `Get-ChildItem "$env:USERPROFILE\Uni-Hotspot-Daten\backups"` → genau eine Datei `hotspot-v2-…sqlite`.
 - [ ] Bibliothek/Chats wie vorher vorhanden; Bilder/Audio aus Phase 1 erscheinen unter *Aufgaben* bzw. „nur gespeichert – Werkzeuge fehlen“.
 
-**6.2 Bilder & Scans (braucht nur `gemma3:4b`)**
+**3a.2 Bilder & Scans (braucht nur `gemma3:4b`)**
 - [ ] *Einstellungen → Medien*: Vision-Modell `gemma3:4b`, Schalter Bilder + Scan-OCR an.
 - [ ] Kleine Testmenge importieren und Ergebnis **pro Datei notieren** (Qualität 1–5, Dauer aus *Aufgaben*):
       Foto einer Tafel/Whiteboard · gescannte Buchseite (deutsch) · Screenshot (englisch) · handschriftliche Notiz · Diagramm/Formel.
@@ -128,7 +128,7 @@ Bilder/Audio/Video und Scan-PDFs werden danach automatisch neu eingereiht.
 - [ ] **OCR-Entscheidung:** Ist die deutsche OCR des Vision-Modells brauchbar (Umlaute, Fachwörter, Handschrift)? Wenn deutlich schlecht:
       melden – dann wird `tesseract.js` (WASM, ~31 MB + bestätigter Download der Sprachdaten) als Alternative nachgerüstet.
 
-**6.3 Werkzeuge für Audio/Video (Download nur mit Zustimmung des Nutzers!)**
+**3a.3 Werkzeuge für Audio/Video (Download nur mit Zustimmung des Nutzers!)**
 - [ ] Nutzer fragen. Dann *Einstellungen → Medien → Herunterladen* (Dialog zeigt Dateien, Größen, Ziel `…\tools`) **oder**
       `node scripts\setup-media.mjs` (fragt „j/N“). Standard-Paket: whisper.cpp (8 MB), ffmpeg (115 MB), Modell `small` (488 MB).
       Erwartung: „SHA-256 ok, installiert“; danach Status „installiert“. Proxy-Fehler ⇒ verständliche Meldung, erneuter Start setzt fort.
@@ -136,7 +136,7 @@ Bilder/Audio/Video und Scan-PDFs werden danach automatisch neu eingereiht.
       „Medien-Werkzeug ist fehlgeschlagen“; Meldung + Log melden (nichts an Windows-Einstellungen ändern).
 - [ ] Prüfen: `& ".\tools\whisper\whisper-cli.exe" -h` und `& ".\tools\ffmpeg\ffmpeg.exe" -version` laufen (nur lesend).
 
-**6.4 Transkription – Messung entscheidet den Standard**
+**3a.4 Transkription – Messung entscheidet den Standard**
 - [ ] Je eine **5-min-Aufnahme deutsch** und **englisch** (MP3/M4A) importieren. *Aufgaben*: Dauer bis „fertig“ notieren ⇒
       **Rechenzeit pro Audio-Minute** = Dauer / 5. Taskmanager: CPU-Last, RAM von `whisper-cli.exe`.
 - [ ] Dasselbe mit Modell `medium-q5_0` (Nutzer lädt es in *Einstellungen → Medien*, Whisper-Modell umstellen, Quelle „Erneut verarbeiten“).
