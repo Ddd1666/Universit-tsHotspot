@@ -252,3 +252,20 @@ describe('Neue SQL-Abfragen nutzen Indizes (EXPLAIN QUERY PLAN)', () => {
     db.close();
   });
 });
+
+describe('PDF-Seitenbilder: 1-Bit-Daten entpacken', () => {
+  it('1 Bit Grau und Bildmasken: Bit 1 -> weiß, Bit 0 -> schwarz; Zeilen auf volle Bytes aufgefüllt', async () => {
+    const { toPixels } = await import('../server/media/pdf-image.ts');
+    // 10 x 2 Pixel: Zeile 1 = 1111 1111 | 11xx xxxx, Zeile 2 = 0000 0000 | 01xx xxxx
+    const data = new Uint8Array([0xff, 0xff, 0x00, 0x40]);
+    const gray = toPixels({ width: 10, height: 2, kind: 1, data }, false)!;
+    expect(gray.channels).toBe(1);
+    expect([...gray.data]).toEqual([...Array(10).fill(255), ...Array(9).fill(0), 255]);
+    const mask = toPixels({ width: 10, height: 2, data }, true)!;
+    expect([...mask.data]).toEqual([...gray.data]);
+    // RGB unverändert, zu kurze Daten / riesige Bilder verworfen
+    expect(toPixels({ width: 2, height: 1, kind: 2, data: new Uint8Array(6) }, false)!.channels).toBe(3);
+    expect(toPixels({ width: 10, height: 2, kind: 1, data: new Uint8Array(1) }, false)).toBeNull();
+    expect(toPixels({ width: 10_000, height: 10_000, kind: 2, data: new Uint8Array(3) }, false)).toBeNull();
+  });
+});

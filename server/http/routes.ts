@@ -9,6 +9,7 @@ import { TooLargeError } from '../storage.ts';
 import { DEFAULT_SETTINGS } from '../settings.ts';
 import { hybridSearch, parseScope } from '../search/hybrid.ts';
 import { estimateTokens } from '../ingest/chunker.ts';
+import { tx } from '../db.ts';
 import { openSse } from './sse.ts';
 import type { Services } from '../app.ts';
 
@@ -292,8 +293,10 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
       const text = (req.body as { text: string }).text.trim();
       if (!text) throw new HttpError(400, 'empty', 'Text ist leer');
       // Text geändert -> Vektor ist veraltet: verwerfen und neu einbetten lassen (FTS folgt per Trigger)
-      s.db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(row.id);
-      s.db.prepare('UPDATE chunks SET text = ?, token_est = ?, embed_state = 0 WHERE id = ?').run(text, estimateTokens(text), row.id);
+      tx(s.db, () => {
+        s.db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(row.id);
+        s.db.prepare('UPDATE chunks SET text = ?, token_est = ?, embed_state = 0 WHERE id = ?').run(text, estimateTokens(text), row.id);
+      });
       s.vectors.invalidate();
       s.embed.notify();
       emitSource(row.sourceId);
@@ -303,9 +306,11 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
 
   app.delete('/api/chunks/:id', { schema: { params: idParam } }, async (req) => {
     const row = aiChunk((req.params as { id: number }).id);
-    s.db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(row.id);
-    s.db.prepare('DELETE FROM chunks WHERE id = ?').run(row.id);
-    s.db.prepare('UPDATE sources SET chunk_count = max(0, chunk_count - 1) WHERE id = ?').run(row.sourceId);
+    tx(s.db, () => {
+      s.db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(row.id);
+      s.db.prepare('DELETE FROM chunks WHERE id = ?').run(row.id);
+      s.db.prepare('UPDATE sources SET chunk_count = max(0, chunk_count - 1) WHERE id = ?').run(row.sourceId);
+    });
     s.vectors.invalidate();
     emitSource(row.sourceId);
     return { ok: true };

@@ -1,5 +1,5 @@
 import fsp from 'node:fs/promises';
-import { getDocumentProxy } from 'unpdf';
+import { getDocumentProxy, getResolvedPDFJS } from 'unpdf';
 import { codedError, type Extractor, type TextBlock } from '../types.ts';
 
 interface PdfTextItem {
@@ -65,7 +65,7 @@ export const pdfExtractor: Extractor = {
     const data = new Uint8Array(await fsp.readFile(input.path));
     let pdf;
     try {
-      pdf = await getDocumentProxy(data, { disableFontFace: true, useSystemFonts: false, stopAtErrors: false, verbosity: 0 });
+      pdf = await getDocumentProxy(data, PDF_OPTIONS);
     } catch (err) {
       const name = (err as { name?: string }).name;
       if (name === 'PasswordException') throw codedError('PDF ist passwortgeschützt', 'pdf_encrypted', err);
@@ -82,8 +82,9 @@ export const pdfExtractor: Extractor = {
         const content = await page.getTextContent();
         const paragraphs = itemsToParagraphs(content.items as PdfTextItem[]);
         if (!paragraphs.length) emptyPages++;
-        // Seite ohne nennenswerte Textschicht -> Kandidat für Scan-OCR (pro Seite entschieden, nicht pro Datei)
-        if (paragraphs.join('').replace(/\s+/g, '').length < MIN_TEXT_CHARS) ocrPages.push(p);
+        // Seite ohne nennenswerte Textschicht UND mit Bild -> Scan-OCR (pro Seite entschieden, nicht pro Datei).
+        // Leere Seiten / reine Vektorgrafik werden nicht eingereiht.
+        if (paragraphs.join('').replace(/\s+/g, '').length < MIN_TEXT_CHARS && (await pageHasImage(page))) ocrPages.push(p);
         for (const text of paragraphs) blocks.push({ text, loc: { kind: 'page', index: p } });
         page.cleanup();
       }
@@ -98,3 +99,25 @@ export const pdfExtractor: Extractor = {
 
 /** Weniger sichtbare Zeichen auf einer Seite = "kein Text" (Scan, ggf. mit Seitenzahl/Kopfzeile). */
 export const MIN_TEXT_CHARS = 40;
+
+/**
+ * Bilder mit mehr Pixeln dekodiert pdf.js gar nicht erst (Dekompressionsbombe: 20 000 × 20 000 px wären 400 MB+ RAM,
+ * als ArrayBuffer außerhalb des Worker-Heap-Limits). A4 mit 600 dpi sind ~35 MP.
+ */
+export const MAX_PDF_IMAGE_PIXELS = 50_000_000;
+export const PDF_OPTIONS = { disableFontFace: true, useSystemFonts: false, stopAtErrors: false, verbosity: 0, maxImageSize: MAX_PDF_IMAGE_PIXELS } as const;
+
+let imageOps: Set<number> | null = null;
+/** Zeichenbefehle, die ein Raster-/Maskenbild malen (ohne Glyphen-Masken von Type3-Schriften). */
+export async function imageOpCodes(): Promise<Set<number>> {
+  if (!imageOps) {
+    const { OPS } = await getResolvedPDFJS();
+    imageOps = new Set([OPS.paintImageXObject, OPS.paintImageXObjectRepeat, OPS.paintInlineImageXObject, OPS.paintImageMaskXObject, OPS.paintImageMaskXObjectRepeat]);
+  }
+  return imageOps;
+}
+
+async function pageHasImage(page: { getOperatorList(): Promise<{ fnArray: number[] }> }): Promise<boolean> {
+  const ops = await imageOpCodes();
+  return (await page.getOperatorList()).fnArray.some((f) => ops.has(f));
+}

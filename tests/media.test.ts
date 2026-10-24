@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PROJECT_ROOT, type AppConfig } from '../server/config.ts';
 import { makeFakeMedia, makePng, makeScanPdf, makePdf, type FakeMediaSpec } from './fixtures.ts';
-import { startTestApp, tmpDir, waitFor, waitForSource, writeTmp, type TestApp } from './helpers.ts';
+import { startTestApp, tmpDir, waitFor, waitForEmbeddings, waitForSource, writeTmp, type TestApp } from './helpers.ts';
 
 const FAKE = path.join(PROJECT_ROOT, 'tests', 'fake-tools');
 let apps: TestApp[] = [];
@@ -438,5 +438,156 @@ describe('Priorität und KI-Kennzeichnung', { timeout: 120_000 }, () => {
     const r = await app.upload('normal.pdf', makePdf([['Ganz normaler Text auf Seite eins mit genug Zeichen für die Erkennung.']]));
     expect((await waitForSource(app, r.data.source.id)).status).toBe('ready');
     expect(jobOf(app, r.data.source.id)).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------ Korrekturrunde 1 (je ein Regressionstest pro Befund) */
+
+const pageChunk = (app: TestApp, id: number, page: number, origin: string) => chunks(app, id).find((c) => c.locStart === page && c.origin === origin);
+
+describe('Korrekturrunde 1: Scans, Status, Atomarität', { timeout: 120_000 }, () => {
+  it('K1: Schwarz-Weiß-Scans (1 Bit), Bildmasken (/ImageMask) und Inline-Bilder liefern OCR', async () => {
+    const app = await start();
+    const r = await app.upload(
+      'sw-scan.pdf',
+      makeScanPdf([
+        { image: { w: 400, h: 520, bpc: 1 } },
+        { image: { w: 410, h: 530, mask: true } },
+        { image: { w: 240, h: 250, bpc: 1, inline: true } },
+        { image: { w: 260, h: 270, inline: true } },
+      ]),
+    );
+    await waitFor(() => jobOf(app, r.data.source.id)?.state === 'done', { message: 'scan job' });
+    expect(pageChunk(app, r.data.source.id, 1, 'ocr')?.text).toBe('Mock-OCR 400x520');
+    expect(pageChunk(app, r.data.source.id, 2, 'ocr')?.text).toBe('Mock-OCR 410x530');
+    expect(pageChunk(app, r.data.source.id, 3, 'ocr')?.text).toBe('Mock-OCR 240x250');
+    expect(pageChunk(app, r.data.source.id, 4, 'ocr')?.text).toBe('Mock-OCR 260x270');
+  });
+
+  it('K3: indexierte PDF bleibt während der Scan-OCR ready; leere Seiten ohne Bild werden nicht eingereiht', async () => {
+    const app = await start();
+    // GPU-Slot belegen: der Scan-Job wartet sichtbar
+    const release = await app.hotspot.services.scheduler.acquire('media');
+    const r = await app.upload('mit-scan.pdf', makeScanPdf([{ lines: ['Kapitel 1 mit ausreichend Text, damit die Seite als Textseite zählt.'] }, { image: { w: 300, h: 400 } }]));
+    await waitFor(() => jobOf(app, r.data.source.id)?.state === 'running', { message: 'Job läuft' });
+    expect(app.hotspot.services.library.getSource(r.data.source.id)!.status).toBe('ready');
+    expect((await app.api<{ hits: unknown[] }>('GET', '/api/search?q=Kapitel')).data.hits.length).toBeGreaterThan(0);
+    release();
+    await waitFor(() => jobOf(app, r.data.source.id)?.state === 'done', { message: 'Job fertig' });
+    expect(app.hotspot.services.library.getSource(r.data.source.id)!.status).toBe('ready');
+    // Textseite + leere Seite (kein Bild): kein Job
+    const blank = await app.upload('mit-leerseite.pdf', makeScanPdf([{ lines: ['Kapitel 2 mit ausreichend Text, damit die Seite als Textseite zählt.'] }, {}]));
+    expect((await waitForSource(app, blank.data.source.id)).status).toBe('ready');
+    expect(jobOf(app, blank.data.source.id)).toBeUndefined();
+  });
+
+  it('K3: Scan-Fehler setzt die indexierte PDF nicht auf Fehler', async () => {
+    const app = await start();
+    await app.api('PUT', '/api/settings', { visionModel: 'qwen3:4b' }); // kein Bildverständnis -> Job-Fehler
+    const r = await app.upload('scan-fehler.pdf', makeScanPdf([{ lines: ['Textseite mit ausreichend vielen Zeichen für die Erkennung als Text.'] }, { image: { w: 300, h: 400 } }]));
+    await waitFor(() => jobOf(app, r.data.source.id)?.state === 'error', { message: 'Job-Fehler' });
+    expect(jobOf(app, r.data.source.id)!.detail).toBe('vision_no_capability');
+    expect(app.hotspot.services.library.getSource(r.data.source.id)!.status).toBe('ready');
+  });
+
+  it('K5: PDF-Bildbombe (9000x9000 px RGB, ~240 MB entpackt) wird nicht dekodiert', async () => {
+    const app = await start();
+    const bomb = makeScanPdf([{ image: { w: 9000, h: 9000, zeros: true } }]);
+    expect(bomb.length).toBeLessThan(2 * 1024 * 1024);
+    const rss0 = process.memoryUsage().rss;
+    let peak = rss0;
+    const sampler = setInterval(() => (peak = Math.max(peak, process.memoryUsage().rss)), 10);
+    try {
+      const r = await app.upload('bombe.pdf', bomb);
+      const s = await waitForSource(app, r.data.source.id);
+      await waitFor(() => app.hotspot.services.media.activeCount === 0 && (jobOf(app, r.data.source.id)?.state ?? 'done') === 'done', { message: 'fertig' });
+      expect(s.status).toBe('ready');
+      expect(chunks(app, r.data.source.id).filter((c) => c.origin === 'ocr')).toHaveLength(0);
+    } finally {
+      clearInterval(sampler);
+    }
+    expect(Math.round((peak - rss0) / 1024 / 1024)).toBeLessThan(150);
+  });
+
+  it('T1: Eingebettete Bilder beschreiben wirkt auch bei reinen Text-PDFs', async () => {
+    const app = await start();
+    await app.api('PUT', '/api/settings', { mediaEmbeddedImages: true });
+    const r = await app.upload('text-mit-bild.pdf', makeScanPdf([{ lines: ['Diagramm zum Carnot-Prozess, beschrieben im Fließtext dieser Seite.'], image: { w: 320, h: 300 } }]));
+    await waitFor(() => jobOf(app, r.data.source.id)?.state === 'done', { message: 'Bild-Job' });
+    expect(pageChunk(app, r.data.source.id, 1, 'vision')?.text).toContain('320x300');
+    expect(app.hotspot.services.library.getSource(r.data.source.id)!.status).toBe('ready');
+  });
+
+  it('K9: Erneut versuchen nur aus Endzuständen (nicht, wenn die Quelle schon wieder verarbeitet wird)', async () => {
+    const app = await start();
+    const r = await app.upload('bad.png', makePng(8, 8, 'MOCKBAD'));
+    await waitForSource(app, r.data.source.id);
+    const job = jobOf(app, r.data.source.id)!;
+    expect(job.state).toBe('error');
+    // Quelle wird inzwischen (z. B. über die Bibliothek) neu verarbeitet
+    app.hotspot.services.db.prepare("UPDATE sources SET status = 'processing' WHERE id = ?").run(r.data.source.id);
+    const res = await app.api<{ error: string }>('POST', `/api/jobs/${job.id}/retry`);
+    expect([res.status, res.data.error]).toEqual([409, 'job_not_retryable']);
+    expect(app.hotspot.services.library.getSource(r.data.source.id)!.status).toBe('processing');
+    expect(jobOf(app, r.data.source.id)!.state).toBe('error');
+  });
+
+  it('K8: KI-Abschnitt löschen/bearbeiten ist atomar (Fehlerinjektion per Trigger)', async () => {
+    const app = await start();
+    const r = await app.upload('atomar.png', makePng(12, 12, 'Atomar Text'));
+    await waitForSource(app, r.data.source.id);
+    await waitForEmbeddings(app);
+    const db = app.hotspot.services.db;
+    const ocr = chunks(app, r.data.source.id).find((c) => c.origin === 'ocr')!;
+    const vecs = () => (db.prepare('SELECT count(*) AS n FROM embeddings WHERE chunk_id = ?').get(ocr.id) as { n: number }).n;
+    expect(vecs()).toBe(1);
+    db.exec("CREATE TRIGGER inj_count BEFORE UPDATE OF chunk_count ON sources BEGIN SELECT RAISE(ABORT, 'injiziert'); END");
+    expect((await app.api('DELETE', `/api/chunks/${ocr.id}`)).status).toBe(500);
+    expect(chunks(app, r.data.source.id).some((c) => c.id === ocr.id)).toBe(true);
+    expect(vecs()).toBe(1); // Vektor nicht verloren
+    db.exec('DROP TRIGGER inj_count');
+    db.exec("CREATE TRIGGER inj_text BEFORE UPDATE OF text ON chunks BEGIN SELECT RAISE(ABORT, 'injiziert'); END");
+    expect((await app.api('PATCH', `/api/chunks/${ocr.id}`, { text: 'neu' })).status).toBe(500);
+    expect(vecs()).toBe(1); // vorher: Vektor gelöscht, Text unverändert, embed_state = 1 -> nie neu eingebettet
+    db.exec('DROP TRIGGER inj_text');
+  });
+
+  it('K8: Job-Fehler und Quellstatus werden gemeinsam geschrieben', async () => {
+    const app = await start();
+    const db = app.hotspot.services.db;
+    db.exec("CREATE TRIGGER inj_err BEFORE UPDATE OF status ON sources WHEN NEW.status = 'error' BEGIN SELECT RAISE(ABORT, 'injiziert'); END");
+    const r = await app.upload('fehler.png', makePng(8, 8, 'MOCKBAD'));
+    await waitFor(() => visionCalls(app) === 3 && app.hotspot.services.media.activeCount === 0, { message: 'Job beendet' });
+    // Schreiben scheiterte -> beides unverändert (läuft/media); nach Neustart wird der Job erneut eingereiht
+    expect([jobOf(app, r.data.source.id)!.state, app.hotspot.services.library.getSource(r.data.source.id)!.status]).toEqual(['running', 'media']);
+    db.exec('DROP TRIGGER inj_err');
+  });
+
+  it('K8: PDF wird nie ready ohne ihren Scan-Job (Status und Job in einer Transaktion)', async () => {
+    const app = await start();
+    const db = app.hotspot.services.db;
+    // Protokoll aller Statuswechsel (in derselben Transaktion -> zurückgerollte Zwischenstände tauchen nicht auf)
+    db.exec('CREATE TABLE status_log(status TEXT); CREATE TRIGGER log_st AFTER UPDATE OF status ON sources BEGIN INSERT INTO status_log VALUES (NEW.status); END');
+    db.exec("CREATE TRIGGER inj_job BEFORE INSERT ON media_jobs BEGIN SELECT RAISE(ABORT, 'injiziert'); END");
+    const r = await app.upload('scan-atomar.pdf', makeScanPdf([{ image: { w: 300, h: 400 } }]));
+    expect((await waitForSource(app, r.data.source.id)).status).toBe('error');
+    const log = (db.prepare('SELECT status FROM status_log').all() as { status: string }[]).map((x) => x.status);
+    expect(log).not.toContain('ready'); // vorher: ready war kurz festgeschrieben – Absturz genau dann = PDF ohne OCR-Job
+    db.exec('DROP TRIGGER inj_job; DROP TRIGGER log_st; DROP TABLE status_log');
+  });
+
+  it('T3: Werkzeuge nachträglich vorhanden -> gespeicherte Audios werden beim Start automatisch verarbeitet', async () => {
+    const dataDir = tmpDir('t3');
+    const log = path.join(tmpDir('t3ctl'), 'tools.log');
+    const first = await start({}, { model: false, dataDir, log });
+    const r = await first.upload('spaeter.mp3', media({ duration: 60 }));
+    expect((await waitForSource(first, r.data.source.id)).statusDetail).toBe('media_tools_missing');
+    const tools = first.hotspot.services.config.mediaTools!;
+    await first.close();
+    apps = apps.filter((a) => a !== first);
+    fs.writeFileSync(path.join(tools.modelsDir!, 'ggml-small.bin'), 'nachträglich installiert');
+    const second = await startTestApp({ dataDir, mediaTools: tools });
+    apps.push(second);
+    expect((await waitForSource(second, r.data.source.id, ['ready', 'error'])).status).toBe('ready');
   });
 });

@@ -146,7 +146,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     toolsDir: config.toolsDir,
     toolOverrides: config.mediaTools,
     timeouts: config.mediaTimeouts,
-    storeChunks: (id, out, isCancelled, expect) => ingest.storeChunks(id, out, isCancelled, expect),
+    storeChunks: (id, out, isCancelled, expect, finalize) => ingest.storeChunks(id, out, isCancelled, expect, finalize),
     onChunksStored: () => embed.notify(),
     onChunksReplaced: () => vectors.invalidate(),
     log,
@@ -227,6 +227,8 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       ingest.start();
       embed.start();
       media.start();
+      // Werkzeuge seit dem letzten Lauf manuell nach tools/ gelegt? Dann gespeicherte Audio/Videos jetzt verarbeiten
+      if (media.requeueIfToolsReady()) ingest.wakeUp();
       maintenanceTimer = setTimeout(() => {
         if (closed) return;
         vectors.warmup();

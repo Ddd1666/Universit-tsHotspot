@@ -11,7 +11,8 @@ import type { Library } from '../library.ts';
 import type { Scheduler } from '../scheduler.ts';
 import { OllamaError, type OllamaClient } from '../ollama/client.ts';
 import { chunkBlocks } from '../ingest/chunker.ts';
-import { codedError, type ChunkDraft, type TextBlock } from '../ingest/types.ts';
+import { codedError, type ChunkDraft, type SourceKind, type TextBlock } from '../ingest/types.ts';
+import { unsupportedReason } from '../ingest/detect.ts';
 import type { ExtractOutput } from '../ingest/extract-run.ts';
 import { imageSize } from './image.ts';
 import type { PageImage, PageImageRequest } from './page-image-worker.ts';
@@ -106,7 +107,7 @@ export interface MediaDeps {
   toolOverrides?: ToolOverrides;
   timeouts?: Partial<MediaTimeouts>;
   /** Chunks einer Quelle ersetzen (IngestService.storeChunks) */
-  storeChunks: (sourceId: number, out: ExtractOutput, isCancelled: () => boolean, expectStatus: string) => Promise<void>;
+  storeChunks: (sourceId: number, out: ExtractOutput, isCancelled: () => boolean, expectStatus: string, finalize?: () => void) => Promise<void>;
   onChunksStored: () => void;
   onChunksReplaced: () => void;
   log: (msg: string, extra?: unknown) => void;
@@ -192,6 +193,9 @@ export class MediaService {
   handleSource(row: { id: number; kind: string; mime: string }): void {
     const s = this.deps.settings.get();
     const kind = row.kind as MediaJobKind;
+    // z. B. aus Phase 1 migrierte TIFF/HEIC/SVG: klarer Hinweis statt "beschädigt"
+    const reason = unsupportedReason(row.kind as SourceKind, row.mime);
+    if (reason) return this.setSource(row.id, 'unsupported', reason, 'processing');
     const enabled = kind === 'image' ? s.mediaImages : kind === 'audio' ? s.mediaAudio : kind === 'video' ? s.mediaVideo : false;
     if (!enabled) return this.setSource(row.id, 'unsupported', 'media_disabled', 'processing');
     if (kind === 'audio' || kind === 'video') {
@@ -211,15 +215,31 @@ export class MediaService {
     this.enqueue(sourceId, 'scan', JSON.stringify({ ocr, embedded }), 'ready');
   }
 
+  /**
+   * Job anlegen bzw. wieder einreihen. Bilder/Audio/Video: Quelle -> 'media'. Scan-Seiten einer PDF: die Quelle ist
+   * bereits indexiert und BLEIBT 'ready' (durchsuchbar); der OCR-Zustand steht nur in media_jobs.
+   */
   private enqueue(sourceId: number, kind: MediaJobKind, params: string | null, expectStatus: string): void {
     const { db } = this.deps;
     const now = Date.now();
     tx(db, () => {
-      const st = db.prepare("UPDATE sources SET status = 'media', status_detail = NULL WHERE id = ? AND status = ?").run(sourceId, expectStatus);
-      if (!Number(st.changes)) return;
-      const old = db.prepare('SELECT id, state, params FROM media_jobs WHERE source_id = ? ORDER BY id DESC LIMIT 1').get(sourceId) as
+      if (kind === 'scan') {
+        if (!db.prepare('SELECT 1 FROM sources WHERE id = ? AND status = ?').get(sourceId, expectStatus)) return;
+      } else {
+        const st = db.prepare("UPDATE sources SET status = 'media', status_detail = NULL WHERE id = ? AND status = ?").run(sourceId, expectStatus);
+        if (!Number(st.changes)) return;
+      }
+      let old = db.prepare('SELECT id, state, params FROM media_jobs WHERE source_id = ? ORDER BY id DESC LIMIT 1').get(sourceId) as
         | { id: number; state: MediaJobState; params: string | null }
         | undefined;
+      const running = old ? this.active.get(old.id) : undefined;
+      if (old && running) {
+        // Quelle wird neu verarbeitet, während ihr alter Job noch läuft: alten Job abbrechen, frisch anlegen
+        running.userCancelled = true;
+        running.ctrl.abort();
+        db.prepare('DELETE FROM media_jobs WHERE id = ?').run(old.id);
+        old = undefined;
+      }
       if (old) {
         // erneuter Versuch nach Fehler/Abbruch: Zwischenstände behalten (setzt fort); nach "fertig"/neuen Parametern: neu
         const fresh = old.state === 'done' || (params !== null && params !== old.params);
@@ -235,6 +255,13 @@ export class MediaService {
     this.emitSource(sourceId);
     this.emitJobs();
     this.wake();
+  }
+
+  /** Beim Start: Werkzeuge inzwischen vorhanden (z. B. manuell nach tools/ gelegt)? Dann wartende Medien einreihen. */
+  requeueIfToolsReady(): number {
+    const t = this.tools();
+    if (!t.ffmpeg || !t.whisper || !t.models[this.deps.settings.get().whisperModel]) return 0;
+    return this.requeueStored(['media_tools_missing']);
   }
 
   /** Nach Installation der Werkzeuge bzw. Einschalten eines Typs: "nur gespeicherte" Medien erneut einreihen. */
@@ -307,23 +334,36 @@ export class MediaService {
       a.ctrl.abort();
       return true;
     }
-    const row = this.deps.db.prepare("UPDATE media_jobs SET state = 'cancelled', updated_at = ? WHERE id = ? AND state = 'queued' RETURNING source_id").get(Date.now(), id) as
-      | { source_id: number }
-      | undefined;
-    if (!row) return false;
-    this.setSource(row.source_id, 'cancelled', null, 'media');
+    let sourceId: number | null = null;
+    this.safe(() =>
+      tx(this.deps.db, () => {
+        const row = this.deps.db.prepare("UPDATE media_jobs SET state = 'cancelled', updated_at = ? WHERE id = ? AND state = 'queued' RETURNING source_id").get(Date.now(), id) as
+          | { source_id: number }
+          | undefined;
+        if (!row) return;
+        sourceId = row.source_id;
+        this.setSourceSql(row.source_id, 'cancelled', null, 'media');
+      }),
+    );
+    if (sourceId === null) return false;
+    this.emitSource(sourceId);
     this.emitJobs();
     return true;
   }
 
+  /**
+   * Erneut versuchen nur aus Endzuständen: Job 'error'/'cancelled' UND Quelle in einem passenden Zustand
+   * (Bild/Audio/Video: error/cancelled/unsupported; Scan-Seiten: die PDF ist 'ready'). Sonst würde eine gerade
+   * neu eingereihte/verarbeitete Quelle doppelt angefasst.
+   */
   retry(id: number): boolean {
-    const row = this.deps.db.prepare("SELECT source_id, kind, params FROM media_jobs WHERE id = ? AND state IN ('error', 'cancelled')").get(id) as
-      | { source_id: number; kind: MediaJobKind; params: string | null }
-      | undefined;
+    const row = this.deps.db
+      .prepare("SELECT j.source_id, j.kind, j.params, s.status FROM media_jobs j JOIN sources s ON s.id = j.source_id WHERE j.id = ? AND j.state IN ('error', 'cancelled')")
+      .get(id) as { source_id: number; kind: MediaJobKind; params: string | null; status: string } | undefined;
     if (!row) return false;
-    const src = this.deps.db.prepare('SELECT status FROM sources WHERE id = ?').get(row.source_id) as { status: string } | undefined;
-    if (!src) return false;
-    this.enqueue(row.source_id, row.kind, row.params, src.status);
+    const allowed = row.kind === 'scan' ? ['ready'] : ['error', 'cancelled', 'unsupported'];
+    if (!allowed.includes(row.status)) return false;
+    this.enqueue(row.source_id, row.kind, row.params, row.status);
     return true;
   }
 
@@ -383,14 +423,24 @@ export class MediaService {
           // reguläres Beenden: Fortschritt bleibt, Job läuft beim nächsten Start weiter
           this.safe(() => this.deps.db.prepare("UPDATE media_jobs SET state = 'queued', updated_at = ? WHERE id = ?").run(Date.now(), job.id));
         } else if (a.userCancelled || isCancel(err)) {
-          this.finishJob(job.id, 'cancelled', null);
-          this.setSource(job.source_id, 'cancelled', null, 'media');
+          // Job und Quelle in EINER Transaktion (kein Zwischenzustand nach Absturz)
+          this.safe(() =>
+            tx(this.deps.db, () => {
+              this.finishJobSql(job.id, 'cancelled', null);
+              this.setSourceSql(job.source_id, 'cancelled', null, 'media');
+            }),
+          );
         } else {
           const code = (err as { code?: unknown }).code;
-          const detail = typeof code === 'string' && /^[a-z_]+$/.test(code) ? code : 'media_failed';
+          // nur eigene, übersetzte Codes anzeigen; alles andere (ENOENT, EPERM …) als allgemeiner Fehler
+          const detail = typeof code === 'string' && /^(media|vision|image|ocr)_[a-z_]+$/.test(code) ? code : 'media_failed';
           this.deps.log(`Medien-Job fehlgeschlagen (${job.kind} #${job.id})`, (err as Error).message);
-          this.finishJob(job.id, 'error', detail);
-          this.setSource(job.source_id, 'error', detail, 'media');
+          this.safe(() =>
+            tx(this.deps.db, () => {
+              this.finishJobSql(job.id, 'error', detail);
+              this.setSourceSql(job.source_id, 'error', detail, 'media');
+            }),
+          );
         }
       } finally {
         this.active.delete(job.id);
@@ -410,19 +460,24 @@ export class MediaService {
   }
 
   private finishJob(id: number, state: MediaJobState, detail: string | null): void {
-    this.safe(() => {
-      tx(this.deps.db, () => {
-        this.deps.db.prepare('UPDATE media_jobs SET state = ?, detail = ?, updated_at = ? WHERE id = ?').run(state, detail, Date.now(), id);
-        if (state === 'done') this.deps.db.prepare('DELETE FROM media_parts WHERE job_id = ?').run(id);
-        // Verlauf begrenzen
-        this.deps.db.prepare("DELETE FROM media_jobs WHERE state = 'done' AND id NOT IN (SELECT id FROM media_jobs WHERE state = 'done' ORDER BY id DESC LIMIT 200)").run();
-      });
-    });
+    this.safe(() => tx(this.deps.db, () => this.finishJobSql(id, state, detail)));
+  }
+
+  /** Ohne eigene Fehlerbehandlung – für Aufrufer, die es in ihre Transaktion einbetten (Rollback bei Fehler). */
+  private finishJobSql(id: number, state: MediaJobState, detail: string | null): void {
+    this.deps.db.prepare('UPDATE media_jobs SET state = ?, detail = ?, updated_at = ? WHERE id = ?').run(state, detail, Date.now(), id);
+    if (state === 'done') this.deps.db.prepare('DELETE FROM media_parts WHERE job_id = ?').run(id);
+    // Verlauf begrenzen
+    this.deps.db.prepare("DELETE FROM media_jobs WHERE state = 'done' AND id NOT IN (SELECT id FROM media_jobs WHERE state = 'done' ORDER BY id DESC LIMIT 200)").run();
   }
 
   private setSource(id: number, status: string, detail: string | null, expect: string): void {
-    this.safe(() => this.deps.db.prepare('UPDATE sources SET status = ?, status_detail = ?, processed_at = ? WHERE id = ? AND status = ?').run(status, detail, Date.now(), id, expect));
+    this.safe(() => this.setSourceSql(id, status, detail, expect));
     this.emitSource(id);
+  }
+
+  private setSourceSql(id: number, status: string, detail: string | null, expect: string): void {
+    this.deps.db.prepare('UPDATE sources SET status = ?, status_detail = ?, processed_at = ? WHERE id = ? AND status = ?').run(status, detail, Date.now(), id, expect);
   }
 
   private emitSource(id: number): void {
@@ -518,7 +573,8 @@ export class MediaService {
 
   private async storeBlocks(job: JobRow, a: Active, blocks: TextBlock[], warnings: string[] = []): Promise<void> {
     const chunks = chunkBlocks(blocks);
-    await this.deps.storeChunks(job.source_id, { chunks, pages: null, warnings }, () => a.ctrl.signal.aborted || this.stopped, 'media');
+    // Quelle "ready" und Job "fertig" in derselben Transaktion
+    await this.deps.storeChunks(job.source_id, { chunks, pages: null, warnings }, () => a.ctrl.signal.aborted || this.stopped, 'media', () => this.finishJobSql(job.id, 'done', null));
     if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'media_cancelled');
   }
 
@@ -548,40 +604,46 @@ export class MediaService {
     const total = ocr.length + embedded.length;
     const done = this.parts(job.id);
     const work = [...ocr.map((p) => ({ page: p, idx: p, mode: 'ocr' as const })), ...embedded.map((p) => ({ page: p, idx: EMBEDDED_BASE + p, mode: 'embedded' as const }))];
-    let embeddedImages = [...done.entries()].filter(([k]) => k >= EMBEDDED_BASE).reduce((n, [, v]) => n + (v as unknown[]).length, 0);
+    type Part = { img: number; r: VisionResult[] };
+    const part = (v: unknown): Part => (Array.isArray(v) ? { img: v.length, r: v as VisionResult[] } : (v as Part));
+    let embeddedImages = [...done.entries()].filter(([k]) => k >= EMBEDDED_BASE).reduce((n, [, v]) => n + part(v).img, 0);
     this.progress(job, a, done.size, total);
     const pages = new PageImages(this.deps.blobs.pathFor(src.sha256));
     try {
       for (const w of work) {
         if (done.has(w.idx)) continue;
         if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'media_cancelled');
-        const results: { text: string; description: string }[] = [];
+        const p: Part = { img: 0, r: [] };
         if (w.mode === 'ocr' || embeddedImages < MAX_EMBEDDED_IMAGES) {
-          const imgs = await pages.get(w.page, w.mode === 'ocr' ? { max: 1, minSide: 200, maxSide: 1600 } : { max: 2, minSide: 200, maxSide: 1280 });
+          const imgs = await pages.get(w.page, w.mode === 'ocr' ? { max: 1, minSide: 200, maxSide: 1600 } : { max: 2, minSide: 200, maxSide: 1280 }, a.ctrl.signal);
+          p.img = imgs.length;
           for (const img of imgs) {
-            results.push(await this.vision(job, a, Buffer.from(img.png).toString('base64'), w.mode === 'ocr' ? 'page' : 'image'));
+            p.r.push(await this.vision(job, a, Buffer.from(img.png).toString('base64'), w.mode === 'ocr' ? 'page' : 'image'));
             if (w.mode === 'embedded') embeddedImages++;
           }
         }
-        done.set(w.idx, results);
-        this.savePart(job, a, w.idx, results, done.size, total);
+        done.set(w.idx, p);
+        this.savePart(job, a, w.idx, p, done.size, total);
       }
     } finally {
       await pages.close();
     }
     const drafts: ChunkDraft[] = [];
     let ocrChars = 0;
+    let ocrImages = 0;
     for (const w of work) {
-      const results = (done.get(w.idx) ?? []) as { text: string; description: string }[];
+      const p = part(done.get(w.idx) ?? []);
+      if (w.mode === 'ocr') ocrImages += p.img;
       const blocks: TextBlock[] = [];
-      for (const r of results) {
+      for (const r of p.r) {
         if (r.text) blocks.push({ text: r.text, loc: { kind: 'page', index: w.page }, origin: 'ocr' });
         if (w.mode === 'ocr') ocrChars += r.text.length;
         if (r.description && r.description.length >= 20) blocks.push({ text: r.description, loc: { kind: 'page', index: w.page }, origin: 'vision' });
       }
       drafts.push(...chunkBlocks(blocks));
     }
-    this.mergePageChunks(job.source_id, drafts, ocr.length > 0 && ocrChars === 0 ? 'ocr_empty' : null);
+    // "ocr_empty" nur, wenn es wirklich Seitenbilder gab, aber keine Schrift darauf erkannt wurde
+    this.mergePageChunks(job.id, job.source_id, drafts, { ocrText: ocrChars > 0, ocrEmpty: ocrImages > 0 && ocrChars === 0 });
     if (drafts.length) this.deps.onChunksStored();
   }
 
@@ -589,10 +651,16 @@ export class MediaService {
    * OCR-/Bild-Abschnitte seitengenau zwischen die vorhandenen Text-Abschnitte einsortieren (ord neu nummerieren),
    * ohne vorhandene Abschnitte/Vektoren anzufassen. Frühere KI-Abschnitte dieser Quelle werden ersetzt.
    */
-  private mergePageChunks(sourceId: number, drafts: ChunkDraft[], detail: string | null): void {
+  private mergePageChunks(jobId: number, sourceId: number, drafts: ChunkDraft[], ocr: { ocrText: boolean; ocrEmpty: boolean }): void {
     const { db } = this.deps;
     tx(db, () => {
-      if (!db.prepare("SELECT 1 FROM sources WHERE id = ? AND status = 'media'").get(sourceId)) throw codedError('abgebrochen', 'media_cancelled');
+      // Die PDF ist die ganze Zeit "ready" geblieben; wurde sie inzwischen gelöscht/neu eingereiht -> verwerfen
+      const src = db.prepare("SELECT status_detail AS detail FROM sources WHERE id = ? AND status = 'ready'").get(sourceId) as { detail: string | null } | undefined;
+      if (!src) throw codedError('abgebrochen', 'media_cancelled');
+      let warnings = (src.detail ?? '').split(',').filter((w) => w && w !== 'ocr_empty');
+      if (ocr.ocrText) warnings = warnings.filter((w) => w !== 'no_text' && w !== 'partial_text');
+      if (ocr.ocrEmpty) warnings.push('ocr_empty');
+      const detail = warnings.join(',') || null;
       const oldAi = db.prepare('DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id = ? AND origin IS NOT NULL)').run(sourceId);
       db.prepare('DELETE FROM chunks WHERE source_id = ? AND origin IS NOT NULL').run(sourceId);
       if (Number(oldAi.changes)) this.deps.onChunksReplaced();
@@ -616,7 +684,8 @@ export class MediaService {
           ins.run(sourceId, ord, c.text, c.heading, c.locKind, c.locStart, c.locEnd, c.locLabel, c.tokenEst, c.origin ?? null);
         }
       });
-      db.prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, processed_at = ? WHERE id = ?").run(detail, items.length, Date.now(), sourceId);
+      db.prepare('UPDATE sources SET status_detail = ?, chunk_count = ?, processed_at = ? WHERE id = ?').run(detail, items.length, Date.now(), sourceId);
+      this.finishJobSql(jobId, 'done', null);
     });
   }
 
@@ -732,16 +801,21 @@ class PageImages {
     return this.worker;
   }
 
-  get(page: number, opts: Omit<PageImageRequest, 'id' | 'page'>): Promise<PageImage[]> {
+  get(page: number, opts: Omit<PageImageRequest, 'id' | 'page'>, signal?: AbortSignal): Promise<PageImage[]> {
     if (!fs.existsSync(this.file)) return Promise.reject(codedError('Datei fehlt', 'media_cancelled'));
+    if (signal?.aborted) return Promise.reject(codedError('abgebrochen', 'media_cancelled'));
     const w = this.ensure();
     const id = this.nextId++;
-    return new Promise((resolve) => {
-      const done = (imgs: PageImage[]) => {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         w.off('message', onMsg);
         w.off('error', onErr);
         w.off('exit', onErr);
+      };
+      const done = (imgs: PageImage[]) => {
+        cleanup();
         resolve(imgs);
       };
       const onMsg = (m: { id: number; ok: boolean; images?: PageImage[] }) => m.id === id && done(m.ok ? (m.images ?? []) : []);
@@ -749,10 +823,18 @@ class PageImages {
         this.worker = null;
         done([]);
       };
+      // Abbruch/Löschen: Dekodierung einer großen Seite nicht abwarten, Worker sofort beenden
+      const onAbort = () => {
+        cleanup();
+        this.worker = null;
+        void w.terminate();
+        reject(codedError('abgebrochen', 'media_cancelled'));
+      };
       const timer = setTimeout(() => {
         void w.terminate();
         onErr();
       }, 120_000);
+      signal?.addEventListener('abort', onAbort, { once: true });
       w.on('message', onMsg);
       w.on('error', onErr);
       w.on('exit', onErr);

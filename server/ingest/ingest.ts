@@ -263,8 +263,10 @@ export class IngestService {
     const out = await handle.promise;
     let cancelled = false;
     this.active.set(row.id, { cancel: () => (cancelled = true), batchId: row.batch_id, name: row.name });
-    await this.storeChunks(row.id, out, () => cancelled || this.stopped);
-    if (out.ocrPages?.length && !cancelled && !this.stopped) this.media?.afterPdf(row.id, out.ocrPages, out.pages);
+    // PDF: "ready" und ggf. Scan-/Bild-Job in EINER Transaktion – nach einem Absturz gibt es keine indexierte PDF,
+    // deren OCR-Job nie angelegt wurde. afterPdf entscheidet selbst (Scan-OCR und/oder eingebettete Bilder).
+    const media = this.media;
+    await this.storeChunks(row.id, out, () => cancelled || this.stopped, 'processing', row.kind === 'pdf' && media ? () => media.afterPdf(row.id, out.ocrPages ?? [], out.pages) : undefined);
   }
 
   /**
@@ -272,7 +274,7 @@ export class IngestService {
    * blockieren so weder API noch Chat-Streaming. FTS-Trigger aktualisieren den Volltextindex automatisch.
    * Bei Abbruch/Löschen werden bereits geschriebene Chunks wieder entfernt.
    */
-  async storeChunks(sourceId: number, out: ExtractOutput, isCancelled: () => boolean = () => false, expectStatus = 'processing'): Promise<void> {
+  async storeChunks(sourceId: number, out: ExtractOutput, isCancelled: () => boolean = () => false, expectStatus = 'processing', finalize?: () => void): Promise<void> {
     const { db } = this.deps;
     const stillProcessing = () => !isCancelled() && !!db.prepare('SELECT 1 FROM sources WHERE id = ? AND status = ?').get(sourceId, expectStatus);
     if (!stillProcessing()) return; // zwischenzeitlich gelöscht/abgebrochen
@@ -308,14 +310,13 @@ export class IngestService {
       throw err;
     }
     const detail = out.chunks.length === 0 ? 'no_text' : out.warnings.filter((w) => w !== 'no_text').join(',') || null;
-    db.prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, page_count = coalesce(?, page_count), processed_at = ? WHERE id = ? AND status = ?").run(
-      detail,
-      out.chunks.length,
-      out.pages,
-      Date.now(),
-      sourceId,
-      expectStatus,
-    );
+    // Status + Folgeschritt (z. B. Medien-Job "fertig" / Scan-Job anlegen) atomar
+    tx(db, () => {
+      const r = db
+        .prepare("UPDATE sources SET status = 'ready', status_detail = ?, chunk_count = ?, page_count = coalesce(?, page_count), processed_at = ? WHERE id = ? AND status = ?")
+        .run(detail, out.chunks.length, out.pages, Date.now(), sourceId, expectStatus);
+      if (Number(r.changes)) finalize?.();
+    });
     if (out.chunks.length) this.deps.onChunksStored();
   }
 

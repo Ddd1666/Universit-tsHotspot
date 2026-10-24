@@ -203,7 +203,49 @@ export function patchZipDeclaredSizes(zip: Buffer, size: number): Buffer {
  * PDF mit Bildseiten (wie ein Scan): pro Seite optional Textzeilen und/oder ein Rasterbild (DeviceRGB, Flate).
  * Bildinhalt ist ein einfaches Muster – OCR liefert hier nur das Mock-Ollama.
  */
-export function makeScanPdf(pages: { lines?: string[]; image?: { w: number; h: number } }[]): Buffer {
+export interface ScanImage {
+  w: number;
+  h: number;
+  /** 1 = Schwarz-Weiß (1 Bit/Pixel, DeviceGray), Standard 8 Bit RGB */
+  bpc?: 1 | 8;
+  /** /ImageMask true (1 Bit, typisch für Fax-/CCITT-Scans) */
+  mask?: boolean;
+  /** als Inline-Bild (BI … ID … EI) im Inhaltsstrom statt als XObject */
+  inline?: boolean;
+  /** Bildbombe: Daten nur aus Nullen, gestreamt komprimiert (Fixture selbst braucht kaum RAM) */
+  zeros?: boolean;
+}
+
+/** Komprimiert w*h*bytes Nullen ohne den ganzen Puffer anzulegen (für Dekompressionsbomben-Fixtures). */
+function deflateZeros(total: number): Buffer {
+  // zlib-Kopf + aneinandergehängte, nicht-finale Raw-Deflate-Blöcke (je 1 MB Nullen) + leerer Schlussblock + Adler-32
+  const chunk = Buffer.alloc(1 << 20);
+  const parts: Buffer[] = [Buffer.from([0x78, 0x9c])];
+  for (let left = total; left > 0; left -= chunk.length) {
+    parts.push(zlib.deflateRawSync(left >= chunk.length ? chunk : chunk.subarray(0, left), { finishFlush: zlib.constants.Z_SYNC_FLUSH }));
+  }
+  parts.push(zlib.deflateRawSync(Buffer.alloc(0)));
+  const adler = Buffer.alloc(4);
+  adler.writeUInt32BE((((total % 65521) << 16) | 1) >>> 0); // Adler-32 von lauter Nullen: a = 1, b = n mod 65521
+  parts.push(adler);
+  return Buffer.concat(parts);
+}
+
+function scanImageBytes(img: ScanImage): Buffer {
+  const { w, h } = img;
+  if (img.mask || img.bpc === 1) {
+    const rowBytes = (w + 7) >> 3;
+    const raw = Buffer.alloc(rowBytes * h);
+    // Muster: abwechselnd 8 Pixel gemalt/frei
+    for (let y = 0; y < h; y++) for (let b = 0; b < rowBytes; b++) raw[y * rowBytes + b] = b % 2 ? 0xff : 0x00;
+    return raw;
+  }
+  const raw = Buffer.alloc(w * h * 3);
+  for (let i = 0; i < w * h; i++) raw[i * 3] = raw[i * 3 + 1] = raw[i * 3 + 2] = (i % w) % 16 < 8 ? 20 : 235;
+  return raw;
+}
+
+export function makeScanPdf(pages: { lines?: string[]; image?: ScanImage }[]): Buffer {
   const objs: Buffer[] = [];
   const add = (b: Buffer | string) => {
     objs.push(typeof b === 'string' ? Buffer.from(b, 'latin1') : b);
@@ -214,28 +256,36 @@ export function makeScanPdf(pages: { lines?: string[]; image?: { w: number; h: n
   const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
   const pageIds: number[] = [];
   for (const p of pages) {
-    const ops: string[] = [];
+    const ops: Buffer[] = [];
     let xobj = '';
     if (p.image) {
-      const { w, h } = p.image;
-      const raw = Buffer.alloc(w * h * 3);
-      for (let i = 0; i < w * h; i++) raw[i * 3] = raw[i * 3 + 1] = raw[i * 3 + 2] = (i % w) % 16 < 8 ? 20 : 235;
-      const data = zlib.deflateSync(raw);
-      const imgId = add(
-        Buffer.concat([
-          Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ${data.length} >>\nstream\n`, 'latin1'),
-          data,
-          Buffer.from('\nendstream', 'latin1'),
-        ]),
-      );
-      xobj = ` /XObject << /Im1 ${imgId} 0 R >>`;
-      ops.push('q 612 0 0 792 0 0 cm /Im1 Do Q');
+      const img = p.image;
+      const { w, h } = img;
+      const oneBit = img.mask || img.bpc === 1;
+      const colour = img.mask ? '/ImageMask true' : oneBit ? '/ColorSpace /DeviceGray' : '/ColorSpace /DeviceRGB';
+      const bpc = oneBit ? 1 : 8;
+      if (img.inline) {
+        // Inline-Bild ohne Filter (Daten roh im Inhaltsstrom)
+        const inlineCs = img.mask ? '/IM true' : oneBit ? '/CS /G' : '/CS /RGB';
+        ops.push(Buffer.from(`q 612 0 0 792 0 0 cm\nBI /W ${w} /H ${h} ${inlineCs} /BPC ${bpc} ID `, 'latin1'), scanImageBytes(img), Buffer.from('\nEI Q', 'latin1'));
+      } else {
+        const data = img.zeros ? deflateZeros(oneBit ? ((w + 7) >> 3) * h : w * h * 3) : zlib.deflateSync(scanImageBytes(img));
+        const imgId = add(
+          Buffer.concat([
+            Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} ${colour} /BitsPerComponent ${bpc} /Filter /FlateDecode /Length ${data.length} >>\nstream\n`, 'latin1'),
+            data,
+            Buffer.from('\nendstream', 'latin1'),
+          ]),
+        );
+        xobj = ` /XObject << /Im1 ${imgId} 0 R >>`;
+        ops.push(Buffer.from('q 612 0 0 792 0 0 cm /Im1 Do Q', 'latin1'));
+      }
     }
     if (p.lines?.length) {
-      ops.push('BT', '/F1 11 Tf', '14 TL', '72 760 Td', ...p.lines.map((l) => `(${pdfEscape(l)}) Tj T*`), 'ET');
+      ops.push(Buffer.from(['BT', '/F1 11 Tf', '14 TL', '72 760 Td', ...p.lines.map((l) => `(${pdfEscape(l)}) Tj T*`), 'ET'].join('\n'), 'latin1'));
     }
-    const stream = ops.join('\n');
-    const contentId = add(`<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`);
+    const stream = Buffer.concat(ops.flatMap((o, i) => (i ? [Buffer.from('\n'), o] : [o])));
+    const contentId = add(Buffer.concat([Buffer.from(`<< /Length ${stream.length} >>\nstream\n`, 'latin1'), stream, Buffer.from('\nendstream', 'latin1')]));
     pageIds.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792] /Contents ${contentId} 0 R /Resources << /Font << /F1 ${fontId} 0 R >>${xobj} >> >>`));
   }
   objs[catalogId - 1] = Buffer.from(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`, 'latin1');
