@@ -13,7 +13,8 @@ db.exec(`INSERT INTO subjects(name, color, created_at) VALUES ('Physik', '#39e6f
 INSERT INTO sources(subject_id, sha256, name, size, mime, kind, status, chunk_count, imported_at, processed_at)
   VALUES (1, '${'a'.repeat(64)}', 'Skript.pdf', 1000, 'application/pdf', 'pdf', 'ready', 2, 1, 2),
          (1, '${'b'.repeat(64)}', 'Tafelbild.png', 500, 'image/png', 'image', 'unsupported', 0, 1, NULL),
-         (NULL, '${'c'.repeat(64)}', 'Vorlesung.mp3', 900, 'audio/mpeg', 'audio', 'unsupported', 0, 1, NULL);
+         (NULL, '${'c'.repeat(64)}', 'Vorlesung.mp3', 900, 'audio/mpeg', 'audio', 'unsupported', 0, 1, NULL),
+         (NULL, '${'d'.repeat(64)}', 'Scan.tiff', 700, 'image/tiff', 'image', 'unsupported', 0, 1, NULL); -- nachträglich ergänzt (K7)
 UPDATE sources SET status_detail = 'phase2_media' WHERE kind IN ('image', 'audio');
 INSERT INTO chunks(source_id, ord, text, heading, loc_kind, loc_start, loc_end, token_est, embed_state)
   VALUES (1, 0, 'Der erste Hauptsatz beschreibt die Energieerhaltung.', NULL, 'page', 1, 1, 18, 1),

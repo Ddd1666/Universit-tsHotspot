@@ -39,7 +39,7 @@ describe('DB-Migration von einer echten Phase-1-Datenbank', () => {
     expect(db.prepare('SELECT origin FROM chunks WHERE id = 1').get()).toEqual({ origin: null });
     expect(db.prepare('SELECT count(*) AS n FROM media_jobs').get()).toEqual({ n: 0 });
     // in Phase 1 nur gespeicherte Medien werden jetzt verarbeitet
-    expect(db.prepare("SELECT status FROM sources WHERE kind IN ('image', 'audio') ORDER BY id").all()).toEqual([{ status: 'queued' }, { status: 'queued' }]);
+    expect(db.prepare("SELECT status FROM sources WHERE kind IN ('image', 'audio') ORDER BY id").all()).toEqual([{ status: 'queued' }, { status: 'queued' }, { status: 'queued' }]);
     db.close();
 
     const backups = fs.readdirSync(path.join(dir, 'backups'));
@@ -50,6 +50,19 @@ describe('DB-Migration von einer echten Phase-1-Datenbank', () => {
     expect(bak.prepare('SELECT count(*) AS n FROM chunks').get()).toEqual({ n: 2 });
     expect(bak.prepare("SELECT status FROM sources WHERE kind = 'image'").get()).toEqual({ status: 'unsupported' });
     bak.close();
+  });
+
+  it('K7: migrierte TIFF-Datei bekommt den Formathinweis (nicht "beschädigt"/Fehler)', async () => {
+    const { dir } = phase1Copy();
+    const { startTestApp, waitForSource } = await import('./helpers.ts');
+    const app = await startTestApp({ dataDir: dir });
+    try {
+      const tiff = app.hotspot.services.db.prepare("SELECT id FROM sources WHERE name = 'Scan.tiff'").get() as { id: number };
+      const s = await waitForSource(app, tiff.id);
+      expect([s.status, s.statusDetail]).toEqual(['unsupported', 'image_format_unsupported']);
+    } finally {
+      await app.close();
+    }
   });
 
   it('idempotent: erneutes Öffnen migriert nicht erneut und legt kein weiteres Backup an', () => {
