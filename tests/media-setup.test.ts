@@ -181,6 +181,26 @@ describe('Einstellungen: Installation nur nach Bestätigung, danach automatische
     }
   });
 
+  it('K4: Installationsfehler (Ziel gesperrt/belegt) -> fester Code statt rohem EPERM/EISDIR', async () => {
+    const dir = tmpDir('setup');
+    const toolsDir = path.join(dir, 'tools');
+    const item = { ...serve('belegt.bin', Buffer.from('modell')), id: 'model-small', target: 'models/ggml-small.bin', check: 'models/ggml-small.bin' };
+    // Ziel ist ein (nicht leerer) Ordner -> rm ohne recursive scheitert
+    fs.mkdirSync(path.join(toolsDir, 'models', 'ggml-small.bin'), { recursive: true });
+    fs.writeFileSync(path.join(toolsDir, 'models', 'ggml-small.bin', 'drin.txt'), 'x');
+    const manifestFile = path.join(dir, 'manifest.json');
+    fs.writeFileSync(manifestFile, JSON.stringify({ version: 1, platform: currentPlatform(), items: [item] }));
+    const app = await startTestApp({ toolsDir, mediaManifestFile: manifestFile, mediaAllowLocalHttp: true });
+    try {
+      await app.api('POST', '/api/media/setup', { ids: ['model-small'], confirm: true });
+      await app.hotspot.services.mediaSetup.idle();
+      const st = (await app.api<{ setup: { error: { code: string } } }>('GET', '/api/media/status')).data.setup;
+      expect(st.error.code).toBe('download_install_failed');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('Download-Fehler wird pro Eintrag gemeldet (kein Absturz)', async () => {
     const dir = tmpDir('setup');
     const item = { ...serve('kaputt.bin', Buffer.from('a')), id: 'model-small', sha256: 'c'.repeat(64) };

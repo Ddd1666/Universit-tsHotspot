@@ -55,6 +55,18 @@ describe('Übersetzungen für Server-Fehlercodes (EN-Oberfläche ohne deutsche S
     expect(i18n.split(`'status.media':`).length - 1).toBe(2);
   });
 
+  it('K4: Download/Installation meldet nur feste Codes – rohe Node-Codes (EPERM, ENOSPC …) werden abgebildet', async () => {
+    const { SETUP_ERROR_CODES, setupErrorCode } = await import('../server/media/installer.ts');
+    for (const code of SETUP_ERROR_CODES) expect(i18n.split(`'detail.${code}':`).length - 1, code).toBe(2);
+    expect(setupErrorCode(Object.assign(new Error('x'), { code: 'EPERM' }))).toBe('download_install_failed');
+    expect(setupErrorCode(Object.assign(new Error('x'), { code: 'ENOSPC' }))).toBe('download_disk_full');
+    expect(setupErrorCode(new Error('ohne Code'))).toBe('download_install_failed');
+    expect(setupErrorCode(Object.assign(new Error('x'), { code: 'download_hash_mismatch' }))).toBe('download_hash_mismatch');
+    // die Kommandozeile hat für jeden Code einen Hinweis
+    const cli = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'setup-media.mjs'), 'utf8');
+    for (const code of SETUP_ERROR_CODES) expect(cli, code).toContain(`  ${code}: '`);
+  });
+
   it('Extraktion wirft keine Fehler ohne Code (sonst landet deutscher Text in der EN-Oberfläche)', () => {
     const dir = path.join(PROJECT_ROOT, 'server', 'ingest');
     const files = [...walk(path.join(dir, 'extractors')), path.join(dir, 'extract-run.ts')];

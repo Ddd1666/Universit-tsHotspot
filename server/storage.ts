@@ -27,7 +27,7 @@ const SHA_RE = /^[a-f0-9]{64}$/;
 const HEAD_BYTES = 8192;
 
 /** Windows: Virenscanner/Indexer halten frische Dateien kurz offen -> EPERM/EBUSY. Kurz erneut versuchen. */
-async function withFsRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+export async function withFsRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {

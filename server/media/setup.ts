@@ -1,6 +1,6 @@
 import type { EventBus } from '../events.ts';
 import { HttpError } from '../library.ts';
-import { currentPlatform, download, install, isInstalled, loadManifest, type Manifest } from './installer.ts';
+import { currentPlatform, download, install, isInstalled, loadManifest, setupErrorCode, type Manifest } from './installer.ts';
 
 export interface SetupState {
   running: boolean;
@@ -75,7 +75,7 @@ export class MediaSetup {
           this.st.done.push(it!.id);
           this.deps.log(`Medien-Werkzeug installiert: ${it!.id}`);
         } catch (err) {
-          const code = (err as { code?: string }).code ?? 'download_network';
+          const code = setupErrorCode(err);
           this.st.error = { id: it!.id, code };
           this.deps.log(`Medien-Werkzeug fehlgeschlagen: ${it!.id}`, (err as Error).message);
           break;

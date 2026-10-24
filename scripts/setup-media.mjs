@@ -8,7 +8,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { ROOT } from './lib.mjs';
 
-const { loadManifest, download, install, isInstalled, currentPlatform } = await import('../server/media/installer.ts');
+const { loadManifest, download, install, isInstalled, currentPlatform, setupErrorCode } = await import('../server/media/installer.ts');
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith('--')));
@@ -25,6 +25,9 @@ const HINTS = {
   download_size_mismatch: 'Dateigröße stimmt nicht mit dem Manifest überein – nichts installiert.',
   download_contents: 'Archiv enthält die erwarteten Dateien nicht.',
   download_cancelled: 'Abgebrochen.',
+  download_manifest: 'Manifest ungültig – Projekt neu herunterladen.',
+  download_disk_full: 'Kein Platz mehr auf dem Laufwerk – Speicher freigeben und erneut starten.',
+  download_install_failed: 'Installation fehlgeschlagen (Datei gesperrt? Virenscanner?) – erneut starten.',
 };
 
 console.log(`Ziel: ${toolsDir}  (Plattform ${currentPlatform()}, Manifest für ${manifest.platform})`);
@@ -78,7 +81,8 @@ for (const it of todo) {
     await install(it, toolsDir, file);
     console.log(`\r  ${it.id}: installiert                 `);
   } catch (err) {
-    console.error(`\n  ${it.id}: FEHLER (${err.code ?? 'unbekannt'}) – ${HINTS[err.code] ?? err.message}`);
+    const code = setupErrorCode(err);
+    console.error(`\n  ${it.id}: FEHLER (${code}) – ${HINTS[code]}`);
     process.exit(1);
   }
 }

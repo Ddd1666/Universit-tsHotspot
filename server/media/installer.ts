@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { codedError } from '../ingest/types.ts';
 import { openZip } from '../ingest/zip.ts';
+import { withFsRetry } from '../storage.ts';
 
 /**
  * Bestätigter, SHA-256-geprüfter Download der Medien-Werkzeuge in den Projektordner (`tools/`).
@@ -73,6 +74,29 @@ export function loadManifest(file: string, opts: { allowLocalHttp?: boolean } = 
   return validateManifest(JSON.parse(fs.readFileSync(file, 'utf8')), opts);
 }
 
+/** Alle Fehlercodes, die Download/Installation nach außen melden (jeder hat einen DE+EN-Text in der Oberfläche). */
+export const SETUP_ERROR_CODES = [
+  'download_manifest',
+  'download_cancelled',
+  'download_network',
+  'download_proxy',
+  'download_http',
+  'download_size_mismatch',
+  'download_hash_mismatch',
+  'download_contents',
+  'download_disk_full',
+  'download_install_failed',
+] as const;
+export type SetupErrorCode = (typeof SETUP_ERROR_CODES)[number];
+
+/** Beliebigen Fehler auf einen festen Code abbilden – rohe Node-Codes (EPERM, ENOSPC …) erreichen nie die Oberfläche. */
+export function setupErrorCode(err: unknown): SetupErrorCode {
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code === 'string' && (SETUP_ERROR_CODES as readonly string[]).includes(code)) return code as SetupErrorCode;
+  if (code === 'ENOSPC' || code === 'EDQUOT') return 'download_disk_full';
+  return 'download_install_failed';
+}
+
 export function currentPlatform(): string {
   return `${process.platform}-${process.arch}`;
 }
@@ -120,7 +144,7 @@ export async function download(
     /* neu */
   }
   if (have > item.size) {
-    await fsp.rm(part, { force: true });
+    await withFsRetry(() => fsp.rm(part, { force: true }));
     have = 0;
   }
   if (have < item.size) {
@@ -158,7 +182,7 @@ export async function download(
         await fh.close().catch(() => {});
       }
       if (tooBig) {
-        await fsp.rm(part, { force: true });
+        await withFsRetry(() => fsp.rm(part, { force: true }));
         throw codedError('Datei größer als im Manifest angegeben', 'download_size_mismatch');
       }
     }
@@ -167,7 +191,7 @@ export async function download(
   if (size !== item.size) throw codedError(`Größe stimmt nicht (${size} statt ${item.size})`, size > item.size ? 'download_size_mismatch' : 'download_network');
   const hash = await sha256File(part);
   if (hash !== item.sha256) {
-    await fsp.rm(part, { force: true });
+    await withFsRetry(() => fsp.rm(part, { force: true }));
     throw codedError('SHA-256 stimmt nicht – Datei verworfen', 'download_hash_mismatch');
   }
   return part;
@@ -179,11 +203,11 @@ export async function install(item: ManifestItem, toolsDir: string, file: string
   if (!path.resolve(target).startsWith(path.resolve(toolsDir) + path.sep)) throw codedError('Ziel außerhalb von tools/', 'download_manifest');
   if (item.type === 'file') {
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.rm(target, { force: true });
-    await fsp.rename(file, target);
+    await withFsRetry(() => fsp.rm(target, { force: true }));
+    await withFsRetry(() => fsp.rename(file, target));
   } else {
     const staging = path.join(toolsDir, '.download', `${item.id}.staging`);
-    await fsp.rm(staging, { recursive: true, force: true });
+    await withFsRetry(() => fsp.rm(staging, { recursive: true, force: true }));
     await fsp.mkdir(staging, { recursive: true });
     const zip = await openZip(file, { maxEntries: 20_000, maxTotalBytes: 4 * 1024 ** 3, maxEntryBytes: 2 * 1024 ** 3, maxRatio: 1000 });
     let n = 0;
@@ -199,10 +223,10 @@ export async function install(item: ManifestItem, toolsDir: string, file: string
       zip.close();
     }
     if (!n) throw codedError('Archiv enthält die erwarteten Dateien nicht', 'download_contents');
-    await fsp.rm(target, { recursive: true, force: true });
+    await withFsRetry(() => fsp.rm(target, { recursive: true, force: true }));
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.rename(staging, target);
-    await fsp.rm(file, { force: true });
+    await withFsRetry(() => fsp.rename(staging, target));
+    await withFsRetry(() => fsp.rm(file, { force: true }));
   }
   if (!isInstalled(toolsDir, item)) throw codedError('Nach der Installation fehlt die erwartete Datei', 'download_contents');
 }
