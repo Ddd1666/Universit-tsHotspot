@@ -7,7 +7,12 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
 
 ![Chat mit Quellen](docs/screenshots/chat-quellen.png)
 
-**Phase 1 (dieser Stand):** Gerüst, Import, Hybrid-Suche, Chat. Weitere Ansichten: [Bibliothek](docs/screenshots/bibliothek.png) ·
+**Phase 2 (dieser Stand):** Bilder, gescannte PDFs, Audio und Video werden lesbar (OCR/Bildbeschreibung per Vision-Modell,
+Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue Ansichten: [Aufgaben](docs/screenshots/phase2-aufgaben.png) ·
+[Transkript-Zitat mit Player](docs/screenshots/phase2-chat-transkript-player.png) · [Bild mit KI-Kennzeichnung](docs/screenshots/phase2-bild-ki.png) ·
+[Scan seitengenau](docs/screenshots/phase2-suche-scan.png) · [Einstellungen → Medien](docs/screenshots/phase2-einstellungen-medien.png) · [Aufgaben schmal](docs/screenshots/phase2-schmal-aufgaben.png)
+
+**Phase 1:** Gerüst, Import, Hybrid-Suche, Chat. Weitere Ansichten: [Bibliothek](docs/screenshots/bibliothek.png) ·
 [Suche](docs/screenshots/suche.png) · [Einstellungen](docs/screenshots/einstellungen.png) · [Command-Palette](docs/screenshots/command-palette.png) ·
 [Hell](docs/screenshots/suche-hell.png) · [Schmal: Chat](docs/screenshots/schmal-chat.png) / [Bibliothek](docs/screenshots/schmal-bibliothek.png)
 
@@ -17,13 +22,28 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
   ohne Gesamtabbruch; Ordner-Import überspringt Systemordner (`.git`, `node_modules`, `__pycache__`, `.venv` …) und Office-Sperrdateien (`~$…`).
   Jede Datei wird gespeichert (SHA-256, Dedupe). Text wird extrahiert aus PDF (mit Seitenzahlen), DOCX, PPTX
   (Folien + Notizen), XLSX/CSV (Blätter/Zeilen), ODT/ODP/ODS, Markdown/Text/HTML/JSON/Code/Jupyter, ZIP (sicher entpackt).
-  Bilder/Audio/Video/Unbekanntes: gespeichert, Status „nur gespeichert – Analyse folgt in Phase 2“.
+  Bilder/Audio/Video und gescannte PDF-Seiten: siehe „Medien“. Unbekanntes: gespeichert, Status „nur gespeichert“.
+- **Medien (Phase 2):**
+  - **Bilder** (PNG/JPG/GIF/WebP/BMP): ein Vision-Aufruf (Standard `gemma3:4b`) liefert Text im Bild (OCR) **und** eine Beschreibung
+    (strukturierte Ausgabe per JSON-Schema, Validierung, max. 3 Versuche). TIFF/HEIC/SVG werden nur gespeichert (Hinweis „als PNG/JPG exportieren“).
+  - **Gescannte PDFs:** pro Seite entschieden – Seiten mit < 40 sichtbaren Zeichen Textschicht gehen an das Vision-Modell; Treffer bleiben seitengenau („S. 2“).
+  - **Audio/Video** (MP3/WAV/M4A/OGG/FLAC/MP4/MKV/WebM …): ffmpeg (16-kHz-Mono) + whisper.cpp als Kindprozess mit festen Argumenten,
+    10-min-Segmente mit 5 s Überlappung, Fortschritt bleibt über Neustarts erhalten; Transkript-Abschnitte ≤ 2 min mit Zeitbereich `mm:ss–mm:ss`.
+    Zitat anklicken → Player im Quellen-Panel springt an die Stelle. Optional (aus): Video-Keyframes (≤ 12) und eingebettete PDF-Bilder (≤ 30) beschreiben.
+  - **KI-generiert** ist jeder so entstandene Abschnitt sichtbar markiert (OCR / Bildbeschreibung / Transkript), verweist auf Seite/Zeit und ist
+    in der Vorschau bearbeit- und löschbar (Vektor wird neu berechnet). Im Prompt sind solche Abschnitte als `generated="…"` gekennzeichnet.
+  - **Aufgaben-Ansicht:** Fortschritt, Restzeit, „wartet auf Ollama“ / „pausiert – Chat hat Vorrang“, Fehler pro Job, Abbrechen (beendet den
+    Prozessbaum), erneut versuchen (setzt beim letzten Segment fort).
+  - **Priorität:** Chat > Embedding > Medien; GPU-Aufrufe im Hintergrund laufen nacheinander und pausieren, solange ein Chat antwortet;
+    whisper.cpp läuft auf der CPU mit niedriger Prozesspriorität, neue Segmente starten erst nach der Chat-Antwort.
 - **Hybrid-Suche:** SQLite-FTS5 (BM25) + Vektorsuche, fusioniert per Reciprocal Rank Fusion; Treffer mit Quelle, Fach, Seite/Folie/Blatt, Snippet.
 - **Chat:** jede Session ein eigener, persistenter Chat (umbenennen, löschen, Verlauf durchsuchen, Auto-Titel), pro Chat wählbarer
   Wissensbereich (alle Quellen / Fächer / einzelne Quellen / freier Chat) und Modell. Streaming mit Stopp/Neu-generieren,
   Zitate `[1]` klickbar → Quellen-Panel (Datei öffnen/herunterladen, in Bibliothek zeigen), Denk-Blöcke (qwen3) einklappbar.
 - **Bibliothek:** Fächer mit Farbe (anlegen/umbenennen/löschen), Quellen mit Status, Vorschau des extrahierten Texts, verschieben, löschen (konsistent: Datei + Chunks + Index + Vektoren).
   Chunks überschreiten nie Seiten-/Folien-/Blattgrenzen; „In Bibliothek zeigen“ springt zur zitierten Stelle.
+- **Einstellungen → Medien:** Werkzeug-Status, Download erst nach Bestätigung (Größen + Zielordner), Schalter je Typ, Sprache (auto/de/en),
+  Whisper-Modell, Vision-Modell, max. Aufnahmedauer.
 - **Einstellungen:** Ollama-Status (Version, Modelle, VRAM-Belegung via `/api/ps`), Chat-/Embedding-Modell, `num_ctx`, Re-Index, Sprache DE/EN, Hell/Dunkel, Akzentfarbe, reduzierte Animationen.
 - **Bedienung:** Command-Palette `Strg+K`, Tastatur-bedienbar, responsiv (Seitenleiste einklappbar).
 
@@ -69,11 +89,33 @@ bzw. Dateieigenschaften → „Zulassen“ freigeben. In PowerShell ggf. `npm.cm
 Port durch ein anderes Programm belegt? Die Konsole sagt es ohne Stacktrace; dann `set HOTSPOT_PORT=4318` (cmd) bzw.
 `$env:HOTSPOT_PORT="4318"` (PowerShell) vor dem Start.
 
+### Medien-Werkzeuge (optional, ohne Admin)
+
+Bilder und Scans brauchen nur das Vision-Modell in Ollama. Für **Audio/Video** werden whisper.cpp, ffmpeg und ein Whisper-Modell
+benötigt – geladen **nur nach ausdrücklicher Bestätigung**, SHA-256-geprüft, nach `<Projektordner>\tools\` (gitignored; deinstallieren = Ordner löschen):
+
+- in der App: *Einstellungen → Medien → Herunterladen* (zeigt Dateien, Größen und Ziel vorher an), oder
+- im Terminal: `node scripts/setup-media.mjs` (Status: `--status`; zeigt Größen und fragt nach; Teil-Downloads werden fortgesetzt).
+  Proxy: `$env:HTTPS_PROXY="http://proxy:port"; $env:NODE_USE_ENV_PROXY="1"`.
+
+| Eintrag | Quelle (fest im Manifest `scripts/media-manifest.json`) | Größe |
+|---|---|---|
+| whisper.cpp v1.9.2, CPU-Build x64 | github.com/ggml-org/whisper.cpp (Release-Asset) | 8 MB |
+| ffmpeg 9.0.2 essentials (nur `ffmpeg.exe`) | github.com/GyanD/codexffmpeg (gyan.dev) | 115 MB (Download) |
+| Whisper-Modell `small` (Standard) | huggingface.co/ggerganov/whisper.cpp | 488 MB |
+| Whisper-Modell `medium-q5_0` (optional, besser für Deutsch) | huggingface.co/ggerganov/whisper.cpp | 539 MB |
+
+Ohne Werkzeuge bleibt alles wie in Phase 1: Audio/Video werden gespeichert („nur gespeichert – Werkzeuge fehlen“), nach der Installation
+automatisch verarbeitet. **Warum `tools/` im Projektordner und nicht im Datenordner?** Programmteile, jederzeit neu ladbar – das Backup
+des Datenordners (= Ordner kopieren) bleibt dadurch klein.
+
 ## Ollama & Modelle (Empfehlung für RTX 3060 Laptop, 6 GB VRAM)
 
 | Zweck | Standard | Alternative | Hinweis |
 |---|---|---|---|
 | Chat/Vision | `gemma3:4b` | `qwen3:4b` (Denken), `qwen3:8b` | 8B-Modelle laufen mit 8k Kontext teilweise auf der CPU (langsamer) |
+| Vision (Bilder/Scans) | `gemma3:4b` | – | dasselbe Modell wie im Chat: kein zweites Modell im VRAM; gleiche `num_ctx` (sonst lädt Ollama neu) |
+| Transkription | whisper.cpp `small` (CPU) | `medium-q5_0` | Default bis zur Laptop-Messung; GPU-Build nicht im Manifest (6 GB VRAM teilt sich mit Ollama) |
 | Embedding | `nomic-embed-text` | `bge-m3` | Modellwechsel ⇒ **Re-Index** (Button in den Einstellungen, startet nur, wenn das Modell installiert ist); Modell + Dimension werden pro Index gespeichert |
 | Kontext | `num_ctx` = 8192 | 4096 bei VRAM-Engpass | Kontrolle mit `ollama ps` (Spalte PROCESSOR sollte „100% GPU“ zeigen). Quellen belegen bis zu ~70 % von `num_ctx` (Schätzung 3 Zeichen/Token) – nach Antwortreserve (≤ 25 %) und einer Reserve für den jüngsten Verlauf. Es werden bis zu 24 Treffer genutzt, so viele wie ins Budget passen (bei kurzen Folien/Seiten entsprechend mehr) |
 
@@ -91,10 +133,15 @@ Uni-Hotspot-Daten/
   hotspot.sqlite (+ -wal/-shm)   Metadaten, Chats, Volltextindex (FTS5), Vektoren
   files/ab/<sha256>              Originaldateien, content-addressed (Dedupe)
   logs/server.log                Log (rotiert ab 10 MB)
+  backups/                       automatische DB-Kopie vor jeder Schema-Migration (die neuesten 3)
+  tmp/media/job-<n>/             Zwischendateien laufender Medien-Jobs (WAV-Segmente) – werden sofort wieder gelöscht
   electron-profile/              Browser-Profil der Desktop-App
 ```
 
 **Backup = Ordner kopieren, während die App beendet ist** (SQLite im WAL-Modus).
+**Datenbank-Migrationen:** das Schema ist versioniert (`PRAGMA user_version`). Vor jeder Migration einer bestehenden DB legt die App per
+`VACUUM INTO` eine konsistente Kopie unter `backups/` an; jede Migration läuft in einer Transaktion (Fehler ⇒ Rollback). Eine DB einer
+neueren App-Version wird nicht angefasst (klare Meldung). Getestet mit einer echten Phase-1-Datenbank (`tests/fixtures/phase1.sqlite`).
 
 ## Architektur (kurz)
 
@@ -105,6 +152,9 @@ server/             Node.js + TypeScript (läuft ohne Build dank Node-Type-Strip
   embed/            VectorStore-Interface + SQLite-BLOB/Brute-Force (int8-Cache), persistente Embedding-Queue
   search/           Hybrid-Suche (FTS5-BM25 + Vektor, RRF)
   chat/             Sessions, RAG-Prompt mit Token-Budget, Streaming, Think-Splitter, Auto-Titel
+  media/            Medien-Queue (media-service), Vision (OCR+Beschreibung), ffmpeg/whisper.cpp (audio, proc: Prozessbaum),
+                    Seitenbilder aus PDFs (Worker), Installer/Manifest (bestätigter SHA-256-Download)
+  scheduler.ts      Priorität Chat > Embedding > Medien, GPU-Arbeit seriell
   ollama/           Client, Status-Monitor, Mock-Ollama (Tests)
 web/                React + Vite, Markdown via marked + DOMPurify, KaTeX (lazy)
 tests/              vitest (Fixtures werden zur Laufzeit erzeugt)
@@ -129,6 +179,16 @@ scripts/            start/dev/bench/e2e
 | `unpdf` | PDF-Text pro Seite (pdf.js, reines JS) |
 | `yauzl` | ZIP-Lesen mit Pfad-/Größenprüfung (auch für DOCX/PPTX/XLSX/ODF – deren XML wird mit einem kleinen eigenen Tokenizer gelesen) |
 
+**Phase 2: keine neue npm-Abhängigkeit.** Begründung je Baustein:
+
+| Bedarf | Lösung | verworfen |
+|---|---|---|
+| OCR | Vision-Modell (`gemma3:4b`, schon installiert): Text + Beschreibung in einem Aufruf | `tesseract.js` (WASM, ohne native Module machbar, aber +31 MB `tesseract.js-core` + bestätigter Download der `deu`/`eng`-Daten); erst ergänzen, wenn der Laptop-Vergleich zeigt, dass die Vision-OCR deutsch schlecht ist |
+| Scan-Seiten „rastern“ | Seitenbild direkt aus dem PDF (`unpdf`/pdf.js dekodiert JPEG/Flate/CCITT/JBIG2 in JS), verkleinern + PNG mit `node:zlib` im Worker | `pdf.js + @napi-rs/canvas` (natives Prebuild); Grenze: Seiten mit nur Vektorgrafik ohne Bild bekommen keine OCR |
+| Bildgröße prüfen | eigener Kopf-Parser (PNG/JPEG/GIF/BMP/WebP) vor jeder Verarbeitung | `sharp` (nativ) |
+| Audio/Video | whisper.cpp + ffmpeg als externe Programme (Kindprozess, feste Argumente, kein Shell) | Python-Whisper, Node-Bindings (nativ) |
+| Downloads | `fetch` + `node:crypto` + vorhandenes `yauzl` | Download-Bibliotheken |
+
 Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` + `dompurify` (sicheres Markdown), `katex` (Formeln, lazy),
 `electron` (Desktop-Hülle; Binary wird erst beim ersten Desktop-Start geladen), `typescript`, `eslint`, `vitest`, `jsdom` (Sanitizer-Tests), `fflate` (Test-Fixtures).
 
@@ -138,17 +198,23 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (148 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
+npm test            # vitest (206 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
 npm run bench       # Messungen (Mock)
+npm run bench:media # Phase-2-Messungen (Mock-Ollama + Fake-Werkzeuge)
+npm run setup-media # Medien-Werkzeuge laden (fragt vorher nach)
 npm run e2e         # Browser-Durchlauf mit Screenshots (benötigt eine Playwright-Installation)
 ```
 
 **Mock-Modus (nur Test/Demo, KEIN echtes Modell):** `HOTSPOT_MOCK_OLLAMA=1` startet einen eingebauten Fake-Ollama
 (deterministische Fake-Embeddings, gestreamte Fake-Antworten mit Zitaten). Die Oberfläche zeigt dann „MOCK“ an.
 PowerShell: `$env:HOTSPOT_MOCK_OLLAMA="1"; npm start`.
+Der Mock beantwortet auch Vision-Aufrufe (deterministischer Fake-Text). Für Audio/Video gibt es **Fake-Werkzeuge**
+(`tests/fake-tools/ffmpeg.mjs`, `whisper-cli.mjs` – Node-Skripte, die die Aufrufschnittstelle nachahmen); sie werden per
+`HOTSPOT_MEDIA_TOOLS_JSON` nur **im Mock-Modus** akzeptiert. Damit ist die ganze Pipeline headless testbar – über echte Erkennungsqualität
+und Laufzeit sagt das nichts.
 
 ## Sicherheit
 
@@ -160,6 +226,13 @@ PowerShell: `$env:HOTSPOT_MOCK_OLLAMA="1"; npm start`.
 - Modell-/Dokumentinhalte sind nicht vertrauenswürdig: Dokumente werden im Prompt als Daten abgegrenzt (Prompt-Injection-Hinweis,
   eingeschleuste Tags neutralisiert); Markdown läuft durch DOMPurify, externe Bilder werden entfernt. Sehr dichte, unausgeglichene
   Hervorhebungszeichen (`*`, `_`, `~`) werden pro Absatz maskiert, damit präparierte Antworten/Dokumente die Oberfläche nicht einfrieren.
+- **Medien (Phase 2):** Inhalt wird gesnifft (Endung ≠ Inhalt ⇒ nur gespeichert, nie abgespielt/verarbeitet); Bildabmessungen werden vor
+  jeder Verarbeitung aus dem Kopf gelesen (max. 20 MB / 80 Megapixel); Werkzeuge laufen ohne Shell mit festen Argumenten, Zeitlimit,
+  niedriger Priorität, Ausgabe begrenzt; Abbruch/Löschen/Timeout beenden den Prozessbaum (`taskkill /T /F` auf die eigene PID bzw.
+  Prozessgruppe); max. Aufnahmedauer einstellbar; defekte/verschlüsselte/DRM-Medien ⇒ Fehlercodes (DE/EN). OCR-/Transkripttext ist im
+  Prompt als Daten abgegrenzt (wie Dokumente, zusätzlich `generated="…"`). Datei-Route mit HTTP-Range (ein Bereich, 416 bei Unsinn),
+  Medien nur mit eigenen, sicheren Content-Types, `nosniff`, Sandbox-CSP; Token- und ID-Prüfung unverändert. Downloads nur aus dem
+  Manifest (https, feste SHA-256/Größe), entpackt wird flach nach `tools/`. Löschen einer Quelle entfernt Job, Zwischenstände, Temp-Dateien.
 - Electron: `contextIsolation`, `sandbox`, kein `nodeIntegration`, keine fremde Navigation/Popups/Berechtigungen, Netzwerk nur zum lokalen Server.
 
 ## Messwerte (Linux-Container, Node 22, Mock-Ollama; `npm run bench`)
@@ -192,18 +265,34 @@ PowerShell: `$env:HOTSPOT_MOCK_OLLAMA="1"; npm start`.
 | Markdown-Rendering `"*a " × 13 000` (UI-Thread) | 15,8 s | 87 ms |
 | Markdown: 20 Absätze à 1 000 `"*a "` | 2,2 s | 93 ms (normale Antworten unverändert ~25 ms) |
 
+**Phase 2** (Windows 11, Node 24, Mock-Ollama + Fake-Werkzeuge; `npm run bench:media`) – reiner Pipeline-Overhead, **ohne** Vision-/Whisper-Rechenzeit:
+
+| Messung | Ergebnis |
+|---|---|
+| Gescanntes PDF, 40 Seiten à 1700×2200 px: Seitenbild holen + verkleinern + PNG (Worker) | ~105 ms/Seite (4,2 s gesamt); Event-Loop max 32 ms, p99 20 ms |
+| 3-h-Aufnahme, 18 Segmente (Fake-ffmpeg/-whisper) | ~256 ms Overhead/Segment (2 Prozessstarts); Event-Loop max 23 ms |
+| Chunking eines 3-h-Transkripts (2160 Sätze) | 6 ms → 90 Abschnitte à ≤ 2 min |
+| Player-Sprung: Range-Request 1 MB aus 50-MB-Video | p50 7,4 ms, p95 15,4 ms |
+| Phase-1-Werte (Suche, Bibliothek, Import) | unverändert (keine Änderung an diesen Pfaden außer zwei zusätzlichen Spalten im Treffer) |
+
+Echte Werte (Sekunden pro Bild, Minuten Rechenzeit pro Audio-Minute, VRAM) misst die Laptop-Checkliste in `HANDOFF.md`.
+
 Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der RTX 3060 typ. wenige ms; Antwort-Streaming abhängig vom Modell).
 
 ## Roadmap
 
-- **Phase 2:** Bilder/OCR/Vision (gemma3), Audio/Video-Transkription (whisper.cpp) als zusätzliche Extractor.
+- **Phase 2 (umgesetzt, nur mit Mock getestet):** Bilder/OCR/Vision, gescannte PDFs, Audio/Video-Transkription.
 - **Phase 3:** Lernmodi – Karteikarten mit Spaced Repetition, Quiz, Zusammenfassungen, Wissensgraph.
 - **Phase 4:** Installer, Auto-Backup, Politur.
 
 ## Bekannte Grenzen
 
 - Nur mit Mock-Ollama getestet – echte Modellqualität, VRAM-Verhalten und Geschwindigkeit sind erst auf dem Laptop prüfbar (siehe `HANDOFF.md`).
-- Gescannte PDFs ohne Textschicht werden gespeichert, aber erst mit OCR (Phase 2) durchsuchbar. Alte Office-Formate (.doc/.ppt/.xls) werden nur gespeichert;
+- Medien: Erkennungsqualität (OCR deutsch/englisch, Handschrift, Transkript) und Dauer sind **nur mit Mock** geprüft. TIFF/HEIC/SVG werden nur
+  gespeichert. Scan-Seiten ohne eingebettetes Bild (reine Vektorgrafik) bekommen keine OCR. Eingebettete Bilder nur aus PDFs (nicht aus PPTX/DOCX).
+  Ob Ollama WebP/GIF/BMP annimmt, ist auf dem Laptop zu prüfen (sonst Hinweis „als PNG/JPG speichern“). Die laufende Restzeit-Anzeige
+  beruht auf dem bisherigen Tempo. Ein bereits laufendes Whisper-Segment wird für einen Chat nicht angehalten (niedrige Priorität, ≤ 10 min Audio).
+- Alte Office-Formate (.doc/.ppt/.xls) werden nur gespeichert;
   passwortgeschützte Office-Dateien und PDFs werden gespeichert und als „passwortgeschützt“ gemeldet (ohne Passwort speichern, erneut importieren).
 - Text-/CSV-/HTML-Dateien werden bis 32 MB Text indexiert; darüber Hinweis „gekürzt“ (Datei bleibt vollständig gespeichert).
 - DOCX liefert Seitenzahlen nur, wenn Word Seitenumbruch-Hinweise gespeichert hat; sonst Abschnitt/Überschrift.
