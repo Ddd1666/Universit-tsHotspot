@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keepEntries, parseProbe, parseWhisperJson, segmentWindow, SEGMENT_SEC } from '../server/media/audio.ts';
+import { keepEntries, parseProbe, parseWhisperJson, segmentWindow, SEGMENT_SEC, whisperTimeoutMs } from '../server/media/audio.ts';
 import { downscale, encodePng, imageSize } from '../server/media/image.ts';
 import { parseVisionOutput } from '../server/media/vision.ts';
 import { detectKind, sniffMedia } from '../server/ingest/detect.ts';
@@ -9,24 +9,34 @@ import { matchesPattern, validateManifest } from '../server/media/installer.ts';
 import { makePng } from './fixtures.ts';
 
 describe('Segmente mit Überlappung', () => {
-  it('Fenster: 10 min, ab dem 2. Segment 5 s nach vorn überlappend', () => {
-    expect(segmentWindow(0)).toEqual({ start: 0, length: 600 });
-    expect(segmentWindow(1)).toEqual({ start: 595, length: 605 });
-    expect(segmentWindow(17)).toEqual({ start: 17 * 600 - 5, length: 605 });
+  it('Fenster: 10 min Kern, beidseitig 5 s Überlappung', () => {
+    expect(segmentWindow(0)).toEqual({ start: 0, length: 605 });
+    expect(segmentWindow(1)).toEqual({ start: 595, length: 610 });
+    expect(segmentWindow(17)).toEqual({ start: 17 * 600 - 5, length: 610 });
   });
 
-  it('jeder Satz landet in genau einem Segment (Mitte entscheidet), keiner fehlt', () => {
-    // Sätze alle 3 s über 25 min, jeweils 4 s lang
-    const sentences = Array.from({ length: 500 }, (_, i) => ({ s: i * 3, e: i * 3 + 4, t: `S${i}` }));
+  it('jeder Satz landet in genau einem Segment (Mitte entscheidet) – auch Sätze über der Schnittkante', () => {
+    // Sätze alle 3 s über 25 min, jeweils 4 s lang; Whisper "sieht" nur Sätze, die ganz im Fenster liegen
+    const total = 1500;
+    const sentences = Array.from({ length: 500 }, (_, i) => ({ s: i * 3, e: Math.min(total, i * 3 + 4), t: `S${i}` }));
     const kept: string[] = [];
-    for (let i = 0; i * SEGMENT_SEC < 1500; i++) {
+    for (let i = 0; i * SEGMENT_SEC < total; i++) {
       const w = segmentWindow(i);
       const inWindow = sentences.filter((x) => x.s >= w.start && x.e <= w.start + w.length);
-      kept.push(...keepEntries(inWindow, i, (i + 1) * SEGMENT_SEC >= 1500).map((x) => x.t));
+      kept.push(...keepEntries(inWindow, i, (i + 1) * SEGMENT_SEC >= total).map((x) => x.t));
     }
-    const expected = sentences.filter((x) => x.e <= 1500 || x.s < 1500).map((x) => x.t);
-    expect(new Set(kept).size).toBe(kept.length); // keine Dubletten
-    expect(kept.filter((k) => expected.includes(k)).length).toBeGreaterThanOrEqual(expected.length - 2); // höchstens Randsätze am Dateiende
+    expect(kept).toEqual(sentences.map((x) => x.t)); // exakt: jeder genau einmal, in Reihenfolge
+  });
+
+  it('Whisper-Zeitlimit richtet sich nach der tatsächlichen Segmentdauer', () => {
+    const t = { probeMs: 1, extractMs: 1, whisperMinMs: 120_000, whisperPerAudioSecMs: 4000 };
+    // 60-s-Aufnahme: 4 s × 60 = 240 s (nicht 4 s × 605)
+    expect(whisperTimeoutMs(segmentWindow(0), 60, t)).toBe(240_000);
+    // letztes Teilsegment einer 1-h-Aufnahme (Fenster ab 3595 s, nur 5 s Rest) -> Minimum
+    expect(whisperTimeoutMs(segmentWindow(6), 3600, t)).toBe(120_000);
+    // volle Segmente bzw. unbekannte Dauer: ganzes Fenster
+    expect(whisperTimeoutMs(segmentWindow(1), 7200, t)).toBe(4000 * 610);
+    expect(whisperTimeoutMs(segmentWindow(1), null, t)).toBe(4000 * 610);
   });
 });
 

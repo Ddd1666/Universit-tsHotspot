@@ -166,9 +166,9 @@ describe('Audio/Video (whisper.cpp + ffmpeg als Child-Process)', { timeout: 120_
     expect(app.calls('whisper')).toHaveLength(3); // 25 min = 3 Segmente à 10 min
     const extracts = app.calls('ffmpeg').filter((a) => a.includes('-ss'));
     expect(extracts.map((a) => [a[a.indexOf('-ss') + 1], a[a.indexOf('-t') + 1]])).toEqual([
-      ['0', '600'],
-      ['595', '605'],
-      ['1195', '605'],
+      ['0', '605'],
+      ['595', '610'],
+      ['1195', '610'],
     ]);
     // feste Argumente, nie über eine Shell; Sprache automatisch
     const w = app.calls('whisper')[0]!;

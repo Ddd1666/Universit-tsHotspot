@@ -26,6 +26,7 @@ import {
   probe,
   SEGMENT_SEC,
   segmentWindow,
+  whisperTimeoutMs,
   transcribeSegment,
   type MediaTimeouts,
   type TranscriptEntry,
@@ -663,7 +664,7 @@ export class MediaService {
         const raw = await transcribeSegment(tools.whisper, model, wav, path.join(dir, `seg-${i}`), {
           language: params.lang,
           threads,
-          timeoutMs: Math.max(this.timeouts.whisperMinMs, this.timeouts.whisperPerAudioSecMs * win.length),
+          timeoutMs: whisperTimeoutMs(win, duration, this.timeouts),
           signal,
         });
         const isLast = duration !== null && (i + 1) * SEGMENT_SEC >= duration;

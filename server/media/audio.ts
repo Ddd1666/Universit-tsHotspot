@@ -24,7 +24,8 @@ export interface MediaTimeouts {
   whisperPerAudioSecMs: number;
 }
 
-export const DEFAULT_TIMEOUTS: MediaTimeouts = { probeMs: 60_000, extractMs: 180_000, whisperMinMs: 10 * 60_000, whisperPerAudioSecMs: 4000 };
+// whisper: 4 s Rechenzeit je Audio-Sekunde (großzügig für medium auf CPU), mindestens 2 min (Modell laden)
+export const DEFAULT_TIMEOUTS: MediaTimeouts = { probeMs: 60_000, extractMs: 180_000, whisperMinMs: 2 * 60_000, whisperPerAudioSecMs: 4000 };
 
 /** Segmentlänge 10 min, Überlappung 5 s (Wörter an der Schnittkante gehen nicht verloren). */
 export const SEGMENT_SEC = 600;
@@ -53,10 +54,19 @@ export async function probe(ffmpeg: ToolCommand, file: string, opts: { timeouts:
   return parseProbe(r.stderr);
 }
 
-/** Extraktionsfenster für Segment i (mit Überlappung nach vorn). */
+/**
+ * Extraktionsfenster für Segment i: Kern [i·L, (i+1)·L) plus beidseitig `overlapSec`. Ein Satz über der Schnittkante
+ * liegt so in BEIDEN Fenstern vollständig vor; `keepEntries` behält ihn nur in dem Segment, in dessen Kern seine Mitte liegt.
+ */
 export function segmentWindow(i: number, segSec = SEGMENT_SEC, overlapSec = OVERLAP_SEC): { start: number; length: number } {
-  const start = Math.max(0, i * segSec - (i > 0 ? overlapSec : 0));
-  return { start, length: segSec + (i > 0 ? overlapSec : 0) };
+  const start = Math.max(0, i * segSec - overlapSec);
+  return { start, length: (i + 1) * segSec + overlapSec - start };
+}
+
+/** Zeitlimit für whisper.cpp aus der tatsächlich zu transkribierenden Dauer (letztes Segment ist meist kürzer). */
+export function whisperTimeoutMs(win: { start: number; length: number }, duration: number | null, t: MediaTimeouts): number {
+  const sec = duration === null ? win.length : Math.max(0, Math.min(win.length, duration - win.start));
+  return Math.max(t.whisperMinMs, Math.ceil(t.whisperPerAudioSecMs * sec));
 }
 
 /**
