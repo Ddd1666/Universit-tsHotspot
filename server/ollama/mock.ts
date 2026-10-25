@@ -16,6 +16,8 @@ export interface MockOllama {
   setDown(down: boolean): void;
   /** künstliche Verzögerung für /api/embed (Tests: Re-Index während laufendem Batch) */
   setEmbedDelay(ms: number): void;
+  /** künstliche Verzögerung für Lern-Aufrufe (Tests: Chat unterbricht die Generierung) */
+  setLearnDelay(ms: number): void;
 }
 
 const MODELS: { name: string; size: number; family: string; params: string; caps: string[] }[] = [
@@ -105,6 +107,113 @@ function buildAnswer(messages: { role: string; content: string }[]): string {
     : `Mock answer (free chat) to: "${question.slice(0, 120)}" *(test mode)*`;
 }
 
+/* ------------------------------------------------------------ Lernmodi (Phase 3): deterministische strukturierte Ausgaben */
+
+function docsOf(text: string): { n: number; text: string }[] {
+  return [...text.matchAll(/<document index="(\d+)"[^>]*>\n?([\s\S]*?)<\/document>/g)].map((m) => ({ n: Number(m[1]), text: m[2]!.trim() }));
+}
+
+/** Inhalt des letzten <tag>…</tag> (der System-Prompt erwähnt die Tags ebenfalls). */
+function lastBlock(s: string, tag: string): string {
+  const start = s.lastIndexOf(`<${tag}>`);
+  const end = s.lastIndexOf(`</${tag}>`);
+  return start === -1 || end < start ? '' : s.slice(start + tag.length + 2, end);
+}
+
+function longestWord(s: string): string {
+  return (s.match(/[\p{L}-]{5,}/gu) ?? []).reduce((a, b) => (b.length > a.length ? b : a), '');
+}
+
+/**
+ * Antworten für die Lern-Aufgaben (erkannt am "TASK: …" im System-Prompt). Marker im Dokumenttext steuern Tests:
+ * MOCKBADJSON -> ungültige Ausgabe, MOCKHALLU -> erfundene (unplausible) Antwort, MOCKEMPTY -> leere Notiz.
+ */
+export function learnAnswer(task: string, user: string): string {
+  const docs = docsOf(user);
+  const any = (marker: string) => docs.some((d) => d.text.includes(marker)) || user.includes(marker);
+  if (any('MOCKBADJSON')) return 'Das ist kein JSON {';
+  const sentence = (d: { text: string }) => firstSentence(d.text);
+  switch (task) {
+    case 'summary-map':
+      if (any('MOCKEMPTY')) return '';
+      return docs.map((d) => `- ${sentence(d)} [${d.n}]`).join('\n');
+    case 'summary-reduce': {
+      const notes = lastBlock(user, 'notes');
+      const lines = notes.split('\n').filter((l) => l.trim().startsWith('- '));
+      const level = /You turn study notes into (a TL;DR|a hierarchical outline|a detailed|an exam cheat sheet|merged study notes)/.exec(user)?.[1] ?? '';
+      // "Zusammenführen": gleiche Aussagen zusammenlegen (Marker vereinigt), Zeilen kürzen – konvergiert wie bei einem echten Modell
+      if (level === 'merged study notes') {
+        const byText = new Map<string, string[]>();
+        for (const l of lines) {
+          const key = l.replace(/\[\d+\]/g, '').slice(0, 12).trim();
+          byText.set(key, [...(byText.get(key) ?? []), ...(l.match(/\[\d+\]/g) ?? [])]);
+        }
+        return [...byText].map(([t, m]) => `${t} ${[...new Set(m)].join('')}`).join('\n');
+      }
+      return `## Mock-Zusammenfassung (${level || 'notes'})\n\n${(level === 'a TL;DR' ? lines.slice(0, 3) : lines).join('\n')}`;
+    }
+    case 'cards':
+      return JSON.stringify({
+        cards: docs.flatMap((d) => {
+          const s = sentence(d);
+          const w = longestWord(s);
+          const qa = { type: 'qa', front: `Was gilt laut Abschnitt ${d.n}?`, back: d.text.includes('MOCKHALLU') ? 'Quantengravitation erklärt Dunkle Materie vollständig' : s, source: d.n };
+          return w ? [qa, { type: 'cloze', front: s.replace(w, `{{${w}}}`), back: '', source: d.n }] : [qa];
+        }),
+      });
+    case 'quiz':
+      return JSON.stringify({
+        questions: docs.flatMap((d) => {
+          const i = hash32(d.text); // Fragetyp je Abschnitt deterministisch gemischt
+          const s = sentence(d);
+          const w = longestWord(s) || s.split(' ')[0]!;
+          if (d.text.includes('MOCKHALLU')) return [{ type: 'short', question: 'Was sagt der Text über Quantengravitation?', answer: 'Erfundene Theorie der Dunklen Materie', explanation: 'erfunden', source: d.n }];
+          const all = [
+            { type: 'mc', question: `Welcher Begriff fehlt: ${s.replace(w, '…')}`, options: [w, 'Option B', 'Option C', 'Option D'], answer: w, explanation: s, source: d.n },
+            { type: 'tf', question: s, answer: 'true', explanation: s, source: d.n },
+            { type: 'cloze', question: s.replace(w, '___'), answer: w, explanation: s, source: d.n },
+            { type: 'short', question: `Erkläre: ${s.split(' ').slice(0, 4).join(' ')} …`, answer: s, explanation: s, source: d.n },
+          ];
+          return [all[i % 4]!];
+        }),
+      });
+    case 'graph': {
+      const concepts: { name: string; description: string; source: number }[] = [];
+      const relations: { from: string; to: string; label: string }[] = [];
+      for (const d of docs) {
+        const words = [...new Set(d.text.match(/\b\p{Lu}[\p{Ll}-]{3,}\b/gu) ?? [])].slice(0, 4);
+        words.forEach((w, i) => {
+          concepts.push({ name: w, description: sentence(d), source: d.n });
+          if (i > 0) relations.push({ from: words[i - 1]!, to: w, label: 'hängt zusammen mit' });
+        });
+      }
+      return JSON.stringify({ concepts, relations });
+    }
+    case 'grade': {
+      const model = /MODEL ANSWER: ([^\n]*)/.exec(user)?.[1] ?? '';
+      const answer = lastBlock(user, 'answer');
+      const words = (s: string) => new Set(s.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+      const want = [...words(model)];
+      const got = words(answer);
+      const score = want.length ? want.filter((w) => got.has(w)).length / want.length : 0;
+      return JSON.stringify({
+        score,
+        rubric: [
+          { criterion: 'Kernaussage genannt', met: score >= 0.5 },
+          { criterion: 'Fachbegriffe korrekt', met: score >= 0.8 },
+        ],
+        reasoning: score >= 0.5 ? 'Die Antwort trifft die Kernaussage (Mock).' : 'Die Kernaussage fehlt (Mock).',
+        quotes: [
+          ...(docs[0] ? [{ source: docs[0].n, text: docs[0].text.slice(0, 60) }] : []),
+          { source: 1, text: 'Dieses Zitat steht nirgends im Text und muss verworfen werden' },
+        ],
+      });
+    }
+    default:
+      return '';
+  }
+}
+
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
   const parts: Buffer[] = [];
   for await (const c of req) parts.push(c as Buffer);
@@ -117,6 +226,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
   const requests: { path: string; body: unknown }[] = [];
   let down = false;
   let embedDelay = 0;
+  let learnDelay = 0;
   let lastChatModel = 'gemma3:4b';
 
   const server = http.createServer(async (req, res) => {
@@ -179,8 +289,23 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
             : JSON.stringify({ text: marker ?? `Mock-OCR ${dims}`, description: `Mock-Bildbeschreibung eines Bildes mit ${dims} Pixeln (Testmodus).` });
           return json(200, { model, message: { role: 'assistant', content }, done: true });
         }
-        const answer = buildAnswer(messages);
         const lastUser = [...messages].reverse().find((x) => x.role === 'user')?.content ?? '';
+        const task = /^TASK: ([\w-]+)/.exec(messages.find((x) => x.role === 'system')?.content ?? '')?.[1];
+        if (task) {
+          // langsamer Lernaufruf (Test: Chat unterbricht die Generierung)
+          const delay = lastUser.includes('__MOCK_SLOW_LEARN__') ? 1500 : learnDelay;
+          if (delay)
+            await new Promise<void>((r) => {
+              const t = setTimeout(r, delay);
+              res.on('close', () => {
+                clearTimeout(t);
+                r();
+              });
+            });
+          if (res.destroyed) return;
+          return json(200, { model, message: { role: 'assistant', content: learnAnswer(task, messages.map((x) => x.content).join('\n')) }, done: true });
+        }
+        const answer = buildAnswer(messages);
         const thinkingModel = m.caps.includes('thinking');
         if (body.stream === false) {
           return json(200, { model, message: { role: 'assistant', content: answer }, done: true });
@@ -229,6 +354,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
     requests,
     setDown: (d) => (down = d),
     setEmbedDelay: (ms) => (embedDelay = ms),
+    setLearnDelay: (ms) => (learnDelay = ms),
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

@@ -10,7 +10,9 @@ export type HubEvent =
   | { type: 'settings'; settings: unknown }
   | { type: 'job'; job: unknown }
   | { type: 'jobs'; counts: unknown }
-  | { type: 'media-setup'; setup: unknown };
+  | { type: 'media-setup'; setup: unknown }
+  | { type: 'learn-job'; job: unknown }
+  | { type: 'learn-jobs'; counts: unknown };
 
 type Listener = (e: HubEvent) => void;
 

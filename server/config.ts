@@ -39,6 +39,8 @@ export interface AppConfig {
   mediaTimeouts?: Partial<MediaTimeouts>;
   /** Tests: Manifest-URLs auf http://127.0.0.1 erlauben (lokaler Fake-Server) */
   mediaAllowLocalHttp?: boolean;
+  /** Tests: Fehler im abschließenden Schreibschritt eines Lern-Jobs einschleusen */
+  learnFailBeforeCommit?: (kind: 'summary' | 'cards' | 'quiz' | 'graph') => void;
 }
 
 /** Fake-Werkzeuge per Umgebungsvariable – wird nur im Mock-Modus akzeptiert (klar getrennt vom echten Betrieb). */

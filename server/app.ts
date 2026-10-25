@@ -23,6 +23,7 @@ import { acquireLock, type InstanceLock } from './lock.ts';
 import { Scheduler } from './scheduler.ts';
 import { MediaService } from './media/media-service.ts';
 import { MediaSetup } from './media/setup.ts';
+import { LearnService } from './learn/jobs.ts';
 
 export interface Services {
   config: AppConfig;
@@ -40,11 +41,14 @@ export interface Services {
   scheduler: Scheduler;
   media: MediaService;
   mediaSetup: MediaSetup;
-  queueStatus(): { ingest: IngestStats; embed: EmbedStatus; media: { queued: number; running: number; error: number } };
+  learn: LearnService;
+  queueStatus(): { ingest: IngestStats; embed: EmbedStatus; media: JobCounts; learn: JobCounts };
   notifyQueue(): void;
   /** Ollama-Client für Suche – null, wenn Ollama bekanntermaßen offline ist (dann reine Volltextsuche). */
   searchClient(): OllamaClient | null;
 }
+
+type JobCounts = { queued: number; running: number; error: number };
 
 export interface Hotspot {
   app: FastifyInstance;
@@ -178,6 +182,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     scheduler,
   });
   chat.recoverInterrupted();
+  const learn = new LearnService({ db, client, settings, scheduler, bus, library, vectors, log, failBeforeCommit: config.learnFailBeforeCommit });
 
   settings.onChange((_s, changed) => {
     if (changed.includes('ollamaUrl')) void monitor.refresh();
@@ -202,7 +207,8 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     scheduler,
     media,
     mediaSetup,
-    queueStatus: () => ({ ingest: ingest.stats(), embed: embed.status(), media: media.counts() }),
+    learn,
+    queueStatus: () => ({ ingest: ingest.stats(), embed: embed.status(), media: media.counts(), learn: learn.counts() }),
     notifyQueue,
     searchClient,
   } satisfies Services);
@@ -228,6 +234,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       ingest.start();
       embed.start();
       media.start();
+      learn.start();
       // Werkzeuge seit dem letzten Lauf manuell nach tools/ gelegt? Dann gespeicherte Audio/Videos jetzt verarbeiten
       if (media.requeueIfToolsReady()) ingest.wakeUp();
       maintenanceTimer = setTimeout(() => {
@@ -251,6 +258,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       const steps: (() => unknown)[] = [
         () => mediaSetup.cancel(),
         () => media.stop(),
+        () => learn.stop(),
         () => ingest.stop(),
         () => embed.stop(),
         () => pool.close(),

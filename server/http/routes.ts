@@ -12,6 +12,7 @@ import { estimateTokens } from '../ingest/chunker.ts';
 import { tx } from '../db.ts';
 import { openSse } from './sse.ts';
 import type { Services } from '../app.ts';
+import { registerLearnRoutes } from '../learn/routes.ts';
 
 const idParam = { type: 'object', properties: { id: { type: 'integer', minimum: 1 } }, required: ['id'] } as const;
 
@@ -321,7 +322,7 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
 
   /* ------------------------------------------------------------ Medien: Jobs & Werkzeuge */
 
-  app.get('/api/jobs', async () => ({ jobs: s.media.list(), counts: s.media.counts(), scheduler: s.scheduler.snapshot() }));
+  app.get('/api/jobs', async () => ({ jobs: s.media.list(), counts: s.media.counts(), learnJobs: s.learn.list(), learnCounts: s.learn.counts(), scheduler: s.scheduler.snapshot() }));
 
   app.post('/api/jobs/:id/cancel', { schema: { params: idParam } }, async (req) => {
     if (!s.media.cancel((req.params as { id: number }).id)) throw new HttpError(409, 'job_not_active', 'Job läuft nicht (mehr)');
@@ -364,6 +365,8 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
     await s.mediaSetup.cancel();
     return { ok: true };
   });
+
+  registerLearnRoutes(app, s);
 
   /* ------------------------------------------------------------ Import */
 

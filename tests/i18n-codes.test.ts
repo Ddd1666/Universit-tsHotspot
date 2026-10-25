@@ -55,6 +55,29 @@ describe('Übersetzungen für Server-Fehlercodes (EN-Oberfläche ohne deutsche S
     expect(i18n.split(`'status.media':`).length - 1).toBe(2);
   });
 
+  it('Phase 3: Lern-Codes (Job-Fehler, API-Fehler), Job-Arten, Stufen, Karten-/Fragetypen haben DE+EN', () => {
+    const src = walk(path.join(PROJECT_ROOT, 'server', 'learn'))
+      .map((f) => fs.readFileSync(f, 'utf8'))
+      .join('\n');
+    const detail = new Set<string>();
+    for (const m of src.matchAll(/codedError\([^;]*?, '([a-z_]+)'/g)) detail.add(m[1]!);
+    expect(detail.size).toBeGreaterThanOrEqual(6);
+    detail.add('learn_failed'); // Fallback-Code für unbekannte Fehler
+    for (const code of detail) expect(i18n.split(`'detail.${code}':`).length - 1, code).toBe(2);
+    const api = new Set([...src.matchAll(/HttpError\(\d+, '([a-z_]+)'/g)].map((m) => m[1]!));
+    expect(api.size).toBeGreaterThan(10);
+    for (const code of api) expect(i18n.split(`'apierr.${code}':`).length - 1, code).toBe(2);
+    const keys = [
+      ...['summary', 'cards', 'quiz', 'graph'].flatMap((k) => [`queue.kind.${k}`, `gen.kind.${k}`]),
+      ...['tldr', 'outline', 'detailed', 'cheatsheet'].map((k) => `level.${k}`),
+      ...['qa', 'cloze', 'image'].map((k) => `cards.type.${k}`),
+      ...['mc', 'tf', 'cloze', 'short'].map((k) => `quiz.type.${k}`),
+      ...['draft', 'active', 'suspended'].map((k) => `cards.${k}`),
+      ...['review', 'cards', 'quiz', 'notes', 'graph', 'stats'].map((k) => `learn.tab.${k}`),
+    ];
+    for (const k of keys) expect(i18n.split(`'${k}':`).length - 1, k).toBe(2);
+  });
+
   it('K4: Download/Installation meldet nur feste Codes – rohe Node-Codes (EPERM, ENOSPC …) werden abgebildet', async () => {
     const { SETUP_ERROR_CODES, setupErrorCode } = await import('../server/media/installer.ts');
     for (const code of SETUP_ERROR_CODES) expect(i18n.split(`'detail.${code}':`).length - 1, code).toBe(2);

@@ -1,0 +1,753 @@
+import { tx, type DB } from '../db.ts';
+import type { EventBus } from '../events.ts';
+import { HttpError, type Library } from '../library.ts';
+import type { SettingsStore } from '../settings.ts';
+import type { Scheduler } from '../scheduler.ts';
+import type { VectorStore } from '../embed/vector-store.ts';
+import { normalize } from '../embed/vector-store.ts';
+import { embedPrefix } from '../embed/embed-queue.ts';
+import { usedCitationNumbers } from '../chat/prompt.ts';
+import { estimateTokens } from '../ingest/chunker.ts';
+import { codedError } from '../ingest/types.ts';
+import { OllamaError, type OllamaClient } from '../ollama/client.ts';
+import {
+  callValidated,
+  CARD_SCHEMA,
+  cardMessages,
+  GRAPH_SCHEMA,
+  graphMessages,
+  isTransient,
+  LEVELS,
+  mapMessages,
+  parseCards,
+  parseGraph,
+  parseNotes,
+  parseQuiz,
+  QUIZ_SCHEMA,
+  quizMessages,
+  reduceMessages,
+  renumber,
+  type CallOpts,
+  type CardDraft,
+  type GraphDraft,
+  type Level,
+  type QuestionDraft,
+} from './prompts.ts';
+import { documentsBlock, fingerprint, groupChunks, groupKey, loadScope, locOf, refOf, type LChunk, type LearnScope, type Ref } from './text.ts';
+
+export type LearnKind = 'summary' | 'cards' | 'quiz' | 'graph';
+export type LearnState = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+
+export interface LearnParams {
+  scope: LearnScope;
+  level?: Level;
+  count?: number;
+}
+
+export interface LearnJobDTO {
+  id: number;
+  kind: LearnKind;
+  state: LearnState;
+  title: string;
+  params: LearnParams;
+  progress: number;
+  total: number | null;
+  detail: string | null;
+  result: Record<string, number> | null;
+  note: 'waiting_ollama' | 'waiting_chat' | null;
+  etaSec: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface JobRow {
+  id: number;
+  kind: LearnKind;
+  state: LearnState;
+  title: string;
+  params: string;
+  progress: number;
+  total: number | null;
+  detail: string | null;
+  result: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface Active {
+  id: number;
+  ctrl: AbortController;
+  userCancelled: boolean;
+  sources: Set<number>;
+  note: LearnJobDTO['note'];
+  startedAt: number;
+  startProgress: number;
+  progress: number;
+  total: number | null;
+}
+
+/** Obergrenzen pro Job (Laufzeit, Speicher, Qualität vor Menge). */
+export const LIMITS = {
+  summaryChunks: 800,
+  cardsChunks: 160,
+  quizChunks: 160,
+  graphChunks: 600,
+  maxCards: 50,
+  maxQuestions: 40,
+  conceptsPerSource: 60,
+  relationsPerSource: 100,
+  conceptsPerJob: 400,
+  queuedJobs: 50,
+};
+/** Ab dieser Ähnlichkeit gelten zwei Karten/Fragen/Konzepte als Duplikat. */
+export const DUP_SIMILARITY = 0.92;
+const LEVEL_PREDICT: Record<Level, number> = { tldr: 400, outline: 1000, detailed: 1500, cheatsheet: 1200 };
+
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(codedError('abgebrochen', 'learn_cancelled'));
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+function cosine(a: Float32Array, b: Float32Array): number {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += a[i]! * b[i]!;
+  return d;
+}
+
+export interface LearnDeps {
+  db: DB;
+  client: OllamaClient;
+  settings: SettingsStore;
+  scheduler: Scheduler;
+  bus: EventBus;
+  library: Library;
+  vectors: VectorStore;
+  log: (msg: string, extra?: unknown) => void;
+  /** Tests: Fehler im letzten Schreibschritt einschleusen (Transaktion muss zurückrollen) */
+  failBeforeCommit?: (kind: LearnKind) => void;
+}
+
+/**
+ * Persistente, neustartfeste Lern-Jobs (Zusammenfassung, Karten, Quiz, Graph) – gleiches Muster wie die Medien-Queue:
+ * Zustand in `learn_jobs`, Zwischenergebnisse je Textgruppe in `learn_cache` (Schlüssel = Hash von Aufgabe + Text, also
+ * automatisch ungültig, wenn sich die Quelle ändert). Nach Neustart/Absturz läuft ein Job weiter und überspringt fertige
+ * Schritte. Ergebnis + "fertig" werden in EINER Transaktion geschrieben. Niedrigste Priorität, Chat unterbricht.
+ */
+export class LearnService {
+  private stopped = true;
+  private loopPromise: Promise<void> | null = null;
+  private waker: (() => void) | null = null;
+  private active: Active | null = null;
+  private lastEmit = 0;
+  private readonly deps: LearnDeps;
+
+  constructor(deps: LearnDeps) {
+    this.deps = deps;
+    const prev = deps.library.beforeDelete;
+    deps.library.beforeDelete = (ids) => {
+      prev(ids);
+      // Job, der nur aus gelöschten Quellen besteht: abbrechen (ein Fach-Job läuft mit den übrigen weiter)
+      const a = this.active;
+      if (a && a.sources.size && [...a.sources].every((id) => ids.includes(id))) {
+        a.userCancelled = true;
+        a.ctrl.abort();
+      }
+    };
+  }
+
+  start(): void {
+    if (!this.stopped) return;
+    this.stopped = false;
+    const r = this.deps.db.prepare("UPDATE learn_jobs SET state = 'queued' WHERE state = 'running'").run();
+    if (Number(r.changes) > 0) this.deps.log(`${r.changes} unterbrochene Lern-Job(s) wieder eingereiht`);
+    this.loopPromise = this.loop();
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.active?.ctrl.abort();
+    this.waker?.();
+    await this.loopPromise;
+  }
+
+  private wake(): void {
+    this.waker?.();
+  }
+
+  /* ------------------------------------------------------------ API */
+
+  enqueue(kind: LearnKind, params: LearnParams, title: string): LearnJobDTO {
+    const { db } = this.deps;
+    const queued = (db.prepare("SELECT count(*) AS n FROM learn_jobs WHERE state IN ('queued', 'running')").get() as { n: number }).n;
+    if (queued >= LIMITS.queuedJobs) throw new HttpError(429, 'learn_queue_full', 'Zu viele wartende Lern-Aufträge');
+    const now = Date.now();
+    const id = Number(
+      db.prepare("INSERT INTO learn_jobs(kind, state, title, params, created_at, updated_at) VALUES (?, 'queued', ?, ?, ?, ?)").run(kind, title.slice(0, 200), JSON.stringify(params), now, now)
+        .lastInsertRowid,
+    );
+    this.emit(id, true);
+    this.wake();
+    return this.get(id)!;
+  }
+
+  list(limit = 100): LearnJobDTO[] {
+    return (this.deps.db.prepare('SELECT * FROM learn_jobs ORDER BY id DESC LIMIT ?').all(limit) as unknown as JobRow[]).map((r) => this.dto(r));
+  }
+
+  get(id: number): LearnJobDTO | null {
+    const r = this.deps.db.prepare('SELECT * FROM learn_jobs WHERE id = ?').get(id) as JobRow | undefined;
+    return r ? this.dto(r) : null;
+  }
+
+  counts(): { queued: number; running: number; error: number } {
+    const rows = this.deps.db.prepare("SELECT state, count(*) AS n FROM learn_jobs WHERE state IN ('queued', 'running', 'error') GROUP BY state").all() as { state: string; n: number }[];
+    const by = (s: string) => rows.find((r) => r.state === s)?.n ?? 0;
+    return { queued: by('queued'), running: by('running'), error: by('error') };
+  }
+
+  cancel(id: number): boolean {
+    if (this.active?.id === id) {
+      this.active.userCancelled = true;
+      this.active.ctrl.abort();
+      return true;
+    }
+    const r = this.deps.db.prepare("UPDATE learn_jobs SET state = 'cancelled', updated_at = ? WHERE id = ? AND state = 'queued'").run(Date.now(), id);
+    if (!Number(r.changes)) return false;
+    this.emit(id, true);
+    return true;
+  }
+
+  /** Erneut versuchen: fertige Zwischenschritte liegen im Cache und werden übersprungen. */
+  retry(id: number): boolean {
+    const r = this.deps.db.prepare("UPDATE learn_jobs SET state = 'queued', detail = NULL, progress = 0, updated_at = ? WHERE id = ? AND state IN ('error', 'cancelled')").run(Date.now(), id);
+    if (!Number(r.changes)) return false;
+    this.emit(id, true);
+    this.wake();
+    return true;
+  }
+
+  get busy(): boolean {
+    return this.active !== null;
+  }
+
+  private dto(r: JobRow): LearnJobDTO {
+    const a = this.active?.id === r.id ? this.active : null;
+    let etaSec: number | null = null;
+    if (a && a.total && a.progress > a.startProgress) {
+      const rate = (a.progress - a.startProgress) / ((Date.now() - a.startedAt) / 1000);
+      if (rate > 0) etaSec = Math.round((a.total - a.progress) / rate);
+    }
+    let params: LearnParams;
+    let result: LearnJobDTO['result'] = null;
+    try {
+      params = JSON.parse(r.params) as LearnParams;
+      result = r.result ? (JSON.parse(r.result) as Record<string, number>) : null;
+    } catch {
+      params = { scope: { kind: 'sources', ids: [] } };
+    }
+    return {
+      id: r.id,
+      kind: r.kind,
+      state: r.state,
+      title: r.title,
+      params,
+      progress: r.progress,
+      total: r.total,
+      detail: r.detail,
+      result,
+      note: a?.note ?? null,
+      etaSec,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  private emit(id: number, force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastEmit < 400) return;
+    this.lastEmit = now;
+    try {
+      const job = this.get(id);
+      if (job) this.deps.bus.emit({ type: 'learn-job', job });
+      this.deps.bus.emit({ type: 'learn-jobs', counts: this.counts() });
+    } catch {
+      /* DB evtl. geschlossen */
+    }
+  }
+
+  /* ------------------------------------------------------------ Schleife */
+
+  private claim(): JobRow | null {
+    return (
+      (this.deps.db
+        .prepare(
+          `UPDATE learn_jobs SET state = 'running', started_at = ?, updated_at = ?
+           WHERE id = (SELECT id FROM learn_jobs WHERE state = 'queued' ORDER BY id LIMIT 1) RETURNING *`,
+        )
+        .get(Date.now(), Date.now()) as JobRow | undefined) ?? null
+    );
+  }
+
+  private async loop(): Promise<void> {
+    while (!this.stopped) {
+      let job: JobRow | null = null;
+      try {
+        job = this.claim();
+      } catch {
+        return; // DB geschlossen
+      }
+      if (!job) {
+        await new Promise<void>((resolve) => (this.waker = resolve));
+        this.waker = null;
+        continue;
+      }
+      const a: Active = { id: job.id, ctrl: new AbortController(), userCancelled: false, sources: new Set(), note: null, startedAt: Date.now(), startProgress: 0, progress: 0, total: null };
+      this.active = a;
+      this.emit(job.id, true);
+      try {
+        const params = JSON.parse(job.params) as LearnParams;
+        await this.run(job, params, a);
+      } catch (err) {
+        const cancelled = a.userCancelled || (err as { code?: string }).code === 'learn_cancelled' || (err as { name?: string }).name === 'AbortError';
+        this.safe(() => {
+          if (this.stopped && !a.userCancelled) {
+            // reguläres Beenden: beim nächsten Start weiter (Zwischenergebnisse liegen im Cache)
+            this.deps.db.prepare("UPDATE learn_jobs SET state = 'queued', updated_at = ? WHERE id = ?").run(Date.now(), job.id);
+          } else if (cancelled) {
+            this.deps.db.prepare("UPDATE learn_jobs SET state = 'cancelled', updated_at = ? WHERE id = ?").run(Date.now(), job.id);
+          } else {
+            const code = (err as { code?: unknown }).code;
+            const detail = typeof code === 'string' && /^learn_[a-z_]+$/.test(code) ? code : 'learn_failed';
+            this.deps.log(`Lern-Job fehlgeschlagen (${job.kind} #${job.id})`, (err as Error).message);
+            this.deps.db.prepare("UPDATE learn_jobs SET state = 'error', detail = ?, updated_at = ? WHERE id = ?").run(detail, Date.now(), job.id);
+          }
+        });
+      } finally {
+        this.active = null;
+        this.emit(job.id, true);
+      }
+    }
+  }
+
+  private safe(fn: () => unknown): void {
+    try {
+      fn();
+    } catch {
+      /* DB evtl. geschlossen */
+    }
+  }
+
+  private progress(a: Active, progress: number, total: number | null): void {
+    a.progress = progress;
+    a.total = total;
+    this.deps.db.prepare('UPDATE learn_jobs SET progress = ?, total = ?, updated_at = ? WHERE id = ?').run(progress, total, Date.now(), a.id);
+    this.emit(a.id);
+  }
+
+  private setNote(a: Active, note: Active['note']): void {
+    if (a.note === note) return;
+    a.note = note;
+    this.emit(a.id, true);
+  }
+
+  /** Schreibt das Ergebnis und schließt den Job in DERSELBEN Transaktion ab (Absturz dazwischen: nichts halb). */
+  private finish(a: Active, kind: LearnKind, write: () => Record<string, number>): void {
+    if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'learn_cancelled');
+    tx(this.deps.db, () => {
+      const result = write();
+      this.deps.failBeforeCommit?.(kind);
+      this.deps.db.prepare("UPDATE learn_jobs SET state = 'done', progress = coalesce(total, progress), result = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(result), Date.now(), a.id);
+    });
+  }
+
+  /* ------------------------------------------------------------ Modellzugriff */
+
+  private async think(model: string): Promise<boolean | undefined> {
+    try {
+      return (await this.deps.client.capabilities(model)).includes('thinking') ? false : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Ein GPU-Schritt: wartet auf den Slot (Chat > Embedding > Medien > Lernen), bricht ab, sobald ein Chat startet,
+   * und wiederholt den Schritt danach. Ollama offline -> geduldig warten (Backoff), wie die Medien-Queue.
+   */
+  private async llm<T>(a: Active, fn: (o: CallOpts) => Promise<T>): Promise<T> {
+    const { scheduler, settings, client } = this.deps;
+    let backoff = 2000;
+    let httpFailures = 0;
+    for (;;) {
+      if (scheduler.chatActive) this.setNote(a, 'waiting_chat');
+      const release = await scheduler.acquire('learn', a.ctrl.signal).catch(() => {
+        throw codedError('abgebrochen', 'learn_cancelled');
+      });
+      const chat = scheduler.chatSignal();
+      try {
+        this.setNote(a, null);
+        const s = settings.get();
+        return await fn({ client, model: s.chatModel, numCtx: s.numCtx, think: await this.think(s.chatModel), signal: AbortSignal.any([a.ctrl.signal, chat]) });
+      } catch (err) {
+        if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'learn_cancelled');
+        if (chat.aborted) continue; // Chat hat Vorrang: Schritt nach der Antwort wiederholen
+        if (err instanceof OllamaError && err.code === 'model_missing') throw codedError(err.message, 'learn_model_missing', err);
+        if (err instanceof OllamaError && err.code === 'oom') throw codedError(err.message, 'learn_oom', err);
+        if (err instanceof OllamaError && err.code === 'http' && ++httpFailures >= 3) throw codedError(err.message, 'learn_failed', err);
+        if (!isTransient(err) && !(err instanceof OllamaError && err.code === 'http')) throw err;
+      } finally {
+        release();
+      }
+      this.setNote(a, 'waiting_ollama');
+      await sleep(backoff, a.ctrl.signal);
+      backoff = Math.min(60_000, backoff * 2);
+    }
+  }
+
+  /** Embeddings für Duplikat-Erkennung; ohne Ollama/Modell -> null (dann nur Text-Fingerabdruck). */
+  private async embed(a: Active, texts: string[]): Promise<Float32Array[] | null> {
+    if (!texts.length) return [];
+    const model = this.deps.vectors.info().model ?? this.deps.settings.get().embeddingModel;
+    const release = await this.deps.scheduler.acquire('learn', a.ctrl.signal).catch(() => {
+      throw codedError('abgebrochen', 'learn_cancelled');
+    });
+    try {
+      const out: Float32Array[] = [];
+      for (let i = 0; i < texts.length; i += 64) {
+        const batch = texts.slice(i, i + 64).map((t) => embedPrefix(model, 'document') + t.slice(0, 2000));
+        out.push(...(await this.deps.client.embed(model, batch, { signal: a.ctrl.signal, retries: 1, timeoutMs: 60_000 })).map(normalize));
+      }
+      return out;
+    } catch {
+      if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'learn_cancelled');
+      return null;
+    } finally {
+      release();
+    }
+  }
+
+  /** Zwischenergebnis aus dem Cache oder berechnen (nur quellgebundene Gruppen werden gespeichert: Löschen räumt sie per FK ab). */
+  private async cached<T>(key: string, sourceId: number | null, compute: () => Promise<T>): Promise<T> {
+    const { db } = this.deps;
+    const row = db.prepare('SELECT value FROM learn_cache WHERE key = ?').get(key) as { value: string } | undefined;
+    if (row) return JSON.parse(row.value) as T;
+    const value = await compute();
+    if (sourceId !== null) {
+      db.prepare('INSERT OR REPLACE INTO learn_cache(key, source_id, value, created_at) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM sources WHERE id = ?)').run(
+        key,
+        sourceId,
+        JSON.stringify(value),
+        Date.now(),
+        sourceId,
+      );
+    }
+    return value;
+  }
+
+  /** Text-Budget pro Aufruf (Token) aus num_ctx: Antwortreserve + System-Prompt abziehen, 10 % Sicherheitsabstand. */
+  static docBudget(numCtx: number, predict: number): number {
+    return Math.max(300, Math.floor((numCtx - predict - 450) * 0.9));
+  }
+
+  /* ------------------------------------------------------------ Ausführung */
+
+  private async run(job: JobRow, params: LearnParams, a: Active): Promise<void> {
+    const max = job.kind === 'summary' ? LIMITS.summaryChunks : job.kind === 'graph' ? LIMITS.graphChunks : job.kind === 'cards' ? LIMITS.cardsChunks : LIMITS.quizChunks;
+    if (job.kind === 'graph' && params.scope.kind === 'chat') throw codedError('Graph nur aus Quellen', 'learn_invalid_scope');
+    const loaded = loadScope(this.deps.db, params.scope, max);
+    if (!loaded.chunks.length) throw codedError('Kein Text im Bereich', 'learn_no_text');
+    for (const c of loaded.chunks) if (c.sourceId !== null) a.sources.add(c.sourceId);
+    if (job.kind === 'summary') return this.runSummary(a, params, loaded);
+    if (job.kind === 'cards') return this.runCards(a, params, loaded.chunks);
+    if (job.kind === 'quiz') return this.runQuiz(a, params, loaded.chunks);
+    return this.runGraph(a, loaded.chunks);
+  }
+
+  private async runSummary(a: Active, params: LearnParams, loaded: ReturnType<typeof loadScope>): Promise<void> {
+    const s = this.deps.settings.get();
+    const lang = s.language;
+    const level: Level = LEVELS.includes(params.level as Level) ? params.level! : 'outline';
+    const mapPredict = Math.min(900, Math.floor(s.numCtx / 4));
+    const groups = groupChunks(loaded.chunks, LearnService.docBudget(s.numCtx, mapPredict));
+    const refs = loaded.chunks.map((c, i) => refOf(c, i + 1));
+    let done = 0;
+    const total = groups.length + 1;
+    this.progress(a, 0, total);
+    const partials: string[] = [];
+    let offset = 0;
+    for (const g of groups) {
+      const local = await this.cached(groupKey('summary-map:v1', g, lang), g[0]!.sourceId, () =>
+        this.llm(a, (o) => callValidated(o, mapMessages(documentsBlock(g), lang), null, mapPredict, (raw) => parseNotes(raw, g.length))),
+      );
+      partials.push(renumber(local, offset));
+      offset += g.length;
+      this.progress(a, ++done, total);
+    }
+    // Reduce: so lange zusammenführen, bis alles in einen Aufruf passt (Kontext nur num_ctx)
+    const predict = Math.min(LEVEL_PREDICT[level], Math.floor(s.numCtx / 3));
+    const budget = LearnService.docBudget(s.numCtx, predict);
+    let notes = partials;
+    const cut = () => {
+      // Modell kürzt nicht (mehr): hart auf das Budget begrenzen, Notiz bekommt den Hinweis "gekürzt"
+      notes = [notes.join('\n').slice(0, budget * 3)];
+      loaded.truncated = true;
+    };
+    for (let round = 0; estimateTokens(notes.join('\n')) > budget; round++) {
+      const before = estimateTokens(notes.join('\n'));
+      if (round >= 6) {
+        cut();
+        break;
+      }
+      const batches: string[][] = [[]];
+      for (const p of notes) {
+        const cur = batches[batches.length - 1]!;
+        if (cur.length && estimateTokens([...cur, p].join('\n')) > budget) batches.push([p]);
+        else cur.push(p);
+      }
+      const merged: string[] = [];
+      for (const b of batches) {
+        const text = b.join('\n');
+        merged.push(
+          b.length === 1 && estimateTokens(text) <= budget / 2
+            ? text
+            : await this.llm(a, (o) => callValidated(o, reduceMessages(text.slice(0, budget * 3), 'merge', lang, loaded.title), null, predict, (raw) => parseNotes(raw, refs.length))),
+        );
+      }
+      notes = merged;
+      if (estimateTokens(notes.join('\n')) >= before) {
+        cut();
+        break;
+      }
+    }
+    const final = await this.llm(a, (o) => callValidated(o, reduceMessages(notes.join('\n').slice(0, budget * 3), level, lang, loaded.title), null, predict, (raw) => parseNotes(raw, refs.length)));
+    // nur tatsächlich zitierte Quellen, kompakt neu nummeriert (1..k)
+    const used = [...usedCitationNumbers(final)].filter((n) => refs[n - 1]).sort((x, y) => x - y);
+    const map = new Map(used.map((n, i) => [n, i + 1]));
+    const body = final.replace(/\[(\d{1,4})\]/g, (_m, n: string) => (map.has(Number(n)) ? `[${map.get(Number(n))}]` : ''));
+    const citations: Ref[] = used.map((n) => ({ ...refs[n - 1]!, n: map.get(n)! }));
+    const now = Date.now();
+    this.progress(a, total, total);
+    this.finish(a, 'summary', () => {
+      const noteId = Number(
+        this.deps.db
+          .prepare('INSERT INTO notes(title, body, level, scope, citations, subject_id, ai, created_at, updated_at) VALUES (?, ?, ?, ?, ?, (SELECT id FROM subjects WHERE id = ?), 1, ?, ?)')
+          .run(loaded.title, body, level, JSON.stringify({ ...params.scope, truncated: loaded.truncated }), JSON.stringify(citations), loaded.subjectId, now, now).lastInsertRowid,
+      );
+      return { noteId, chunks: loaded.chunks.length, truncated: loaded.truncated ? 1 : 0 };
+    });
+  }
+
+  /** Kandidaten über Gruppen einsammeln (Cache je Gruppe), bis genug da sind. */
+  private async collect<T extends { doc: number }>(
+    a: Active,
+    chunks: LChunk[],
+    task: string,
+    want: number,
+    call: (o: CallOpts, docs: string, perGroup: number, g: LChunk[]) => Promise<{ items: T[]; rejected: number }>,
+  ): Promise<{ items: (T & { chunk: LChunk })[]; rejected: number }> {
+    const s = this.deps.settings.get();
+    // Auswahl/Fach: Quellen abwechselnd bedienen (sonst kämen alle Karten aus der ersten Quelle)
+    const bySource = new Map<number | null, LChunk[][]>();
+    for (const g of groupChunks(chunks, Math.min(2500, LearnService.docBudget(s.numCtx, 1500)))) bySource.set(g[0]!.sourceId, [...(bySource.get(g[0]!.sourceId) ?? []), g]);
+    const lanes = [...bySource.values()];
+    const groups: LChunk[][] = [];
+    for (let i = 0; groups.length < chunks.length && lanes.some((l) => l[i]); i++) for (const l of lanes) if (l[i]) groups.push(l[i]!);
+    const perGroup = Math.min(10, Math.max(2, Math.ceil(want / groups.length) + 1));
+    const items: (T & { chunk: LChunk })[] = [];
+    let rejected = 0;
+    this.progress(a, 0, groups.length + 1);
+    for (let i = 0; i < groups.length && items.length < want * 2; i++) {
+      const g = groups[i]!;
+      const r = await this.cached(groupKey(task, g, [s.language, perGroup]), g[0]!.sourceId, () => this.llm(a, (o) => call(o, documentsBlock(g), perGroup, g)));
+      items.push(...r.items.map((it) => ({ ...it, chunk: g[it.doc - 1]! })));
+      rejected += r.rejected;
+      this.progress(a, i + 1, groups.length + 1);
+    }
+    return { items, rejected };
+  }
+
+  /** Duplikate entfernen: gleicher Text-Fingerabdruck oder Embedding-Ähnlichkeit ≥ DUP_SIMILARITY (auch gegen Bestand). */
+  private async dedupe<T>(a: Active, items: T[], text: (t: T) => string, existing: string[], max: number): Promise<{ kept: T[]; duplicates: number }> {
+    const seen = new Set(existing.map(fingerprint));
+    const unique = items.filter((it) => {
+      const f = fingerprint(text(it));
+      if (seen.has(f)) return false;
+      seen.add(f);
+      return true;
+    });
+    const vecs = await this.embed(a, [...unique.map(text), ...existing.slice(0, 500)]);
+    const kept: T[] = [];
+    if (!vecs) kept.push(...unique.slice(0, max));
+    else {
+      const old = vecs.slice(unique.length);
+      const chosen: Float32Array[] = [];
+      unique.forEach((it, i) => {
+        const v = vecs[i]!;
+        if (kept.length >= max || [...old, ...chosen].some((o) => o.length === v.length && cosine(o, v) >= DUP_SIMILARITY)) return;
+        chosen.push(v);
+        kept.push(it);
+      });
+    }
+    return { kept, duplicates: items.length - kept.length };
+  }
+
+  private sourceMeta(sourceId: number | null): { subjectId: number | null; kind: string | null } {
+    if (sourceId === null) return { subjectId: null, kind: null };
+    const r = this.deps.db.prepare('SELECT subject_id AS subjectId, kind FROM sources WHERE id = ?').get(sourceId) as { subjectId: number | null; kind: string } | undefined;
+    return r ?? { subjectId: null, kind: null };
+  }
+
+  private async runCards(a: Active, params: LearnParams, chunks: LChunk[]): Promise<void> {
+    const s = this.deps.settings.get();
+    const max = Math.min(LIMITS.maxCards, Math.max(1, params.count ?? 20));
+    const { items, rejected } = await this.collect<CardDraft>(a, chunks, 'cards:v1', max, async (o, docs, n, g) => {
+      const r = await callValidated(o, cardMessages(docs, n, s.language), CARD_SCHEMA, 1500, (raw) => parseCards(raw, g, n));
+      return { items: r.cards, rejected: r.rejected };
+    });
+    const srcIds = [...a.sources];
+    const existing = (this.deps.db.prepare('SELECT front, back FROM cards WHERE source_id IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT 2000').all(JSON.stringify(srcIds)) as {
+      front: string;
+      back: string;
+    }[]).map((c) => `${c.front}\n${c.back}`);
+    const { kept, duplicates } = await this.dedupe(a, items, (c) => `${c.front}\n${c.back}`, existing, max);
+    const now = Date.now();
+    this.finish(a, 'cards', () => {
+      const ins = this.deps.db.prepare(
+        `INSERT INTO cards(type, front, back, status, ai, subject_id, source_id, chunk_id, source_name, loc, job_id, created_at, updated_at)
+         VALUES (?, ?, ?, 'draft', 1, ?, (SELECT id FROM sources WHERE id = ?), (SELECT id FROM chunks WHERE id = ?), ?, ?, ?, ?, ?)`,
+      );
+      for (const c of kept) {
+        const meta = this.sourceMeta(c.chunk.sourceId);
+        const type = meta.kind === 'image' ? 'image' : c.type;
+        ins.run(type, c.front, c.back, meta.subjectId, c.chunk.sourceId, c.chunk.id, c.chunk.sourceId !== null ? c.chunk.sourceName : null, JSON.stringify(c.chunk.chatId ? { chat: c.chunk.chatId, t: c.chunk.sourceName } : locOf(c.chunk)), a.id, now, now);
+      }
+      return { created: kept.length, rejected, duplicates };
+    });
+  }
+
+  private async runQuiz(a: Active, params: LearnParams, chunks: LChunk[]): Promise<void> {
+    const s = this.deps.settings.get();
+    const max = Math.min(LIMITS.maxQuestions, Math.max(1, params.count ?? 12));
+    const { items, rejected } = await this.collect<QuestionDraft>(a, chunks, 'quiz:v1', max, async (o, docs, n, g) => {
+      const r = await callValidated(o, quizMessages(docs, n, s.language), QUIZ_SCHEMA, 1800, (raw) => parseQuiz(raw, g, n));
+      return { items: r.questions, rejected: r.rejected };
+    });
+    const existing = (this.deps.db.prepare('SELECT question FROM quiz_questions WHERE source_id IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT 2000').all(JSON.stringify([...a.sources])) as {
+      question: string;
+    }[]).map((q) => q.question);
+    const { kept, duplicates } = await this.dedupe(a, items, (q) => q.question, existing, max);
+    const now = Date.now();
+    this.finish(a, 'quiz', () => {
+      let created = 0;
+      const ins = this.deps.db.prepare(
+        `INSERT OR IGNORE INTO quiz_questions(type, question, options, answer, explanation, topic, fingerprint, subject_id, source_id, chunk_id, source_name, loc, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM sources WHERE id = ?), (SELECT id FROM chunks WHERE id = ?), ?, ?, ?)`,
+      );
+      for (const q of kept) {
+        const meta = this.sourceMeta(q.chunk.sourceId);
+        created += Number(
+          ins.run(q.type, q.question, q.options ? JSON.stringify(q.options) : null, q.answer, q.explanation, (q.chunk.heading ?? q.chunk.sourceName).slice(0, 200), fingerprint(q.question), meta.subjectId, q.chunk.sourceId, q.chunk.id, q.chunk.sourceId !== null ? q.chunk.sourceName : null, JSON.stringify(q.chunk.chatId ? { chat: q.chunk.chatId, t: q.chunk.sourceName } : locOf(q.chunk)), now).changes,
+        );
+      }
+      return { created, rejected, duplicates: duplicates + kept.length - created };
+    });
+  }
+
+  /* ------------------------------------------------------------ Wissensgraph */
+
+  private async runGraph(a: Active, chunks: LChunk[]): Promise<void> {
+    const { db } = this.deps;
+    const s = this.deps.settings.get();
+    const bySource = new Map<number, LChunk[]>();
+    for (const c of chunks) bySource.set(c.sourceId!, [...(bySource.get(c.sourceId!) ?? []), c]);
+    const plan = [...bySource.entries()].map(([id, cs]) => ({ id, groups: groupChunks(cs, LearnService.docBudget(s.numCtx, 1200)) }));
+    const total = plan.reduce((n, p) => n + p.groups.length, 0);
+    let done = 0;
+    let concepts = 0;
+    let relations = 0;
+    this.progress(a, 0, total);
+    const known = this.conceptVectors();
+    for (const p of plan) {
+      const drafts: (GraphDraft & { group: LChunk[] })[] = [];
+      for (const g of p.groups) {
+        const d = await this.cached(groupKey('graph:v1', g, s.language), p.id, () => this.llm(a, (o) => callValidated(o, graphMessages(documentsBlock(g), s.language), GRAPH_SCHEMA, 1200, (raw) => parseGraph(raw, g))));
+        drafts.push({ ...d, group: g });
+        this.progress(a, ++done, total);
+      }
+      // Konzepte der Quelle zusammenführen (gleicher normalisierter Name), begrenzen
+      const merged = new Map<string, { name: string; description: string; chunkId: number | null }>();
+      for (const d of drafts) for (const c of d.concepts) if (!merged.has(c.norm) && merged.size < LIMITS.conceptsPerSource) merged.set(c.norm, { name: c.name, description: c.description, chunkId: d.group[c.doc - 1]?.id ?? null });
+      const rels = new Map<string, { from: string; to: string; label: string }>();
+      for (const d of drafts) for (const r of d.relations) if (merged.has(r.from) && merged.has(r.to) && rels.size < LIMITS.relationsPerSource) rels.set([r.from, r.to].sort().join('\u0000'), r);
+      // neue Namen: Embedding-Ähnlichkeit gegen den Bestand (z. B. "2. Hauptsatz" ≈ "Zweiter Hauptsatz")
+      const fresh = [...merged.keys()].filter((n) => !db.prepare('SELECT 1 FROM concepts WHERE norm = ?').get(n));
+      const vecs = await this.embed(a, fresh.map((n) => merged.get(n)!.name));
+      const vecOf = new Map(fresh.map((n, i) => [n, vecs?.[i] ?? null]));
+      if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'learn_cancelled');
+      tx(db, () => {
+        if (!db.prepare('SELECT 1 FROM sources WHERE id = ?').get(p.id)) return; // inzwischen gelöscht
+        const idOf = new Map<string, number>();
+        const now = Date.now();
+        for (const [norm, c] of merged) {
+          let id = (db.prepare('SELECT id FROM concepts WHERE norm = ?').get(norm) as { id: number } | undefined)?.id;
+          const v = vecOf.get(norm) ?? null;
+          if (!id && v) {
+            let best: { id: number; sim: number } | null = null;
+            for (const k of known) if (k.vec.length === v.length) {
+              const sim = cosine(k.vec, v);
+              if (sim >= DUP_SIMILARITY && (!best || sim > best.sim)) best = { id: k.id, sim };
+            }
+            // Konzept kann inzwischen verwaist und gelöscht sein (Trigger) -> nicht mehr als Ziel verwenden
+            id = best && db.prepare('SELECT 1 FROM concepts WHERE id = ?').get(best.id) ? best.id : undefined;
+          }
+          if (!id) {
+            if (concepts >= LIMITS.conceptsPerJob) continue;
+            id = Number(
+              db.prepare('INSERT INTO concepts(name, norm, description, vec, created_at) VALUES (?, ?, ?, ?, ?)').run(c.name, norm, c.description || null, v ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : null, now)
+                .lastInsertRowid,
+            );
+            if (v) known.push({ id, vec: v });
+            concepts++;
+          }
+          idOf.set(norm, id);
+          db.prepare('INSERT INTO concept_sources(concept_id, source_id, chunk_id) VALUES (?, ?, (SELECT id FROM chunks WHERE id = ?)) ON CONFLICT DO UPDATE SET chunk_id = excluded.chunk_id').run(id, p.id, c.chunkId);
+        }
+        const keepEdges: number[] = [];
+        for (const r of rels.values()) {
+          const x = idOf.get(r.from);
+          const y = idOf.get(r.to);
+          if (!x || !y || x === y) continue;
+          const [ea, eb] = x < y ? [x, y] : [y, x];
+          const row = db
+            .prepare('INSERT INTO concept_edges(a, b, label, source_id) VALUES (?, ?, ?, ?) ON CONFLICT(a, b, source_id) DO UPDATE SET label = excluded.label RETURNING id')
+            .get(ea, eb, r.label, p.id) as { id: number };
+          keepEdges.push(row.id);
+          relations++;
+        }
+        // Veraltete Bezüge dieser Quelle entfernen (Nutzer-Korrekturen an weiter vorhandenen Konzepten/Kanten bleiben)
+        db.prepare('DELETE FROM concept_edges WHERE source_id = ? AND id NOT IN (SELECT value FROM json_each(?))').run(p.id, JSON.stringify(keepEdges));
+        db.prepare('DELETE FROM concept_sources WHERE source_id = ? AND concept_id NOT IN (SELECT value FROM json_each(?))').run(p.id, JSON.stringify([...idOf.values()]));
+      });
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    this.finish(a, 'graph', () => ({ concepts, relations, sources: plan.length }));
+  }
+
+  private conceptVectors(): { id: number; vec: Float32Array }[] {
+    const rows = this.deps.db.prepare('SELECT id, vec FROM concepts WHERE vec IS NOT NULL').all() as { id: number; vec: Uint8Array }[];
+    return rows.map((r) => {
+      const copy = new Uint8Array(r.vec.byteLength);
+      copy.set(r.vec);
+      return { id: r.id, vec: new Float32Array(copy.buffer) };
+    });
+  }
+}
