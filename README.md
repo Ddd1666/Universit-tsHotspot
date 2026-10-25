@@ -358,7 +358,7 @@ Testdaten: 2 000 Quellen, 40 000 Abschnitte, 10 000 Karten, 48 000 Wiederholunge
 | Quelle löschen inkl. Karten/Fragen/Cache/Graph (FK + Trigger) | 3,4 ms; `integrity_check` ok, keine FK-Verstöße |
 | Graph-Layout pro Simulationsschritt, eigene Simulation vs. `d3-force` (Node, Mittel aus 30 Schritten) | 500 Knoten 0,5 vs. 1,5 ms · 1 000: 1,6 vs. 3,2 ms · **2 000: 6,9–7,3 vs. 6,7–6,8 ms** · 4 000: 32 vs. 16 ms |
 | Graph-Ansicht 2 000 Knoten / 2 999 Kanten im Browser (Chromium, 1440×900, während der Simulation) | 73–93 fps, längster Frame 18–43 ms |
-| Map-Reduce: Text pro Aufruf bei `num_ctx` 8192 / 2048 | ~6 140 / ~980 Token (Rest: Antwortreserve 900 bzw. 512 + System-Prompt) |
+| Map-Reduce: Text pro Aufruf bei `num_ctx` 8192 / 2048 | ~6 160 / ~980 Token (Rest: Antwortreserve 900 bzw. 512 + System-Prompt) |
 
 Mit echtem Ollama dauert jeder Generierungsschritt Sekunden (abhängig von Modell und GPU) – genau das misst die Laptop-Checkliste
 (`HANDOFF.md`, Abschnitt 3b) bzw. `npm run eval:learning`.

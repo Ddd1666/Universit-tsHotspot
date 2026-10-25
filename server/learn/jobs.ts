@@ -693,6 +693,19 @@ export class LearnService {
       const fresh = [...merged.keys()].filter((n) => !db.prepare('SELECT 1 FROM concepts WHERE norm = ?').get(n));
       const vecs = await this.embed(a, fresh.map((n) => merged.get(n)!.name));
       const vecOf = new Map(fresh.map((n, i) => [n, vecs?.[i] ?? null]));
+      // Ähnlichkeitssuche VOR der Transaktion und in Häppchen (Event-Loop: Konzepte × Bestand × Dimension wächst mit der Bibliothek)
+      const bestOf = new Map<string, number>();
+      for (const [i, norm] of fresh.entries()) {
+        const v = vecOf.get(norm);
+        if (!v) continue;
+        let best: { id: number; sim: number } | null = null;
+        for (const k of known) if (k.vec.length === v.length) {
+          const sim = cosine(k.vec, v);
+          if (sim >= DUP_SIMILARITY && (!best || sim > best.sim)) best = { id: k.id, sim };
+        }
+        if (best) bestOf.set(norm, best.id);
+        if (i % 8 === 7) await new Promise<void>((r) => setImmediate(r));
+      }
       if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'learn_cancelled');
       tx(db, () => {
         if (!db.prepare('SELECT 1 FROM sources WHERE id = ?').get(p.id)) return; // inzwischen gelöscht
@@ -701,15 +714,9 @@ export class LearnService {
         for (const [norm, c] of merged) {
           let id = (db.prepare('SELECT id FROM concepts WHERE norm = ?').get(norm) as { id: number } | undefined)?.id;
           const v = vecOf.get(norm) ?? null;
-          if (!id && v) {
-            let best: { id: number; sim: number } | null = null;
-            for (const k of known) if (k.vec.length === v.length) {
-              const sim = cosine(k.vec, v);
-              if (sim >= DUP_SIMILARITY && (!best || sim > best.sim)) best = { id: k.id, sim };
-            }
-            // Konzept kann inzwischen verwaist und gelöscht sein (Trigger) -> nicht mehr als Ziel verwenden
-            id = best && db.prepare('SELECT 1 FROM concepts WHERE id = ?').get(best.id) ? best.id : undefined;
-          }
+          const similar = bestOf.get(norm);
+          // Konzept kann inzwischen verwaist und gelöscht sein (Trigger) -> nicht mehr als Ziel verwenden
+          if (!id && similar && db.prepare('SELECT 1 FROM concepts WHERE id = ?').get(similar)) id = similar;
           if (!id) {
             if (concepts >= LIMITS.conceptsPerJob) continue;
             id = Number(
