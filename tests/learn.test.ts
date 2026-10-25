@@ -196,7 +196,7 @@ describe('Lernmodi – Integration (Mock-Ollama)', () => {
     expect(types.size).toBeGreaterThanOrEqual(3);
     for (const q of s.questions) {
       const r = (await app.api<{ score: number; answer: string; source: { sourceId: number; sourceName: string }; feedback: { rubric: unknown[]; quotes: { text: string }[]; refs: unknown[] } | null }>('POST', `/api/quiz/questions/${q.id}/answer`, {
-        answer: q.type === 'mc' ? q.options![1]! : q.type === 'tf' ? 'false' : 'völlig falsch',
+        answer: q.type === 'mc' ? 'keine der Optionen' : q.type === 'tf' ? 'false' : 'völlig falsch',
         sessionId: s.session.id,
       })).data;
       expect(r.source.sourceName).toBeTruthy(); // Lösung immer mit Quelle
