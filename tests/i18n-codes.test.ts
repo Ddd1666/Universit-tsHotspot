@@ -63,6 +63,7 @@ describe('Übersetzungen für Server-Fehlercodes (EN-Oberfläche ohne deutsche S
     for (const m of src.matchAll(/codedError\([^;]*?, '([a-z_]+)'/g)) detail.add(m[1]!);
     expect(detail.size).toBeGreaterThanOrEqual(6);
     detail.add('learn_failed'); // Fallback-Code für unbekannte Fehler
+    detail.add('learn_scope_missing'); // Bereich gelöscht, während der Job wartete
     for (const code of detail) expect(i18n.split(`'detail.${code}':`).length - 1, code).toBe(2);
     const api = new Set([...src.matchAll(/HttpError\(\d+, '([a-z_]+)'/g)].map((m) => m[1]!));
     expect(api.size).toBeGreaterThan(10);

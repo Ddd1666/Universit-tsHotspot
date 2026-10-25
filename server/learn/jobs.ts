@@ -326,7 +326,8 @@ export class LearnService {
             this.deps.db.prepare("UPDATE learn_jobs SET state = 'cancelled', updated_at = ? WHERE id = ?").run(Date.now(), job.id);
           } else {
             const code = (err as { code?: unknown }).code;
-            const detail = typeof code === 'string' && /^learn_[a-z_]+$/.test(code) ? code : 'learn_failed';
+            // Quelle/Fach/Chat inzwischen gelöscht (Job wartete noch) -> eigener Code statt allgemeinem Fehler
+            const detail = code === 'not_found' ? 'learn_scope_missing' : typeof code === 'string' && /^learn_[a-z_]+$/.test(code) ? code : 'learn_failed';
             this.deps.log(`Lern-Job fehlgeschlagen (${job.kind} #${job.id})`, (err as Error).message);
             this.deps.db.prepare("UPDATE learn_jobs SET state = 'error', detail = ?, updated_at = ? WHERE id = ?").run(detail, Date.now(), job.id);
           }

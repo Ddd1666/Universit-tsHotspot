@@ -441,6 +441,28 @@ describe('Lernmodi – Löschkonsistenz, Neustart, Fehlerinjektion, Priorität',
   }, 60_000);
 });
 
+describe('Lernmodi – wartender Job, dessen Quelle gelöscht wurde', () => {
+  it('meldet "learn_scope_missing" statt eines allgemeinen Fehlers', async () => {
+    const app = await startTestApp();
+    try {
+      const a = await importText(app, 'A.txt', longText(4));
+      const b = await importText(app, 'B.txt', longText(4, 'b'));
+      app.hotspot.mock!.setLearnDelay(60_000);
+      const first = await job(app, { kind: 'summary', scope: { kind: 'source', id: a } });
+      const second = await job(app, { kind: 'cards', scope: { kind: 'source', id: b } });
+      await waitFor(() => (tasks(app, 'summary-map').length ? true : null));
+      expect(app.hotspot.services.learn.get(second.id)!.state).toBe('queued');
+      await app.api('DELETE', `/api/sources/${b}`);
+      app.hotspot.mock!.setLearnDelay(0);
+      await app.api('POST', `/api/learn/jobs/${first.id}/cancel`);
+      const j = await waitJob(app, second.id);
+      expect([j.state, j.detail]).toEqual(['error', 'learn_scope_missing']);
+    } finally {
+      await app.close();
+    }
+  }, 60_000);
+});
+
 describe('Scheduler: Lern-Generierung hat die niedrigste Priorität', () => {
   it('wartende Slots: Embedding > Medien > Lernen; Chat-Start löst chatSignal aus', async () => {
     const s = new Scheduler();
