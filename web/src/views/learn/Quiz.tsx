@@ -147,7 +147,8 @@ export function QuizTab({ subject }: { subject: number | null }) {
   const start = async () => {
     try {
       const r = await post<{ session: Session; questions: QuizQuestion[] }>('/api/quiz/sessions', { mode, scope, count, ...(mode === 'exam' ? { timeLimitSec: minutes * 60 } : {}) });
-      setSession(r.session);
+      // Restzeit nach der eigenen Uhr (nicht der Serverzeit) – keine Anzeige über dem Limit
+      setSession({ ...r.session, startedAt: Date.now() });
       setQuestions(r.questions);
       setIdx(0);
       setAnswers({});

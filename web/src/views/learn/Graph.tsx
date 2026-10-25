@@ -28,6 +28,8 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const view = useRef({ x: 0, y: 0, k: 1 });
   const redraw = useRef<() => void>(() => {});
+  const fitRef = useRef<() => void>(() => {});
+  const interacted = useRef(false);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const onSelectRef = useRef(onSelect);
@@ -47,13 +49,15 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
     }
     const sim = createSim(nodes, links);
     if (nodes.length && known / nodes.length > 0.9) sim.alpha = 0.05;
-    return { nodes, links, neighbors, sim };
+    // Beschriftungs-Rangfolge: am stärksten vernetzte zuerst
+    const rank = new Map([...nodes].sort((x, y) => y.degree - x.degree).map((n, i) => [n.id, i]));
+    return { nodes, links, neighbors, sim, rank };
   }, [data]);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
-    const { nodes, links, neighbors, sim } = graph;
+    const { nodes, links, neighbors, sim, rank } = graph;
     let raf = 0;
     let stopped = false;
     const colors = { accent: css('--accent'), accent2: css('--accent-2'), text: css('--text'), dim: css('--text-faint'), line: css('--border-strong') };
@@ -107,15 +111,35 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
       ctx.globalAlpha = 1;
       ctx.font = `${12 / v.k}px system-ui, sans-serif`;
       ctx.textBaseline = 'middle';
-      const minDegree = v.k > 2 ? 0 : v.k > 1.2 ? 2 : nodes.length > 300 ? 6 : 3;
+      // so viele Beschriftungen, wie bei dieser Zoomstufe lesbar sind (Rest beim Hineinzoomen)
+      const budget = Math.max(25, Math.round(60 * v.k * v.k * Math.max(1, canvas.clientWidth / 900)));
       for (const n of nodes) {
         const hl = n.id === sel || near?.has(n.id);
-        if (!hl && n.degree < minDegree) continue;
+        if (!hl && rank.get(n.id)! >= budget) continue;
         ctx.fillStyle = hl ? colors.text : colors.dim;
         ctx.fillText(n.name, n.x + radius(n) + 3 / v.k, n.y);
       }
     };
     redraw.current = draw;
+    // Ansicht folgt dem Layout (alles sichtbar), bis der Nutzer selbst zoomt/verschiebt
+    interacted.current = false;
+    const fit = () => {
+      if (!nodes.length) return;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const n of nodes) {
+        x0 = Math.min(x0, n.x);
+        y0 = Math.min(y0, n.y);
+        x1 = Math.max(x1, n.x);
+        y1 = Math.max(y1, n.y);
+      }
+      const k = Math.min(3, Math.max(0.05, 0.9 * Math.min(canvas.clientWidth / (x1 - x0 + 80), canvas.clientHeight / (y1 - y0 + 80))));
+      view.current = { k, x: (-(x0 + x1) / 2) * k, y: (-(y0 + y1) / 2) * k };
+    };
+    fitRef.current = () => {
+      interacted.current = false;
+      fit();
+      draw();
+    };
 
     const remember = () => {
       for (const n of nodes) positions.current.set(n.id, { x: n.x, y: n.y });
@@ -123,6 +147,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
     const loop = () => {
       if (stopped) return;
       sim.tick();
+      if (!interacted.current) fit();
       draw();
       if (!sim.done) raf = requestAnimationFrame(loop);
       else remember();
@@ -134,6 +159,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
         if (stopped) return;
         for (let i = 0; i < 25 && !sim.done; i++) sim.tick();
         if (sim.done) {
+          fit();
           draw();
           remember();
         } else setTimeout(step, 0);
@@ -173,6 +199,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
       if (!drag) return;
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 4) drag.moved = true;
       if (!drag.moved) return;
+      interacted.current = true;
       if (drag.node) {
         const p = toWorld(e.clientX, e.clientY);
         drag.node.fx = p.x;
@@ -186,6 +213,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
           draw();
         }
       } else {
+        interacted.current = true;
         view.current.x = drag.vx + e.clientX - drag.sx;
         view.current.y = drag.vy + e.clientY - drag.sy;
         draw();
@@ -202,6 +230,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      interacted.current = true;
       const v = view.current;
       const r = canvas.getBoundingClientRect();
       const k = Math.min(8, Math.max(0.1, v.k * Math.exp(-e.deltaY * 0.0015)));
@@ -232,6 +261,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
   useEffect(() => redraw.current(), [selected]);
 
   const zoom = (f: number) => {
+    interacted.current = true;
     view.current.k = Math.min(8, Math.max(0.1, view.current.k * f));
     redraw.current();
   };
@@ -248,8 +278,7 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
         <button
           className="icon-btn small"
           onClick={() => {
-            view.current = { x: 0, y: 0, k: 1 };
-            redraw.current();
+            fitRef.current();
           }}
           aria-label={t('graph.reset')}
           title={t('graph.reset')}

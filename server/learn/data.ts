@@ -471,6 +471,17 @@ function quizWhere(scope: QuizScope): { sql: string; params: (string | number)[]
   return { sql: '', params: [] };
 }
 
+/** Antwortoptionen mischen (kleine Modelle setzen die richtige Lösung gern an Position 1). */
+function shuffle<T>(a: T[] | null): T[] | null {
+  if (!a) return a;
+  const out = [...a];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
+
 export function poolSize(db: DB, scope: QuizScope): number {
   const { sql, params } = quizWhere(scope);
   return (db.prepare(`SELECT count(*) AS n FROM quiz_questions q ${sql}`).get(...params) as { n: number }).n;
@@ -496,7 +507,7 @@ export function startSession(db: DB, input: { mode: 'practice' | 'exam'; scope: 
   return {
     session: { id, mode: input.mode, timeLimitSec: input.mode === 'exam' ? (input.timeLimitSec ?? 600) : null, startedAt: Date.now() },
     // ohne Lösung – die kommt erst mit der Bewertung
-    questions: rows.map((r) => ({ id: r.id, type: r.type, question: r.question, options: parse<string[] | null>(r.options, null), topic: r.topic, sourceName: r.live_name ?? null })),
+    questions: rows.map((r) => ({ id: r.id, type: r.type, question: r.question, options: shuffle(parse<string[] | null>(r.options, null)), topic: r.topic, sourceName: r.live_name ?? null })),
   };
 }
 

@@ -128,6 +128,8 @@ const browser = await chromium.launch(fs.existsSync(CHROME) ? { executablePath: 
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
 const page = await context.newPage();
 const errors = [];
+/** bewusst ausgelöste Fehlerantworten (z. B. Validierung) – je Eintrag wird genau eine Konsolenmeldung toleriert */
+const expectedConsole = [];
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 page.on('console', (m) => m.type() === 'error' && errors.push('console: ' + m.text()));
 const results = [];
@@ -142,6 +144,8 @@ const step = async (name, fn) => {
   }
 };
 const shot = async (name) => {
+  // Hinweis-Toasts nicht in die Doku-Screenshots
+  for (const b of await page.locator('.toast button').all()) await b.click().catch(() => {});
   await page.waitForTimeout(450); // Einblend-Animationen abwarten
   await page.screenshot({ path: path.join(OUT, name) });
 };
@@ -318,7 +322,14 @@ try {
     if (!(await page.locator('.card-row .badge.ai').count())) throw new Error('Entwürfe ohne KI-Kennzeichnung');
     await shot('phase3-karten-entwuerfe.png');
     // eine Karte bearbeiten (Verlauf/Zeitplan bleiben), dann alle annehmen
-    await page.locator('.card-row').first().getByRole('button', { name: 'Bearbeiten' }).click();
+    // Lückentext ohne {{…}} wird abgelehnt (Fehlermeldung), Frage/Antwort-Karte lässt sich bearbeiten
+    await page.locator('.card-row', { hasText: 'Lückentext' }).first().getByRole('button', { name: 'Bearbeiten' }).click();
+    await page.locator('.card-editor textarea').first().fill('ohne Lücke');
+    await page.locator('.card-editor').getByRole('button', { name: 'Speichern' }).click();
+    await page.locator('.toast', { hasText: 'Lücke' }).waitFor();
+    await page.locator('.card-editor').getByRole('button', { name: 'Abbrechen' }).click();
+    expectedConsole.push('400 (Bad Request)');
+    await page.locator('.card-row', { hasText: 'Frage/Antwort' }).first().getByRole('button', { name: 'Bearbeiten' }).click();
     await page.locator('.card-editor textarea').first().fill('Was besagt der zweite Hauptsatz? (bearbeitet)');
     await page.locator('.card-editor').getByRole('button', { name: 'Speichern' }).click();
     await page.locator('.card-row', { hasText: '(bearbeitet)' }).waitFor();
@@ -693,6 +704,23 @@ try {
     await page.setViewportSize({ width: 390, height: 844 });
   });
 
+  await step('Phase 3: Lernen bei 600 px (alle Tabs ohne horizontalen Überlauf)', async () => {
+    await page.setViewportSize({ width: 600, height: 900 });
+    for (const tab of ['review', 'cards', 'quiz', 'notes', 'graph', 'stats']) {
+      await page.goto(url + `/#/learn/${tab}`);
+      await page.locator('.learn-body').waitFor();
+      await page.waitForTimeout(400);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (overflow > 1) throw new Error(`${tab}: horizontaler Überlauf ${overflow}px`);
+      if (tab === 'quiz') await shot('phase3-schmal-quiz.png');
+    }
+    await page.goto(url + '/#/learn/notes');
+    await page.locator('.note-item').first().click();
+    await page.locator('.note-body').waitFor();
+    await shot('phase3-schmal-notiz.png');
+    await page.setViewportSize({ width: 390, height: 844 });
+  });
+
   await step('Keine horizontale Scrollbar im schmalen Layout', async () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) throw new Error(`horizontaler Überlauf ${overflow}px`);
@@ -702,6 +730,10 @@ try {
   server.kill('SIGTERM');
 }
 
+for (const e of expectedConsole) {
+  const i = errors.findIndex((x) => x.includes(e));
+  if (i !== -1) errors.splice(i, 1);
+}
 console.log(results.join('\n'));
 if (errors.length) console.log('\nBrowser-Fehler:\n' + errors.join('\n'));
 console.log(`\nScreenshots: ${OUT}`);
