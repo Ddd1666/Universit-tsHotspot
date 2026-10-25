@@ -486,7 +486,7 @@ export class LearnService {
     const partials: string[] = [];
     let offset = 0;
     for (const g of groups) {
-      const local = await this.cached(groupKey('summary-map:v1', g, lang), g[0]!.sourceId, () =>
+      const local = await this.cached(groupKey('summary-map:v1', g, [lang, s.chatModel]), g[0]!.sourceId, () =>
         this.llm(a, (o) => callValidated(o, mapMessages(documentsBlock(g), lang), null, mapPredict, (raw) => parseNotes(raw, g.length))),
       );
       partials.push(renumber(local, offset));
@@ -568,7 +568,7 @@ export class LearnService {
     this.progress(a, 0, groups.length + 1);
     for (let i = 0; i < groups.length && items.length < want * 2; i++) {
       const g = groups[i]!;
-      const r = await this.cached(groupKey(task, g, [s.language, perGroup]), g[0]!.sourceId, () => this.llm(a, (o) => call(o, documentsBlock(g), perGroup, g)));
+      const r = await this.cached(groupKey(task, g, [s.language, perGroup, s.chatModel]), g[0]!.sourceId, () => this.llm(a, (o) => call(o, documentsBlock(g), perGroup, g)));
       items.push(...r.items.map((it) => ({ ...it, chunk: g[it.doc - 1]! })));
       rejected += r.rejected;
       this.progress(a, i + 1, groups.length + 1);
@@ -680,7 +680,7 @@ export class LearnService {
     for (const p of plan) {
       const drafts: (GraphDraft & { group: LChunk[] })[] = [];
       for (const g of p.groups) {
-        const d = await this.cached(groupKey('graph:v1', g, s.language), p.id, () => this.llm(a, (o) => callValidated(o, graphMessages(documentsBlock(g), s.language), GRAPH_SCHEMA, 1200, (raw) => parseGraph(raw, g))));
+        const d = await this.cached(groupKey('graph:v1', g, [s.language, s.chatModel]), p.id, () => this.llm(a, (o) => callValidated(o, graphMessages(documentsBlock(g), s.language), GRAPH_SCHEMA, 1200, (raw) => parseGraph(raw, g))));
         drafts.push({ ...d, group: g });
         this.progress(a, ++done, total);
       }

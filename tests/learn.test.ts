@@ -115,6 +115,14 @@ describe('Lernmodi – Integration (Mock-Ollama)', () => {
     db.prepare("UPDATE chunks SET text = text || ' Geändert.' WHERE id = ?").run(last.id);
     expect((await waitJob(app, (await job(app, { kind: 'summary', scope: { kind: 'source', id: src }, level: 'tldr' })).id)).state).toBe('done');
     expect(tasks(app, 'summary-map').length).toBe(before + 1);
+    // anderes Chat-Modell: Zwischenergebnisse des alten Modells werden NICHT wiederverwendet
+    await app.api('PUT', '/api/settings', { chatModel: 'llama3.1:8b' });
+    try {
+      const j = await waitJob(app, (await job(app, { kind: 'summary', scope: { kind: 'source', id: src }, level: 'tldr' })).id);
+      expect(tasks(app, 'summary-map').length).toBe(before + 1 + (j.total! - 1));
+    } finally {
+      await app.api('PUT', '/api/settings', { chatModel: 'gemma3:4b' });
+    }
   });
 
   it('Karten: Entwürfe mit Quellenverweis, Plausibilitätsprüfung, Dedupe; annehmen → lernen → SM-2-Zeitplan; Verlauf bleibt bei Edit', async () => {
