@@ -11,9 +11,10 @@ import { LibraryView } from './views/LibraryView';
 import { SearchView } from './views/SearchView';
 import { SettingsView } from './views/SettingsView';
 import { QueueView } from './views/QueueView';
+import { GenerateDialog, LearnView } from './views/LearnView';
 
 export function App() {
-  const { route, sidebarOpen, importer, importTarget, subjects, t, toast } = useApp();
+  const { route, sidebarOpen, importer, importTarget, subjects, t, toast, gen } = useApp();
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
 
@@ -77,8 +78,10 @@ export function App() {
         {route.view === 'search' && <SearchView initialQuery={route.q} />}
         {route.view === 'settings' && <SettingsView />}
         {route.view === 'queue' && <QueueView />}
+        {route.view === 'learn' && <LearnView tab={route.tab} subject={route.subject} source={route.source} note={route.note} />}
       </main>
       <CommandPalette />
+      {gen && <GenerateDialog req={gen} />}
       <Dialog />
       <Toasts />
       {dragging && (

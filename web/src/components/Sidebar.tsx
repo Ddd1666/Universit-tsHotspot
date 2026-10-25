@@ -8,7 +8,7 @@ import { ImportMini } from './ImportPanel';
 
 function OllamaPill() {
   const { ollama, queue, t, navigate } = useApp();
-  const busy = queue.ingest.processing.length > 0 || queue.ingest.queued > 0 || queue.embed.state === 'running' || queue.media.running > 0;
+  const busy = queue.ingest.processing.length > 0 || queue.ingest.queued > 0 || queue.embed.state === 'running' || queue.media.running > 0 || (queue.learn?.running ?? 0) > 0;
   const running = ollama.running[0];
   const label = ollama.mock ? t('ollama.mock') : ollama.reachable ? t('ollama.online') : t('ollama.offline');
   return (
@@ -96,7 +96,8 @@ export function Sidebar() {
     { view: 'chat', hash: '#/chat', icon: 'chat', label: t('nav.chat') },
     { view: 'library', hash: '#/library', icon: 'library', label: t('nav.library') },
     { view: 'search', hash: '#/search', icon: 'search', label: t('nav.search') },
-    { view: 'queue', hash: '#/queue', icon: 'cpu', label: t('nav.queue'), count: queue.media.running + queue.media.queued },
+    { view: 'learn', hash: '#/learn/review', icon: 'brain', label: t('nav.learn') },
+    { view: 'queue', hash: '#/queue', icon: 'cpu', label: t('nav.queue'), count: queue.media.running + queue.media.queued + (queue.learn?.running ?? 0) + (queue.learn?.queued ?? 0) },
     { view: 'settings', hash: '#/settings', icon: 'settings', label: t('nav.settings') },
   ];
 

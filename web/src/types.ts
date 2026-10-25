@@ -106,6 +106,7 @@ export interface QueueStatus {
   ingest: { queued: number; processing: { id: number; name: string }[] };
   embed: EmbedStatus;
   media: JobCounts;
+  learn: JobCounts;
 }
 
 export interface MediaJob {
@@ -249,11 +250,159 @@ export type HubEvent =
   | { type: 'source'; source: Source }
   | { type: 'source-deleted'; id: number }
   | { type: 'subjects' }
-  | { type: 'queue'; ingest: QueueStatus['ingest']; embed: EmbedStatus; media: JobCounts }
+  | { type: 'queue'; ingest: QueueStatus['ingest']; embed: EmbedStatus; media: JobCounts; learn: JobCounts }
   | { type: 'job'; job: MediaJob }
   | { type: 'jobs'; counts: JobCounts }
   | { type: 'media-setup'; setup: MediaSetupState }
   | { type: 'ollama'; status: OllamaStatus }
   | { type: 'chat'; session: ChatSession | null }
   | { type: 'chat-deleted'; id: number }
-  | { type: 'settings'; settings: Settings };
+  | { type: 'settings'; settings: Settings }
+  | { type: 'learn-job'; job: LearnJob }
+  | { type: 'learn-jobs'; counts: JobCounts };
+
+/* ------------------------------------------------------------------ Phase 3: Lernmodi */
+
+export interface Loc {
+  k: string | null;
+  s: number | null;
+  e: number | null;
+  l: string | null;
+}
+
+export interface LearnRef {
+  n: number;
+  chunkId: number | null;
+  sourceId: number | null;
+  sourceName: string;
+  loc: Loc | null;
+  heading: string | null;
+  chatId?: number;
+  deleted?: boolean;
+}
+
+export type LearnScope = { kind: 'source'; id: number; heading?: string | null } | { kind: 'sources'; ids: number[] } | { kind: 'subject'; id: number } | { kind: 'chat'; id: number };
+export type LearnKind = 'summary' | 'cards' | 'quiz' | 'graph';
+export type Level = 'tldr' | 'outline' | 'detailed' | 'cheatsheet';
+
+export interface LearnJob {
+  id: number;
+  kind: LearnKind;
+  state: 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+  title: string;
+  params: { scope: LearnScope; level?: Level; count?: number };
+  progress: number;
+  total: number | null;
+  detail: string | null;
+  result: Record<string, number> | null;
+  note: 'waiting_ollama' | 'waiting_chat' | null;
+  etaSec: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface NoteSummary {
+  id: number;
+  title: string;
+  level: Level | null;
+  subjectId: number | null;
+  ai: boolean;
+  edited: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Note extends NoteSummary {
+  body: string;
+  scope: { truncated?: boolean };
+  citations: LearnRef[];
+}
+
+export type CardType = 'qa' | 'cloze' | 'image';
+export type CardStatus = 'draft' | 'active' | 'suspended';
+
+export interface Card {
+  id: number;
+  type: CardType;
+  front: string;
+  back: string;
+  status: CardStatus;
+  ai: boolean;
+  subjectId: number | null;
+  sourceId: number | null;
+  sourceName: string | null;
+  sourceKind: string | null;
+  sourceDeleted: boolean;
+  chunkId: number | null;
+  loc: Loc | null;
+  chat: { id: number; title: string } | null;
+  reps: number;
+  ease: number;
+  intervalDays: number;
+  lapses: number;
+  due: number | null;
+  lastReview: number | null;
+  reviewCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SrsStats {
+  heatmap: { day: string; n: number; ok: number }[];
+  forecast: { day: string; n: number }[];
+  retention: { total: number; ok: number; rate: number | null };
+  counts: { active: number; draft: number; suspended: number; fresh: number; due: number };
+}
+
+export interface QuizQuestion {
+  id: number;
+  type: 'mc' | 'tf' | 'cloze' | 'short';
+  question: string;
+  options: string[] | null;
+  topic: string | null;
+  sourceName: string | null;
+}
+
+export interface QuizResult {
+  score: number;
+  answer: string;
+  explanation: string | null;
+  source: LearnRef;
+  feedback: { score: number; rubric: { criterion: string; met: boolean }[]; reasoning: string; quotes: { doc: number; text: string }[]; refs: LearnRef[] } | null;
+}
+
+export interface Weakness {
+  topic: string | null;
+  sourceId: number | null;
+  sourceName: string | null;
+  chunkId: number | null;
+  attempts: number;
+  avg: number;
+  cards: number;
+}
+
+export interface GraphNode {
+  id: number;
+  name: string;
+  hidden: boolean;
+  sources: number;
+  degree: number;
+}
+
+export interface GraphEdge {
+  id: number;
+  a: number;
+  b: number;
+  label: string;
+  hidden: boolean;
+}
+
+export interface ConceptDetail {
+  id: number;
+  name: string;
+  description: string | null;
+  hidden: boolean;
+  edited: boolean;
+  sources: { sourceId: number; sourceName: string; subjectId: number | null; chunkId: number | null; snippet: string | null; loc: Loc | null }[];
+  neighbors: { edgeId: number; label: string; hidden: boolean; id: number; name: string }[];
+}

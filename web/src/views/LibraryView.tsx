@@ -142,7 +142,7 @@ function SubjectList({ current }: { current: 'all' | 'none' | number }) {
 }
 
 export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | number; sourceId: number | null }) {
-  const { t, lang, subjects, importer, setImportTarget, navigate, ask, toastError } = useApp();
+  const { t, lang, subjects, importer, setImportTarget, navigate, ask, toastError, openGenerate } = useApp();
   const [sources, setSources] = useState<Source[] | null>(null);
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState('');
@@ -411,6 +411,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
           }}
           actions={(s) =>
             s.chunkCount > 0 ? (
+              <>
               <button
                 className="btn small ghost"
                 onClick={async () => {
@@ -420,6 +421,10 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
               >
                 <Icon name="chat" size={15} /> {t('lib.askChat')}
               </button>
+              <button className="btn small ghost" onClick={() => openGenerate({ kind: 'summary', scope: { kind: 'source', id: s.id } })}>
+                <Icon name="brain" size={15} /> {t('nav.learn')}
+              </button>
+              </>
             ) : null
           }
         />

@@ -329,7 +329,7 @@ function SourcesPanel({ citations, active, onClose }: { citations: Citation[]; a
 /* ------------------------------------------------------------------ Hauptansicht */
 
 export function ChatView({ chatId }: { chatId: number | null }) {
-  const { t, navigate, toast, toastError, ollama, stats, settings } = useApp();
+  const { t, navigate, toast, toastError, ollama, stats, settings, openGenerate } = useApp();
   const [session, setSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -371,6 +371,15 @@ export function ChatView({ chatId }: { chatId: number | null }) {
     },
     [navigate, toast, toastError, t],
   );
+
+  // "Frag dazu" (Wissensgraph): vorbelegte Frage aus der URL übernehmen, danach aus der Adresse entfernen
+  useEffect(() => {
+    const askText = new URLSearchParams(location.hash.split('?')[1] ?? '').get('ask');
+    if (!askText || chatId === null) return;
+    setInput(askText.slice(0, 2000));
+    history.replaceState(null, '', `#/chat/${chatId}`);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [chatId]);
 
   useEffect(() => {
     setPanel(null);
@@ -522,6 +531,11 @@ export function ChatView({ chatId }: { chatId: number | null }) {
       >
         <ScopePicker scope={scope} onChange={(s) => void updateSession({ scope: s })} />
         <ModelPicker value={model} onChange={(m) => void updateSession({ model: m })} />
+        {session && session.messageCount > 0 && (
+          <button className="chip" onClick={() => openGenerate({ kind: 'summary', scope: { kind: 'chat', id: session.id } })} title={t('gen.title')}>
+            <Icon name="brain" size={15} /> {t('nav.learn')}
+          </button>
+        )}
       </ViewHeader>
 
       <div className="chat-body">

@@ -4,14 +4,18 @@ import { translate, type Lang, type T, type TKey } from './i18n';
 import { apiErrorText } from './lib/errors';
 import { ImportManager } from './lib/importer';
 import { pushToast } from './lib/toasts';
-import type { Bootstrap, ChatSession, HubEvent, OllamaStatus, QueueStatus, Settings, Stats, Subject } from './types';
+import type { Bootstrap, ChatSession, HubEvent, LearnKind, LearnScope, OllamaStatus, QueueStatus, Settings, Stats, Subject } from './types';
+
+export type LearnTab = 'review' | 'cards' | 'quiz' | 'notes' | 'graph' | 'stats';
+const LEARN_TABS: LearnTab[] = ['review', 'cards', 'quiz', 'notes', 'graph', 'stats'];
 
 export type Route =
   | { view: 'chat'; chatId: number | null }
   | { view: 'library'; subject: 'all' | 'none' | number; sourceId: number | null }
   | { view: 'search'; q: string }
   | { view: 'settings' }
-  | { view: 'queue' };
+  | { view: 'queue' }
+  | { view: 'learn'; tab: LearnTab; subject: number | null; source: number | null; note: number | null };
 
 export function parseRoute(hash: string): Route {
   const [pathPart, query = ''] = hash.replace(/^#/, '').split('?');
@@ -29,6 +33,10 @@ export function parseRoute(hash: string): Route {
       return { view: 'settings' };
     case 'queue':
       return { view: 'queue' };
+    case 'learn': {
+      const num = (k: string) => Number(params.get(k)) || null;
+      return { view: 'learn', tab: LEARN_TABS.includes(parts[1] as LearnTab) ? (parts[1] as LearnTab) : 'review', subject: num('subject'), source: num('source'), note: num('note') };
+    }
     default:
       return { view: 'chat', chatId: parts[1] && /^\d+$/.test(parts[1]) ? Number(parts[1]) : null };
   }
@@ -38,6 +46,12 @@ export interface Toast {
   id: number;
   kind: 'info' | 'success' | 'error';
   text: string;
+}
+
+/** Generieren-Dialog (Lernmodi), vorbelegbar aus Bibliothek/Chat/Quiz */
+export interface GenRequest {
+  kind?: LearnKind;
+  scope?: LearnScope;
 }
 
 export interface DialogRequest {
@@ -82,6 +96,8 @@ interface AppState {
   importTarget: number | null;
   setImportTarget(id: number | null): void;
   connected: boolean;
+  gen: GenRequest | null;
+  openGenerate(req?: GenRequest | null): void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -134,6 +150,8 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [importTarget, setImportTarget] = useState<number | null>(null);
   const [connected, setConnected] = useState(true);
+  const [gen, setGen] = useState<GenRequest | null>(null);
+  const openGenerate = useCallback((req: GenRequest | null = {}) => setGen(req), []);
   const importer = useMemo(() => new ImportManager(), []);
   const toastId = useRef(1);
 
@@ -223,10 +241,13 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
         reloadSubjects();
         break;
       case 'queue':
-        setQueue({ ingest: e.ingest, embed: e.embed, media: e.media });
+        setQueue({ ingest: e.ingest, embed: e.embed, media: e.media, learn: e.learn });
         break;
       case 'jobs':
         setQueue((q) => ({ ...q, media: e.counts }));
+        break;
+      case 'learn-jobs':
+        setQueue((q) => ({ ...q, learn: e.counts }));
         break;
       case 'ollama':
         setOllama(e.status);
@@ -282,6 +303,8 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
     importTarget,
     setImportTarget,
     connected,
+    gen,
+    openGenerate,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -59,6 +59,7 @@ export function CommandPalette() {
       { id: 'new', group: t('cmd.actions'), label: t('chats.new'), icon: 'plus', run: () => navigate('#/chat') },
       { id: 'lib', group: t('cmd.actions'), label: t('nav.library'), icon: 'library', run: () => navigate('#/library') },
       { id: 'search', group: t('cmd.actions'), label: t('nav.search'), icon: 'search', run: () => navigate('#/search') },
+      { id: 'learn', group: t('cmd.actions'), label: t('nav.learn'), icon: 'brain', run: () => navigate('#/learn/review') },
       { id: 'settings', group: t('cmd.actions'), label: t('nav.settings'), icon: 'settings', run: () => navigate('#/settings') },
       { id: 'import', group: t('cmd.actions'), label: t('cmd.import'), icon: 'upload', run: () => navigate('#/library?import=1') },
       {

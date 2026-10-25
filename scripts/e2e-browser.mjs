@@ -79,6 +79,32 @@ const MEDIA_TOOLS = JSON.stringify({
 });
 const uploadNames = Object.keys(files);
 
+// Phase 3: großer Wissensgraph (2000 Konzepte) direkt in die DB – misst, ob die Ansicht flüssig bleibt
+const GRAPH_NODES = 2000;
+{
+  const { openDb } = await import('../server/db.ts');
+  fs.mkdirSync(DATA, { recursive: true });
+  const db = openDb(path.join(DATA, 'hotspot.sqlite'));
+  db.exec('BEGIN');
+  const sub = Number(db.prepare("INSERT INTO subjects(name, color, created_at) VALUES ('Graph-Last', '#ff5fd9', 1)").run().lastInsertRowid);
+  const src = Number(
+    db.prepare("INSERT INTO sources(subject_id, sha256, name, size, mime, kind, status, imported_at) VALUES (?, ?, 'Graph-Last.txt', 1, 'text/plain', 'text', 'ready', 1)").run(sub, 'f'.repeat(64)).lastInsertRowid,
+  );
+  const ins = db.prepare('INSERT INTO concepts(name, norm, created_at) VALUES (?, ?, 1)');
+  const link = db.prepare('INSERT INTO concept_sources(concept_id, source_id) VALUES (?, ?)');
+  const edge = db.prepare("INSERT OR IGNORE INTO concept_edges(a, b, label, source_id) VALUES (?, ?, 'verbunden', ?)");
+  const ids = [];
+  for (let i = 0; i < GRAPH_NODES; i++) {
+    const id = Number(ins.run(`Konzept ${i}`, `konzept ${i}`).lastInsertRowid);
+    link.run(id, src);
+    ids.push(id);
+  }
+  for (let i = 1; i < GRAPH_NODES; i++) edge.run(ids[Math.floor((i - 1) / 3)], ids[i], src);
+  for (let i = 0; i < GRAPH_NODES / 2; i++) edge.run(ids[(i * 7) % GRAPH_NODES], ids[(i * 13 + 5) % GRAPH_NODES], src);
+  db.exec('COMMIT');
+  db.close();
+}
+
 // --- Server starten (Mock-Ollama)
 const server = spawn(process.execPath, [...NODE_FLAGS, path.join(ROOT, 'server', 'main.ts')], {
   cwd: ROOT,
@@ -232,6 +258,215 @@ try {
     if (!/media-src 'self'/.test(csp ?? '')) throw new Error('media-src fehlt: ' + csp);
     await page.waitForTimeout(300);
     await sec.screenshot({ path: path.join(OUT, '17-einstellungen-medien.png') });
+  });
+
+  // ------------------------------------------------------------------ Phase 3: Lernmodi
+  const api = (method, p, body) =>
+    page.evaluate(
+      async ([method, p, body]) => {
+        const t = document.querySelector('meta[name=hotspot-token]').content;
+        const r = await fetch(p, { method, headers: { 'x-hotspot-token': t, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+        return r.json();
+      },
+      [method, p, body],
+    );
+  const waitJobs = () =>
+    page.waitForFunction(
+      async () => {
+        const t = document.querySelector('meta[name=hotspot-token]').content;
+        const r = await (await fetch('/api/learn/jobs', { headers: { 'x-hotspot-token': t } })).json();
+        return r.jobs.length > 0 && r.jobs.every((j) => j.state === 'done' || j.state === 'error' || j.state === 'cancelled');
+      },
+      null,
+      { timeout: 60_000, polling: 300 },
+    );
+  const sourceId = async (name) => (await api('GET', `/api/sources?q=${encodeURIComponent(name)}`)).items[0].id;
+  const physik = async () => (await api('GET', '/api/subjects')).find((s) => s.name === 'Physik').id;
+
+  await step('Phase 3: Zusammenfassung aus der Bibliothek → Notiz mit Quellen, KI-gekennzeichnet, Export', async () => {
+    await page.getByRole('link', { name: 'Bibliothek' }).click();
+    await page.locator('.source-row', { hasText: 'Thermodynamik-Skript.pdf' }).locator('.source-main').click();
+    await page.locator('.drawer').getByRole('button', { name: 'Lernen' }).click();
+    const dlg = page.locator('.gen-dialog');
+    await dlg.waitFor();
+    await dlg.getByRole('radio', { name: 'Zusammenfassung' }).click();
+    await dlg.locator('label', { hasText: 'Stufe' }).locator('select').selectOption('detailed');
+    await dlg.getByRole('button', { name: 'Starten' }).click();
+    await page.locator('.toast', { hasText: 'Auftrag gestartet' }).waitFor();
+    await waitJobs();
+    await page.goto(url + '/#/learn/notes');
+    await page.locator('.note-item').first().click();
+    await page.locator('.note-body button.cite').first().waitFor();
+    const txt = await page.locator('.note-view').innerText();
+    if (!txt.includes('KI-generiert') || !txt.includes('Thermodynamik-Skript.pdf')) throw new Error('Notiz ohne KI-Kennzeichnung/Quelle');
+    await page.locator('.note-body button.cite').first().click();
+    await shot('phase3-notiz.png');
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Markdown exportieren' }).click()]);
+    if (!/\.md$/.test(dl.suggestedFilename())) throw new Error('Export-Dateiname: ' + dl.suggestedFilename());
+  });
+
+  await step('Phase 3: Karten erzeugen → Entwürfe prüfen/annehmen → Wiederholen per Tastatur (Leertaste, 1–4)', async () => {
+    await page.goto(url + '/#/learn/cards');
+    await page.getByRole('button', { name: 'Erzeugen' }).click();
+    const dlg = page.locator('.gen-dialog');
+    await dlg.getByRole('radio', { name: 'Karteikarten' }).click();
+    await dlg.getByRole('radio', { name: 'Fach' }).click();
+    await dlg.locator('label', { hasText: 'Fach' }).locator('select').selectOption({ label: 'Physik' });
+    await dlg.getByRole('button', { name: 'Starten' }).click();
+    await waitJobs();
+    await page.locator('.card-row').first().waitFor({ timeout: 10_000 });
+    if (!(await page.locator('.card-row .badge.ai').count())) throw new Error('Entwürfe ohne KI-Kennzeichnung');
+    await shot('phase3-karten-entwuerfe.png');
+    // eine Karte bearbeiten (Verlauf/Zeitplan bleiben), dann alle annehmen
+    await page.locator('.card-row').first().getByRole('button', { name: 'Bearbeiten' }).click();
+    await page.locator('.card-editor textarea').first().fill('Was besagt der zweite Hauptsatz? (bearbeitet)');
+    await page.locator('.card-editor').getByRole('button', { name: 'Speichern' }).click();
+    await page.locator('.card-row', { hasText: '(bearbeitet)' }).waitFor();
+    await page.getByLabel('Alle auswählen').check();
+    await page.getByRole('button', { name: 'Ausgewählte annehmen' }).click();
+    await page.locator('.card-row').first().waitFor({ state: 'detached' });
+    await page.getByRole('tab', { name: 'Wiederholen' }).click();
+    await page.locator('.review-card').waitFor();
+    await page.keyboard.press('Space');
+    await page.locator('.rating').waitFor();
+    await shot('phase3-wiederholen.png');
+    const before = await page.locator('.chip', { hasText: ' von ' }).innerText();
+    await page.keyboard.press('3');
+    await page.waitForFunction((b) => document.querySelector('.review .chip-row')?.textContent?.includes(b) === false, before.trim());
+    await page.keyboard.press('Space');
+    await page.keyboard.press('1'); // "Nochmal": kommt in dieser Sitzung erneut
+    const st = await api('GET', '/api/srs/stats');
+    if (st.retention.total !== 2) throw new Error('Bewertungen nicht gespeichert: ' + JSON.stringify(st.retention));
+  });
+
+  await step('Phase 3: Quiz üben – MC/Wahr-Falsch/Lücke/Freitext, Lösung mit Quelle, Freitext mit Rubrik', async () => {
+    await api('POST', '/api/learn/jobs', { kind: 'quiz', scope: { kind: 'subject', id: await physik() }, count: 12 });
+    await waitJobs();
+    await page.getByRole('tab', { name: 'Quiz' }).click();
+    await page.locator('.quiz-setup', { hasText: 'Fragen im Pool' }).waitFor();
+    await page.locator('.quiz-setup label', { hasText: 'Fragen' }).locator('input').fill('6');
+    await page.getByRole('button', { name: 'Start' }).click();
+    let shotDone = false;
+    for (let i = 0; i < 6; i++) {
+      const card = page.locator('.quiz-card');
+      await card.waitFor();
+      if (await card.locator('.quiz-options input').count()) await card.locator('.quiz-options label').nth(1).click();
+      else if (await card.getByRole('radio', { name: 'Wahr' }).count()) await card.getByRole('radio', { name: 'Wahr' }).click();
+      else await card.locator('input.input, textarea').fill('Die Entropie eines abgeschlossenen Systems nimmt nie ab.');
+      await card.getByRole('button', { name: 'Prüfen' }).click();
+      await card.locator('.quiz-result').waitFor({ timeout: 15_000 });
+      const res = await card.locator('.quiz-result').innerText();
+      if (!/Lösung/.test(res) || !(await card.locator('.quiz-result .ref-link, .quiz-result .ref-deleted').count())) throw new Error('Lösung ohne Quelle: ' + res.slice(0, 200));
+      if (!shotDone && (await card.locator('.rubric').count())) {
+        await shot('phase3-quiz-freitext.png');
+        shotDone = true;
+      }
+      const next = card.getByRole('button', { name: i === 5 ? 'Abgeben' : 'Weiter' });
+      if (await next.count()) await next.click();
+      else break;
+    }
+    if (!shotDone) await shot('phase3-quiz-freitext.png');
+    await page.locator('.quiz-run h2', { hasText: 'Ergebnis' }).waitFor({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Neue Runde' }).click();
+    await page.locator('.weak-list li').first().waitFor({ timeout: 10_000 });
+  });
+
+  await step('Phase 3: Klausursimulation mit Timer → Abgeben → Bewertung', async () => {
+    await page.getByRole('radio', { name: 'Klausursimulation' }).click();
+    await page.locator('.quiz-setup label', { hasText: 'Fragen' }).locator('input').fill('3');
+    await page.getByRole('button', { name: 'Start' }).click();
+    await page.locator('[role=timer]', { hasText: 'Restzeit' }).waitFor();
+    await shot('phase3-klausur.png');
+    for (let i = 0; i < 3; i++) {
+      const card = page.locator('.quiz-card');
+      if (await card.locator('textarea').count()) await card.locator('textarea').fill('Entropie');
+      const btn = card.getByRole('button', { name: i === 2 ? 'Abgeben' : 'Weiter' });
+      await btn.click();
+    }
+    await page.locator('.quiz-run h2', { hasText: 'Ergebnis' }).waitFor({ timeout: 20_000 });
+    await page.getByRole('button', { name: 'Neue Runde' }).click();
+  });
+
+  await step('Phase 3: Wissensgraph – Canvas, Liste (barrierefrei), Details mit Quellen, korrigieren, "Frag dazu"', async () => {
+    await api('POST', '/api/learn/jobs', { kind: 'graph', scope: { kind: 'subject', id: await physik() } });
+    await waitJobs();
+    await page.goto(url + `/#/learn/graph?subject=${await physik()}`);
+    await page.locator('.graph-canvas').waitFor();
+    await page.waitForTimeout(1500);
+    // Zoom per Mausrad und Verschieben per Ziehen
+    const box = await page.locator('.graph-canvas').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -300);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2 + 30, { steps: 5 });
+    await page.mouse.up();
+    await page.getByRole('radio', { name: 'Liste' }).click();
+    await page.locator('.graph-table tbody tr').first().waitFor();
+    await page.locator('.graph-table tbody tr').first().getByRole('button').click();
+    await page.locator('.concept-panel .concept-sources li').first().waitFor();
+    await page.getByRole('radio', { name: 'Graph' }).click();
+    await page.waitForTimeout(800);
+    await shot('phase3-graph.png');
+    const name = (await page.locator('.concept-panel h2').innerText()).trim();
+    await page.locator('.concept-panel').getByRole('button', { name: 'Frag dazu' }).click();
+    await page.locator('.chat-view').waitFor();
+    const v = await page.getByRole('textbox', { name: /Frag deine Unterlagen/ }).inputValue();
+    if (!v.includes(name)) throw new Error('Frage nicht vorbelegt: ' + v);
+    const chat = await api('GET', '/api/chats');
+    if (chat[0].scope.mode !== 'sources') throw new Error('Chat ohne Quellen-Bereich');
+    await api('DELETE', `/api/chats/${chat[0].id}`);
+  });
+
+  await step('Phase 3: Graph mit 2000 Knoten bleibt flüssig (Bildrate während der Simulation)', async () => {
+    const sub = (await api('GET', '/api/subjects')).find((s) => s.name === 'Graph-Last').id;
+    await page.goto(url + `/#/learn/graph?subject=${sub}`);
+    await page.locator('.graph-canvas').waitFor();
+    const fps = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          let frames = 0;
+          let worst = 0;
+          let last = performance.now();
+          const t0 = last;
+          const tick = (now) => {
+            frames++;
+            worst = Math.max(worst, now - last);
+            last = now;
+            if (now - t0 < 3000) requestAnimationFrame(tick);
+            else resolve({ fps: Math.round((frames * 1000) / (now - t0)), worstFrameMs: Math.round(worst) });
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    const info = await page.locator('.graph-tab .toolbar').innerText();
+    results.push(`INFO Graph ${GRAPH_NODES} Knoten: ${fps.fps} fps, längster Frame ${fps.worstFrameMs} ms (${info.replace(/\s+/g, ' ').trim()})`);
+    if (fps.fps < 20) throw new Error(`zu langsam: ${fps.fps} fps`);
+    await page.waitForTimeout(3000);
+    await shot('phase3-graph-2000.png');
+  });
+
+  await step('Phase 3: Statistik (Heatmap, Prognose, Trefferquote) + Aufgaben mit Lern-Jobs', async () => {
+    await page.goto(url + '/#/learn/stats');
+    await page.locator('.heatmap .heat').first().waitFor();
+    if (!(await page.locator('.stat-tile .hero', { hasText: '%' }).count())) throw new Error('Trefferquote fehlt');
+    await shot('phase3-statistik.png');
+    await page.goto(url + '/#/queue');
+    await page.locator('.queue-section').waitFor();
+    if ((await page.locator('.job', { hasText: 'Ergebnis öffnen' }).count()) < 3) throw new Error('Lern-Jobs fehlen in der Aufgaben-Ansicht');
+    await shot('phase3-aufgaben.png');
+  });
+
+  await step('Phase 3: XSS in Notiz und Karte wird nicht ausgeführt (DOMPurify)', async () => {
+    const note = await api('POST', '/api/notes', { title: 'XSS', body: '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>[1] **fett**' });
+    await api('POST', '/api/cards', { type: 'qa', front: '<img src=x onerror="window.__xss=3">Frage', back: '<svg onload="window.__xss=4">' });
+    await page.goto(url + `/#/learn/notes?note=${note.id}`);
+    await page.locator('.note-body strong', { hasText: 'fett' }).waitFor();
+    await page.goto(url + '/#/learn/cards');
+    await page.getByRole('radio', { name: 'Aktiv' }).click();
+    await page.locator('.card-row', { hasText: 'Frage' }).first().waitFor();
+    const bad = await page.evaluate(() => ({ xss: window.__xss ?? null, handlers: document.querySelectorAll('[onerror],[onload]').length, scripts: document.querySelectorAll('.md script').length }));
+    if (bad.xss !== null || bad.handlers || bad.scripts) throw new Error('XSS: ' + JSON.stringify(bad));
+    await api('DELETE', `/api/notes/${note.id}`);
   });
 
   await step('Hybrid-Suche mit Quellenangabe', async () => {
