@@ -279,3 +279,20 @@ describe('stderr-Auszug fürs Log (T11)', () => {
     expect(stderrExcerpt('error '.repeat(500))).toHaveLength(300);
   });
 });
+
+describe('Dubletten an Segmentgrenzen (R2-3)', () => {
+  it('verwirft nur Einträge im Überlappungsbereich, deren Text schon am Ende des Vorgängers steht', async () => {
+    const { dropBoundaryDuplicates } = await import('../server/media/audio.ts');
+    const prev = [
+      { s: 570, e: 574, t: 'Satz bei 09:30.' },
+      { s: 597, e: 601, t: 'Grenzsatz über die Kante.' },
+    ];
+    const next = [
+      { s: 599, e: 603, t: 'Grenzsatz über die Kante' }, // Dublette (anders geschnitten, ohne Punkt)
+      { s: 600, e: 604, t: 'Satz bei 10:00.' }, // neu
+      { s: 640, e: 644, t: 'Grenzsatz über die Kante.' }, // außerhalb der Überlappung: echte Wiederholung bleibt
+    ];
+    expect(dropBoundaryDuplicates(prev, next, 600).map((e) => e.s)).toEqual([600, 640]);
+    expect(dropBoundaryDuplicates([], next, 600)).toHaveLength(3);
+  });
+});

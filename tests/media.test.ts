@@ -475,10 +475,11 @@ describe('Korrekturrunde 1: Scans, Status, Atomarität', { timeout: 120_000 }, (
     release();
     await waitFor(() => jobOf(app, r.data.source.id)?.state === 'done', { message: 'Job fertig' });
     expect(app.hotspot.services.library.getSource(r.data.source.id)!.status).toBe('ready');
-    // Textseite + leere Seite (kein Bild): kein Job
+    // Textseite + leere Seite (kein Bild): der Job überspringt sie still – kein "ocr_empty", PDF bleibt ready
     const blank = await app.upload('mit-leerseite.pdf', makeScanPdf([{ lines: ['Kapitel 2 mit ausreichend Text, damit die Seite als Textseite zählt.'] }, {}]));
-    expect((await waitForSource(app, blank.data.source.id)).status).toBe('ready');
-    expect(jobOf(app, blank.data.source.id)).toBeUndefined();
+    await waitFor(() => jobOf(app, blank.data.source.id)?.state === 'done', { message: 'Leerseiten-Job' });
+    const b = app.hotspot.services.library.getSource(blank.data.source.id)!;
+    expect([b.status, b.statusDetail ?? '']).toEqual(['ready', '']);
   });
 
   it('K3: Scan-Fehler setzt die indexierte PDF nicht auf Fehler', async () => {
@@ -646,5 +647,79 @@ describe('Korrekturrunde 1: kleinere Befunde', { timeout: 120_000 }, () => {
     } finally {
       fs.rmSync = orig;
     }
+  });
+});
+
+describe('Korrekturrunde 2', { timeout: 120_000 }, () => {
+  it('R2-1: PDF-Extraktion dekodiert keine Bilder (kein getOperatorList); Seiten ohne Bild überspringt der Scan-Job still', async () => {
+    const { getDocumentProxy } = await import('unpdf');
+    const { pdfExtractor, PDF_OPTIONS } = await import('../server/ingest/extractors/pdf.ts');
+    const { DEFAULT_EXTRACT_LIMITS } = await import('../server/ingest/types.ts');
+    const pdf = makeScanPdf([{ lines: ['Textseite mit ausreichend vielen Zeichen für die Erkennung als Text.'] }, { image: { w: 300, h: 400 } }, {}]);
+    const file = writeTmp(tmpDir('r21'), 'x.pdf', pdf);
+    // Spy auf die (gemeinsame) Seitenklasse von pdf.js
+    const doc = await getDocumentProxy(new Uint8Array(pdf), PDF_OPTIONS);
+    const proto = Object.getPrototypeOf(await doc.getPage(1)) as { getOperatorList: (...a: unknown[]) => unknown };
+    const orig = proto.getOperatorList;
+    let calls = 0;
+    proto.getOperatorList = function (this: unknown, ...a: unknown[]) {
+      calls++;
+      return orig.apply(this, a);
+    };
+    try {
+      const out = await pdfExtractor.extract({ path: file, name: 'x.pdf', ext: 'pdf', mime: 'application/pdf', kind: 'pdf' }, DEFAULT_EXTRACT_LIMITS);
+      expect(calls).toBe(0);
+      expect(out.ocrPages).toEqual([2, 3]); // nur nach Textmenge entschieden
+    } finally {
+      proto.getOperatorList = orig;
+      await doc.loadingTask.destroy();
+    }
+    // im Betrieb: leere Seite 3 wird vom Job still übersprungen (kein ocr_empty, PDF bleibt ready)
+    const app = await start();
+    const r = await app.upload('mit-leerseite2.pdf', pdf);
+    await waitFor(() => jobOf(app, r.data.source.id)?.state === 'done', { message: 'Job fertig' });
+    const s = app.hotspot.services.library.getSource(r.data.source.id)!;
+    expect(s.status).toBe('ready');
+    expect(s.statusDetail ?? '').not.toContain('ocr_empty');
+    expect(pageChunk(app, r.data.source.id, 2, 'ocr')?.text).toBe('Mock-OCR 300x400');
+  });
+
+  it('R2-2: HEAD auf die Datei-Route liest die Datei nicht', async () => {
+    const app = await start();
+    await app.api('PUT', '/api/settings', { mediaAudio: false });
+    const r = await app.upload('head.mp3', media({ duration: 5 }));
+    const blob = app.hotspot.services.blobs.pathFor((app.hotspot.services.library.getSource(r.data.source.id)! as { sha256: string }).sha256);
+    const orig = fs.createReadStream;
+    let opened = 0;
+    fs.createReadStream = ((p: fs.PathLike, o?: unknown) => {
+      if (String(p) === blob) opened++;
+      return orig(p, o as never);
+    }) as typeof fs.createReadStream;
+    try {
+      const head = await fetch(`${app.url}/api/sources/${r.data.source.id}/file?t=${app.token}`, { method: 'HEAD' });
+      expect(head.status).toBe(200);
+      expect(Number(head.headers.get('content-length'))).toBe(fs.statSync(blob).size);
+      expect(opened).toBe(0);
+      const get = await fetch(`${app.url}/api/sources/${r.data.source.id}/file?t=${app.token}`);
+      await get.arrayBuffer();
+      expect(opened).toBe(1);
+    } finally {
+      fs.createReadStream = orig;
+    }
+  });
+
+  it('R2-3: Satz über der Segmentgrenze, den Whisper in beiden Fenstern verschieden schneidet, erscheint nur einmal', async () => {
+    const app = await start();
+    const ctl = tmpDir('r23');
+    const hang = writeTmp(ctl, 'hang', '1');
+    // Segment 2 (ab 1195 s) hängt -> Zwischenstände von Segment 0 und 1 bleiben zum Nachzählen in media_parts
+    const r = await app.upload('grenze.mp3', media({ duration: 1300, hangFile: hang, hangFrom: 1100, boundary: { at: 600, text: 'Grenzsatz über die Kante' } }));
+    const db = app.hotspot.services.db;
+    await waitFor(() => (db.prepare('SELECT count(*) AS n FROM media_parts').get() as { n: number }).n === 2, { message: 'zwei Segmente fertig' });
+    const entries = (db.prepare('SELECT data FROM media_parts ORDER BY idx').all() as { data: string }[]).flatMap((p) => JSON.parse(p.data) as { s: number; t: string }[]);
+    expect(entries.filter((e) => e.t.includes('Grenzsatz'))).toHaveLength(1);
+    // übrige Sätze unverändert: jeder 30-s-Satz genau einmal
+    for (const t of ['09:30', '10:00', '10:30']) expect(entries.filter((e) => e.t.includes('Satz bei ' + t))).toHaveLength(1);
+    await app.api('POST', `/api/jobs/${jobOf(app, r.data.source.id)!.id}/cancel`);
   });
 });

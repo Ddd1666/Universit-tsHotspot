@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Readable } from 'node:stream';
+import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { APP_VERSION, LOCAL_CONFIG_FILE, readLocalConfig, writeLocalConfig } from '../config.ts';
 import { HttpError, SOURCE_LIST_LIMIT } from '../library.ts';
@@ -257,6 +257,8 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
       // HTTP-Range (Player springt zur Zitatstelle): genau ein Bereich; Mehrfachbereiche werden ignoriert (200, ganze Datei)
       const size = fs.statSync(file).size;
       reply.header('accept-ranges', 'bytes');
+      // HEAD (automatisch aus GET erzeugt): nur Kopfzeilen, die Datei wird nicht gelesen
+      if (req.method === 'HEAD') return reply.header('content-length', size).send(Readable.from([]));
       const range = req.headers.range;
       const m = typeof range === 'string' && !range.includes(',') ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null;
       if (m && (m[1] !== '' || m[2] !== '')) {

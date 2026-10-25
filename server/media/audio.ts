@@ -85,6 +85,28 @@ export function keepEntries(entries: TranscriptEntry[], i: number, isLast: boole
   });
 }
 
+const normText = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * Whisper schneidet dieselbe Stelle in zwei Fenstern unterschiedlich: Ein Satz über der Schnittkante kann dann in
+ * Segment i (Mitte knapp davor) UND in Segment i+1 (Mitte knapp dahinter) landen. Einträge des neuen Segments, die im
+ * Überlappungsbereich beginnen und deren Text schon am Ende des Vorgängers steht, werden verworfen.
+ */
+export function dropBoundaryDuplicates(prev: TranscriptEntry[], entries: TranscriptEntry[], coreStart: number, overlapSec = OVERLAP_SEC): TranscriptEntry[] {
+  const tail = normText(
+    prev
+      .filter((e) => e.e >= coreStart - 3 * overlapSec)
+      .map((e) => e.t)
+      .join(' '),
+  );
+  if (!tail) return entries;
+  return entries.filter((e) => {
+    if (e.s >= coreStart + overlapSec) return true;
+    const t = normText(e.t);
+    return t.length < 4 || !tail.includes(t);
+  });
+}
+
 /** 16-kHz-Mono-WAV eines Segments (Tonspur auch aus Videos). */
 export async function extractSegment(
   ffmpeg: ToolCommand,

@@ -69,5 +69,5 @@ if (start >= real) {
   fs.writeFileSync(out, Buffer.alloc(44));
   process.exit(0);
 }
-const body = JSON.stringify({ start, length, duration: real, words: spec.words ?? [], hangFile: spec.hangFile ?? null, hangFrom: spec.hangFrom ?? 0, grandchild: !!spec.grandchild, pidFile: spec.pidFile ?? null });
+const body = JSON.stringify({ start, length, duration: real, words: spec.words ?? [], hangFile: spec.hangFile ?? null, hangFrom: spec.hangFrom ?? 0, boundary: spec.boundary ?? null, grandchild: !!spec.grandchild, pidFile: spec.pidFile ?? null });
 fs.writeFileSync(out, Buffer.concat([Buffer.from('RIFF....WAVE'), Buffer.from(body, 'latin1'), Buffer.alloc(2048, 32)]));

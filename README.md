@@ -26,11 +26,12 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
 - **Medien (Phase 2):**
   - **Bilder** (PNG/JPG/GIF/WebP/BMP): ein Vision-Aufruf (Standard `gemma3:4b`) liefert Text im Bild (OCR) **und** eine Beschreibung
     (strukturierte Ausgabe per JSON-Schema, Validierung, max. 3 Versuche). TIFF/HEIC/SVG werden nur gespeichert (Hinweis „als PNG/JPG exportieren“).
-  - **Gescannte PDFs:** pro Seite entschieden – Seiten mit < 40 sichtbaren Zeichen Textschicht **und** einem Bild gehen an das Vision-Modell
-    (auch Schwarz-Weiß-/Fax-Scans mit 1 Bit/Pixel, Bildmasken und Inline-Bilder); Treffer bleiben seitengenau („S. 2“). Die PDF bleibt
+  - **Gescannte PDFs:** pro Seite entschieden – Seiten mit < 40 sichtbaren Zeichen Textschicht gehen an den Scan-Job; hat die Seite ein Bild
+    (auch Schwarz-Weiß-/Fax-Scans mit 1 Bit/Pixel, Bildmasken und Inline-Bilder), liest es das Vision-Modell, Seiten ohne Bild werden still übersprungen; Treffer bleiben seitengenau („S. 2“). Die PDF bleibt
     währenddessen „indexiert“ und durchsuchbar, der OCR-Fortschritt steht unter *Aufgaben*. Bilder über 50 Megapixel dekodiert pdf.js gar nicht (Bomben-Schutz).
   - **Audio/Video** (MP3/WAV/M4A/OGG/FLAC/MP4/MKV/WebM …): ffmpeg (16-kHz-Mono) + whisper.cpp als Kindprozess mit festen Argumenten,
-    10-min-Segmente mit 5 s Überlappung, Fortschritt bleibt über Neustarts erhalten; Transkript-Abschnitte ≤ 2 min mit Zeitbereich `mm:ss–mm:ss`.
+    10-min-Segmente mit 5 s Überlappung, Fortschritt bleibt über Neustarts erhalten; Transkript-Abschnitte ≤ 2 min mit Zeitbereich `mm:ss–mm:ss`;
+    Sätze über einer Segmentgrenze, die Whisper in beiden Fenstern verschieden schneidet, werden nur einmal übernommen.
     Zitat anklicken → Player im Quellen-Panel springt an die Stelle. Optional (aus): Video-Keyframes (≤ 12) und eingebettete PDF-Bilder (≤ 30) beschreiben.
   - **KI-generiert** ist jeder so entstandene Abschnitt sichtbar markiert (OCR / Bildbeschreibung / Transkript), verweist auf Seite/Zeit und ist
     in der Vorschau bearbeit- und löschbar (Vektor wird neu berechnet). Im Prompt sind solche Abschnitte als `generated="…"` gekennzeichnet.
@@ -200,7 +201,7 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (229 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
+npm test            # vitest (233 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
@@ -272,7 +273,7 @@ und Laufzeit sagt das nichts.
 | Messung | Ergebnis |
 |---|---|
 | Gescanntes PDF, 40 Seiten à 1700×2200 px: Seitenbild holen + verkleinern + PNG (Worker) | ~105 ms/Seite (4,2 s gesamt); Event-Loop max 32 ms, p99 20 ms |
-| … nach Korrekturrunde 1 (eigene Operatorlisten-Auswertung, Bildprüfung schon bei der Extraktion) | ~92 ms/Seite (3,7 s gesamt); Event-Loop max 20 ms |
+| … nach Korrekturrunde 1/2 (eigene Operatorlisten-Auswertung; Bilder werden nur einmal, im Scan-Job, dekodiert) | ~92 ms/Seite (3,7 s gesamt); Event-Loop max 20 ms |
 | 3-h-Aufnahme, 18 Segmente (Fake-ffmpeg/-whisper) | ~196–256 ms Overhead/Segment (2 Prozessstarts); Event-Loop max 19–23 ms |
 | Chunking eines 3-h-Transkripts (2160 Sätze) | 5–6 ms → 90 Abschnitte à ≤ 2 min |
 | Player-Sprung: Range-Request 1 MB aus 50-MB-Video | p50 7–9 ms, p95 15–17 ms |

@@ -4,7 +4,7 @@ Für einen Claude-Chat, der dem Nutzer bei der lokalen Installation hilft. Zielr
 RTX 3060 Laptop (6 GB VRAM), Ollama installiert (`http://127.0.0.1:11434`). Der Nutzer hat das Repo heruntergeladen (Git oder ZIP).
 Hintergrund: Phase 1 wurde in einer Linux-Cloud **nur mit Mock-Ollama** getestet. **Phase 2** (Bilder, Scans, Audio/Video) wurde unter
 Windows 11 entwickelt, aber ebenfalls **nur gegen Mock-Ollama und Fake-Werkzeuge** (Node-Skripte statt whisper.cpp/ffmpeg) getestet:
-229 Unit-/Integrationstests (30× hintereinander grün, Log: `docs/test-logs/phase2.txt`), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
+233 Unit-/Integrationstests (30× hintereinander grün, Log: `docs/test-logs/phase2.txt`), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
 VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop zählt der Test gegen **echtes** Ollama.
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen

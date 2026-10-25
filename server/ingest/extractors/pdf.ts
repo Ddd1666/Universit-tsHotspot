@@ -1,5 +1,5 @@
 import fsp from 'node:fs/promises';
-import { getDocumentProxy, getResolvedPDFJS } from 'unpdf';
+import { getDocumentProxy } from 'unpdf';
 import { codedError, type Extractor, type TextBlock } from '../types.ts';
 
 interface PdfTextItem {
@@ -82,9 +82,10 @@ export const pdfExtractor: Extractor = {
         const content = await page.getTextContent();
         const paragraphs = itemsToParagraphs(content.items as PdfTextItem[]);
         if (!paragraphs.length) emptyPages++;
-        // Seite ohne nennenswerte Textschicht UND mit Bild -> Scan-OCR (pro Seite entschieden, nicht pro Datei).
-        // Leere Seiten / reine Vektorgrafik werden nicht eingereiht.
-        if (paragraphs.join('').replace(/\s+/g, '').length < MIN_TEXT_CHARS && (await pageHasImage(page))) ocrPages.push(p);
+        // Seite ohne nennenswerte Textschicht -> Kandidat für Scan-OCR (pro Seite entschieden, nicht pro Datei).
+        // Bewusst nur nach Textmenge: Bilder hier zu prüfen hieße sie schon zu dekodieren (doppelte Arbeit, bei großen
+        // Scans bis zum Extraktions-Zeitlimit). Seiten ohne Bild überspringt der Scan-Job still.
+        if (paragraphs.join('').replace(/\s+/g, '').length < MIN_TEXT_CHARS) ocrPages.push(p);
         for (const text of paragraphs) blocks.push({ text, loc: { kind: 'page', index: p } });
         page.cleanup();
       }
@@ -106,18 +107,3 @@ export const MIN_TEXT_CHARS = 40;
  */
 export const MAX_PDF_IMAGE_PIXELS = 50_000_000;
 export const PDF_OPTIONS = { disableFontFace: true, useSystemFonts: false, stopAtErrors: false, verbosity: 0, maxImageSize: MAX_PDF_IMAGE_PIXELS } as const;
-
-let imageOps: Set<number> | null = null;
-/** Zeichenbefehle, die ein Raster-/Maskenbild malen (ohne Glyphen-Masken von Type3-Schriften). */
-export async function imageOpCodes(): Promise<Set<number>> {
-  if (!imageOps) {
-    const { OPS } = await getResolvedPDFJS();
-    imageOps = new Set([OPS.paintImageXObject, OPS.paintImageXObjectRepeat, OPS.paintInlineImageXObject, OPS.paintImageMaskXObject, OPS.paintImageMaskXObjectRepeat]);
-  }
-  return imageOps;
-}
-
-async function pageHasImage(page: { getOperatorList(): Promise<{ fnArray: number[] }> }): Promise<boolean> {
-  const ops = await imageOpCodes();
-  return (await page.getOperatorList()).fnArray.some((f) => ops.has(f));
-}

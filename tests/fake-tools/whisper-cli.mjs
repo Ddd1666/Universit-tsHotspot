@@ -35,5 +35,12 @@ if (seg.hangFile && fs.existsSync(seg.hangFile) && seg.start >= (seg.hangFrom ??
     const from = Math.round((t - seg.start) * 1000);
     transcription.push({ offsets: { from, to: from + 4000 }, text: ` Satz bei ${fmt(t)}${word}.` });
   }
+  // Grenzsatz: im vorderen Fenster abgeschnitten (endet früher), im hinteren Fenster später beginnend erkannt
+  const b = seg.boundary;
+  if (b && b.at >= seg.start && b.at <= seg.start + seg.length) {
+    const [s0, e0] = seg.start < b.at - 10 ? [b.at - 3, b.at + 1] : [b.at - 1, b.at + 3];
+    transcription.push({ offsets: { from: Math.round((s0 - seg.start) * 1000), to: Math.round((e0 - seg.start) * 1000) }, text: ` ${b.text}.` });
+    transcription.sort((x, y) => x.offsets.from - y.offsets.from);
+  }
   fs.writeFileSync(`${val('-of')}.json`, JSON.stringify({ result: { language: val('-l') }, transcription }));
 }

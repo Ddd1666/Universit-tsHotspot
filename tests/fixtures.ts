@@ -346,6 +346,8 @@ export interface FakeMediaSpec {
   pidFile?: string;
   /** Fake-ffmpeg endet bei der Prüfung ohne Ausgabe mit Code 3 */
   crash?: boolean;
+  /** Satz über einer Segmentgrenze, den Fake-Whisper in beiden Fenstern verschieden schneidet */
+  boundary?: { at: number; text: string };
 }
 
 /** "Mediendatei" für die Fake-Werkzeuge: echter Formatkopf (Sniffing) + Marker mit Steuerdaten. */

@@ -20,6 +20,7 @@ import { analyzeImage, type VisionKind, type VisionResult } from './vision.ts';
 import { resolveTools, type ToolOverrides } from './tools.ts';
 import {
   DEFAULT_TIMEOUTS,
+  dropBoundaryDuplicates,
   extractFrame,
   extractSegment,
   keepEntries,
@@ -737,7 +738,9 @@ export class MediaService {
           signal,
         });
         const isLast = duration !== null && (i + 1) * SEGMENT_SEC >= duration;
-        const entries = keepEntries(parseWhisperJson(raw, win.start), i, isLast);
+        const prev = i > 0 ? (done.get(i - 1) as TranscriptEntry[] | undefined) : undefined;
+        const kept = keepEntries(parseWhisperJson(raw, win.start), i, isLast);
+        const entries = prev ? dropBoundaryDuplicates(prev, kept, i * SEGMENT_SEC) : kept;
         const processed = Math.min(duration ?? Infinity, (i + 1) * SEGMENT_SEC);
         this.savePart(job, a, i, entries, processed, duration);
         done.set(i, entries);
