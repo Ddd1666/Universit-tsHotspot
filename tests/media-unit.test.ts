@@ -198,7 +198,7 @@ describe('Scheduler: Chat > Embedding > Medien, seriell', () => {
     (await p)();
     await idle;
     expect(got).toBe(true);
-    expect(s.snapshot()).toEqual({ chatActive: false, holder: null, waiting: { embed: 0, media: 0 } });
+    expect(s.snapshot()).toEqual({ chatActive: false, holder: null, waiting: { embed: 0, media: 0, learn: 0 } });
   });
 
   it('Abbruch eines Wartenden entfernt ihn aus der Schlange', async () => {

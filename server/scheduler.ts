@@ -1,13 +1,15 @@
 /**
  * Einfache Prioritätslogik für Hintergrundarbeit (bewusst kein Framework):
- *   interaktiver Chat > Embedding > Medien (Vision/OCR)
+ *   interaktiver Chat > Embedding > Medien (Vision/OCR) > Lernmodus-Generierung
  * - GPU-Arbeit im Hintergrund läuft seriell: immer nur EIN Halter (`acquire`).
  * - Solange ein Chat streamt, bekommt kein Hintergrundjob einen neuen Slot; laufende Einzelaufrufe
  *   (ein Embedding-Batch, ein Vision-Aufruf) laufen zu Ende – sie sind kurz.
+ * - Lern-Generierung (lange Modellaufrufe) ist zusätzlich unterbrechbar: `chatSignal()` löst beim nächsten Chat-Start
+ *   aus; der Aufrufer wiederholt den Schritt nach der Chat-Antwort (fertige Schritte liegen im Cache).
  * - CPU-Arbeit (whisper.cpp) wartet nur auf "kein Chat" (`whenNoChat`) und läuft mit niedriger Prozesspriorität.
  */
-export type JobClass = 'embed' | 'media';
-const PRIO: Record<JobClass, number> = { embed: 1, media: 2 };
+export type JobClass = 'embed' | 'media' | 'learn';
+const PRIO: Record<JobClass, number> = { embed: 1, media: 2, learn: 3 };
 
 interface Waiter {
   cls: JobClass;
@@ -25,10 +27,13 @@ export class Scheduler {
   private seq = 0;
   private waiters: Waiter[] = [];
   private idle: (() => void)[] = [];
+  private chatCtrl = new AbortController();
 
   /** Chat beginnt zu streamen; Rückgabe beendet ihn (mehrfacher Aufruf ist harmlos). */
   chatStarted(): () => void {
     this.chats++;
+    this.chatCtrl.abort();
+    this.chatCtrl = new AbortController();
     let ended = false;
     return () => {
       if (ended) return;
@@ -36,6 +41,11 @@ export class Scheduler {
       this.chats--;
       this.pump();
     };
+  }
+
+  /** Löst aus, sobald der nächste Chat startet (unterbrechbare Hintergrundaufrufe). */
+  chatSignal(): AbortSignal {
+    return this.chatCtrl.signal;
   }
 
   get chatActive(): boolean {
@@ -83,7 +93,7 @@ export class Scheduler {
   }
 
   snapshot(): { chatActive: boolean; holder: JobClass | null; waiting: Record<JobClass, number> } {
-    const waiting = { embed: 0, media: 0 };
+    const waiting = { embed: 0, media: 0, learn: 0 };
     for (const w of this.waiters) waiting[w.cls]++;
     return { chatActive: this.chats > 0, holder: this.holder, waiting };
   }

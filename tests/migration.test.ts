@@ -101,6 +101,61 @@ describe('DB-Migration von einer echten Phase-1-Datenbank', () => {
     check.close();
   });
 
+  it('Phase-2-Datenbank (Schema v3): Backup, Lern-Tabellen leer angelegt, Medien-Jobs/KI-Abschnitte/Chats unverändert', () => {
+    const dir = tmpDir('mig2');
+    const file = path.join(dir, 'hotspot.sqlite');
+    fs.copyFileSync(path.join(PROJECT_ROOT, 'tests', 'fixtures', 'phase2.sqlite'), file);
+    const raw = new DatabaseSync(file, { readOnly: true });
+    expect(version(raw)).toBe(3);
+    raw.close();
+    const db = openDb(file);
+    expect(version(db)).toBe(SCHEMA_VERSION);
+    expect(SCHEMA_VERSION).toBe(4);
+    expect((db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check).toBe('ok');
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(db.prepare('SELECT count(*) AS n FROM chunks WHERE origin IS NOT NULL').get()).toEqual({ n: 3 });
+    expect(db.prepare("SELECT count(*) AS n FROM chunks_fts WHERE chunks_fts MATCH 'carnot'").get()).toEqual({ n: 1 });
+    expect(db.prepare('SELECT state, progress FROM media_jobs').get()).toEqual({ state: 'running', progress: 600 });
+    expect(db.prepare('SELECT count(*) AS n FROM media_parts').get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT value FROM settings WHERE key = 'whisperModel'").get()).toEqual({ value: '"medium-q5_0"' });
+    expect(db.prepare('SELECT count(*) AS n FROM chat_messages').get()).toEqual({ n: 2 });
+    for (const t of ['learn_jobs', 'learn_cache', 'notes', 'cards', 'reviews', 'quiz_questions', 'quiz_sessions', 'quiz_attempts', 'concepts', 'concept_sources', 'concept_edges']) {
+      expect(db.prepare(`SELECT count(*) AS n FROM ${t}`).get(), t).toEqual({ n: 0 });
+    }
+    // Löschverhalten greift auch in der migrierten DB (FK + Trigger)
+    db.exec("INSERT INTO cards(type, front, back, status, source_id, source_name, created_at, updated_at) VALUES ('qa', 'F', 'B', 'active', 1, 'Skript.pdf', 1, 1)");
+    db.exec("INSERT INTO concepts(name, norm, created_at) VALUES ('Entropie', 'entropi', 1)");
+    db.exec('INSERT INTO concept_sources(concept_id, source_id) VALUES (1, 1)');
+    db.exec('DELETE FROM sources WHERE id = 1');
+    expect(db.prepare('SELECT source_id, source_name FROM cards').get()).toEqual({ source_id: null, source_name: 'Skript.pdf' });
+    expect(db.prepare('SELECT count(*) AS n FROM concepts').get()).toEqual({ n: 0 });
+    db.close();
+    const backups = fs.readdirSync(path.join(dir, 'backups'));
+    expect(backups).toHaveLength(1);
+    expect(backups[0]).toMatch(/^hotspot-v3-\d{8}-\d{6}\.sqlite$/);
+    const bak = new DatabaseSync(path.join(dir, 'backups', backups[0]!), { readOnly: true });
+    expect(version(bak)).toBe(3);
+    expect(bak.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'cards'").get()).toEqual({ n: 0 });
+    bak.close();
+  });
+
+  it('Phase-2-Datenbank startet als App: Lern-API leer, Chats erhalten', async () => {
+    const dir = tmpDir('mig2app');
+    fs.copyFileSync(path.join(PROJECT_ROOT, 'tests', 'fixtures', 'phase2.sqlite'), path.join(dir, 'hotspot.sqlite'));
+    const { startTestApp } = await import('./helpers.ts');
+    const app = await startTestApp({ dataDir: dir });
+    try {
+      expect((await app.api<{ items: unknown[] }>('GET', '/api/cards')).data.items).toEqual([]);
+      expect((await app.api<{ due: number }>('GET', '/api/srs/due')).data.due).toBe(0);
+      expect((await app.api<{ nodes: unknown[] }>('GET', '/api/graph')).data.nodes).toEqual([]);
+      expect((await app.api<{ jobs: unknown[] }>('GET', '/api/learn/jobs')).data.jobs).toEqual([]);
+      const chats = (await app.api<{ title: string }[]>('GET', '/api/chats')).data;
+      expect(chats.map((c) => c.title)).toEqual(['Thermo']);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('es bleiben höchstens 3 Backups', () => {
     const { dir, file } = phase1Copy();
     for (let i = 0; i < 5; i++) {

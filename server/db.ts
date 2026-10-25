@@ -149,6 +149,169 @@ const MIGRATIONS: string[] = [
   UPDATE sources SET status = 'queued', status_detail = NULL
     WHERE kind = 'pdf' AND status = 'ready' AND (status_detail LIKE '%no_text%' OR status_detail LIKE '%partial_text%');
   `,
+  // v4 – Phase 3: Lernmodi (Notizen, Karteikarten + Wiederholung, Quiz, Wissensgraph, Lern-Jobs)
+  // Löschen einer Quelle: Karten/Fragen behalten ihren Text, verlieren den Link (SET NULL; source_name bleibt als Hinweis),
+  // Zwischenergebnisse und Graph-Bezüge verschwinden (CASCADE), Konzepte ohne Quelle per Trigger. Notizen bleiben unverändert.
+  `
+  CREATE TABLE learn_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    title TEXT NOT NULL,
+    params TEXT NOT NULL,
+    progress REAL NOT NULL DEFAULT 0,
+    total REAL,
+    detail TEXT,
+    result TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX learn_jobs_state ON learn_jobs(state, id);
+
+  -- Zwischenergebnisse (Map-Schritte, Extraktionen), Schlüssel = Hash aus Aufgabe + Text -> geänderte Quelle = neuer Schlüssel
+  CREATE TABLE learn_cache (
+    key TEXT PRIMARY KEY,
+    source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,
+    value TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX learn_cache_source ON learn_cache(source_id);
+
+  CREATE TABLE notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    level TEXT,
+    scope TEXT NOT NULL,
+    citations TEXT NOT NULL DEFAULT '[]',
+    subject_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+    ai INTEGER NOT NULL DEFAULT 1,
+    edited INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX notes_updated ON notes(updated_at);
+
+  CREATE TABLE cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL CHECK (type IN ('qa', 'cloze', 'image')),
+    front TEXT NOT NULL,
+    back TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'suspended')),
+    ai INTEGER NOT NULL DEFAULT 0,
+    subject_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    chunk_id INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
+    source_name TEXT,
+    loc TEXT,
+    job_id INTEGER,
+    reps INTEGER NOT NULL DEFAULT 0,
+    ease REAL NOT NULL DEFAULT 2.5,
+    interval_days INTEGER NOT NULL DEFAULT 0,
+    lapses INTEGER NOT NULL DEFAULT 0,
+    due INTEGER,
+    last_review INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX cards_due ON cards(status, due);
+  CREATE INDEX cards_subject ON cards(subject_id, status);
+  CREATE INDEX cards_source ON cards(source_id);
+  CREATE INDEX cards_chunk ON cards(chunk_id);
+
+  CREATE TABLE reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 4),
+    reviewed_at INTEGER NOT NULL,
+    interval_days INTEGER NOT NULL,
+    ease REAL NOT NULL
+  );
+  CREATE INDEX reviews_card ON reviews(card_id, reviewed_at);
+  CREATE INDEX reviews_time ON reviews(reviewed_at);
+
+  CREATE TABLE quiz_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL CHECK (type IN ('mc', 'tf', 'cloze', 'short')),
+    question TEXT NOT NULL,
+    options TEXT,
+    answer TEXT NOT NULL,
+    explanation TEXT,
+    topic TEXT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    subject_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    chunk_id INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
+    source_name TEXT,
+    loc TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX quiz_questions_subject ON quiz_questions(subject_id);
+  CREATE INDEX quiz_questions_source ON quiz_questions(source_id);
+  CREATE INDEX quiz_questions_chunk ON quiz_questions(chunk_id);
+
+  CREATE TABLE quiz_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL CHECK (mode IN ('practice', 'exam')),
+    scope TEXT NOT NULL,
+    question_ids TEXT NOT NULL,
+    time_limit_sec INTEGER,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+
+  CREATE TABLE quiz_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL REFERENCES quiz_questions(id) ON DELETE CASCADE,
+    session_id INTEGER REFERENCES quiz_sessions(id) ON DELETE CASCADE,
+    answer TEXT NOT NULL,
+    score REAL NOT NULL,
+    feedback TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX quiz_attempts_question ON quiz_attempts(question_id);
+  CREATE INDEX quiz_attempts_session ON quiz_attempts(session_id);
+
+  CREATE TABLE concepts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    norm TEXT NOT NULL UNIQUE,
+    description TEXT,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    edited INTEGER NOT NULL DEFAULT 0,
+    vec BLOB,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE concept_sources (
+    concept_id INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    chunk_id INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
+    PRIMARY KEY (concept_id, source_id)
+  ) WITHOUT ROWID;
+  CREATE INDEX concept_sources_source ON concept_sources(source_id);
+  CREATE INDEX concept_sources_chunk ON concept_sources(chunk_id);
+
+  CREATE TABLE concept_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    a INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    b INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (a, b, source_id)
+  );
+  CREATE INDEX concept_edges_b ON concept_edges(b);
+  CREATE INDEX concept_edges_source ON concept_edges(source_id);
+
+  -- Konzept ohne verbleibende Quelle (Quelle gelöscht / neu extrahiert) entfernen – auch bei FK-Cascade
+  CREATE TRIGGER concept_orphan AFTER DELETE ON concept_sources
+  WHEN NOT EXISTS (SELECT 1 FROM concept_sources WHERE concept_id = old.concept_id)
+  BEGIN
+    DELETE FROM concepts WHERE id = old.concept_id;
+  END;
+  `,
 ];
 
 /** Aktuelle Schema-Version (= Anzahl Migrationen). */
