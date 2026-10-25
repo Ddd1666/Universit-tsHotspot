@@ -174,6 +174,19 @@ export function GenerateDialog({ req }: { req: GenRequest }) {
             e.stopPropagation();
             close();
           }
+          // Fokus bleibt im Dialog (wie beim Bestätigungsdialog)
+          if (e.key === 'Tab' && boxRef.current) {
+            const f = [...boxRef.current.querySelectorAll<HTMLElement>('button, input, select, textarea')].filter((x) => !(x as HTMLButtonElement).disabled);
+            const first = f[0];
+            const last = f[f.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+              e.preventDefault();
+              last?.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+              e.preventDefault();
+              first?.focus();
+            }
+          }
         }}
       >
         <h2 id="gen-title">{t('gen.title')}</h2>

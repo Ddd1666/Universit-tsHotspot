@@ -157,6 +157,64 @@ Bilder/Audio/Video und Scan-PDFs werden danach automatisch neu eingereiht.
 für `small` und `medium-q5_0` (deutsch/englisch), Qualitätsnoten der Testmenge, ob WebP/GIF/BMP gingen, ob SmartScreen/Smart App
 Control die Werkzeuge blockierte, Neustart-/Abbruch-Ergebnis, letzte 100 Zeilen `logs\server.log`.
 
+## 3b. Laptop-Checkliste Phase 3 (Lernmodi) – nach Abschnitt 3/3a
+
+Phase 3 wurde unter Windows 11 entwickelt, aber **nur gegen Mock-Ollama** getestet. Über die **Qualität** von Zusammenfassungen, Karten,
+Fragen, Bewertungen und Graph sowie über **Dauer und VRAM** mit echtem `gemma3:4b` ist nichts bekannt – genau das prüft dieser Abschnitt.
+Vorher: **Backup des Datenordners** (Regel 3). Beim ersten Start migriert die App die Datenbank (Schema v3 → v4) und legt automatisch
+`backups\hotspot-v3-<Datum>.sqlite` an.
+
+**3b.1 Migration (nur lesend)**
+- [ ] `Get-ChildItem "$env:USERPROFILE\Uni-Hotspot-Daten\backups"` → zusätzlich eine Datei `hotspot-v3-…sqlite`.
+- [ ] Bibliothek, Chats, Medien wie vorher; neuer Eintrag **„Lernen“** in der Seitenleiste.
+
+**3b.2 Zusammenfassung einer langen Quelle (> Kontext)**
+- [ ] Ein echtes Skript mit **≥ 50 Seiten** wählen → Bibliothek → Vorschau → **Lernen** → Zusammenfassung, Stufe „Gliederung“ → Starten.
+      *Aufgaben*: Fortschritt „Schritt n/m“ (m = Anzahl Textgruppen + 1). **Dauer bis „fertig“ notieren.**
+- [ ] Währenddessen `ollama ps` (zweites Fenster): nur `gemma3:4b` (+ Embedding-Modell), **`100% GPU`**, kein Neuladen mit anderem Kontext.
+- [ ] *Lernen → Notizen*: Notiz mit „KI-generiert“, Zitate `[n]` klickbar, Quellenliste mit Seiten. **Stichprobe: 3 Zitate öffnen – stimmt die
+      Seite?** Inhalt: Note 1–5. Stufe „Klausur-Spickzettel“ erneut erzeugen → deutlich schneller (Zwischenergebnisse im Cache) – Dauer notieren.
+- [ ] „Markdown exportieren“ → Datei öffnet sich lesbar in einem Editor, Quellenliste am Ende.
+
+**3b.3 Karteikarten → Lernen**
+- [ ] *Erzeugen* → Karteikarten → Fach → Anzahl 20. Dauer notieren. *Karten → Entwürfe*: wie viele brauchbar (Note 1–5)? Falsche verwerfen,
+      eine bearbeiten, Rest annehmen. *Aufgaben* zeigt „x Entwürfe · y verworfen · z Duplikate“ (verworfen = Plausibilitätsprüfung).
+- [ ] *Wiederholen*: Leertaste, dann **1–4**. Nach „Gut“ erscheint die Karte nicht mehr heute; nach „Nochmal“ kommt sie in derselben Sitzung wieder.
+      Am nächsten Tag: Karten mit „Gut“ sind fällig (Intervall 1 Tag), danach 6 Tage.
+- [ ] *Statistik*: Heatmap zeigt heute, Trefferquote passt zu den Bewertungen.
+
+**3b.4 Quiz inkl. Freitext**
+- [ ] *Quiz* → „Fragen erzeugen“ (Fach, 12) → Start (Üben). Je Frage: Lösung mit Quelle sichtbar? Fragen sinnvoll (Note 1–5)?
+- [ ] Kurzantwort zweimal beantworten: einmal richtig, einmal Unsinn → Punktzahl plausibel? Belege sind **wörtliche** Zitate? **Sekunden pro
+      Bewertung notieren** (während der Bewertung pausieren Hintergrundjobs).
+- [ ] Klausursimulation (3 Fragen, 2 Minuten) → Zeit ablaufen lassen → automatisch bewertet.
+
+**3b.5 Wissensgraph**
+- [ ] *Erzeugen* → Wissensgraph → Fach. Dauer notieren; Konzepte sinnvoll? Doppelte Begriffe (Singular/Plural, Groß/Klein) zusammengeführt?
+- [ ] Ansicht: Zoomen, Verschieben, Knoten anklicken → Quellen/Abschnitte; „Frag dazu“ → Chat mit vorbelegter Frage antwortet mit Zitaten.
+      Ein falsches Konzept ausblenden, eines umbenennen. Ansicht „Liste“ mit Tastatur bedienbar (Tab/Enter)?
+- [ ] Flüssig? (subjektiv, ggf. bei großem Fach). Windows-Einstellung „Animationseffekte“ aus → Graph erscheint ohne Animation.
+
+**3b.6 Priorität: Generierung nie auf Kosten des Chats**
+- [ ] Eine lange Zusammenfassung starten; währenddessen im Chat eine Frage stellen → Antwort streamt sofort (laufender Lernaufruf wird
+      abgebrochen und danach wiederholt); *Aufgaben* zeigt kurz „pausiert – Chat hat Vorrang“. Nach der Antwort läuft der Job weiter und wird fertig.
+- [ ] `ollama ps` währenddessen: weiterhin nur ein Chat-Modell im VRAM.
+- [ ] App während einer Zusammenfassung beenden (Strg+C) und neu starten → Job läuft weiter, bereits fertige Schritte werden übersprungen.
+
+**3b.7 Löschen**
+- [ ] Quelle mit Karten/Fragen/Notiz löschen → Karten behalten Text, zeigen „Quelle gelöscht: Name“; Notiz-Verweis „Quelle gelöscht“.
+
+**3b.8 Qualitäts-Bericht (empfohlen, ~10–30 min je nach Dokument)**
+```powershell
+npm.cmd run eval:learning -- "C:\Pfad\zu\2-3 typischen Unterlagen"
+```
+Eigener Temp-Datenordner (`.tmp\eval\…`), echter Datenordner bleibt unberührt. Ergebnis: `.tmp\eval\eval-learning-<Zeit>.md` mit allen
+Ausgaben und Feldern „Bewertung 1–5“ – vom Nutzer ausfüllen lassen.
+
+**Was melden (Phase 3):** Dauer je Job (Zusammenfassung lang/kurz, 20 Karten, 12 Fragen, Graph), Sekunden je Freitext-Bewertung,
+`ollama ps` während Generierung + Chat, Qualitätsnoten (oder den ausgefüllten Eval-Bericht), Anteil verworfener Karten/Fragen,
+Neustart-Ergebnis, Auffälligkeiten (falsche Zitate, englische statt deutscher Ausgaben, Fehlermeldungen), letzte 100 Zeilen `logs\server.log`.
+
 ## 4. Bekannte Windows-Risiken & Abhilfe
 
 | Risiko | Symptom | Abhilfe (reversibel) |

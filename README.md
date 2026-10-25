@@ -7,7 +7,14 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
 
 ![Chat mit Quellen](docs/screenshots/chat-quellen.png)
 
-**Phase 2 (dieser Stand):** Bilder, gescannte PDFs, Audio und Video werden lesbar (OCR/Bildbeschreibung per Vision-Modell,
+**Phase 3 (dieser Stand):** Lernmodi – Zusammenfassungen als Notizen, Karteikarten mit Wiederholungsplan (SM-2), Quiz mit
+Klausursimulation und Freitextbewertung, Wissensgraph. Alles quellengebunden, als KI-generiert markiert, bearbeitbar.
+Ansichten: [Notiz mit Quellen](docs/screenshots/phase3-notiz.png) · [Karten-Entwürfe](docs/screenshots/phase3-karten-entwuerfe.png) ·
+[Wiederholen](docs/screenshots/phase3-wiederholen.png) · [Quiz-Freitext](docs/screenshots/phase3-quiz-freitext.png) · [Klausur](docs/screenshots/phase3-klausur.png) ·
+[Wissensgraph](docs/screenshots/phase3-graph.png) · [Graph 2000 Knoten](docs/screenshots/phase3-graph-2000.png) · [Statistik](docs/screenshots/phase3-statistik.png) ·
+[Aufgaben](docs/screenshots/phase3-aufgaben.png) · schmal: [Quiz](docs/screenshots/phase3-schmal-quiz.png) / [Notiz](docs/screenshots/phase3-schmal-notiz.png)
+
+**Phase 2:** Bilder, gescannte PDFs, Audio und Video werden lesbar (OCR/Bildbeschreibung per Vision-Modell,
 Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue Ansichten: [Aufgaben](docs/screenshots/phase2-aufgaben.png) ·
 [Transkript-Zitat mit Player](docs/screenshots/phase2-chat-transkript-player.png) · [Bild mit KI-Kennzeichnung](docs/screenshots/phase2-bild-ki.png) ·
 [Scan seitengenau](docs/screenshots/phase2-suche-scan.png) · [Einstellungen → Medien](docs/screenshots/phase2-einstellungen-medien.png) · [Aufgaben schmal](docs/screenshots/phase2-schmal-aufgaben.png)
@@ -39,6 +46,37 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
     Prozessbaum), erneut versuchen (setzt beim letzten Segment fort).
   - **Priorität:** Chat > Embedding > Medien; GPU-Aufrufe im Hintergrund laufen nacheinander und pausieren, solange ein Chat antwortet;
     whisper.cpp läuft auf der CPU mit niedriger Prozesspriorität, neue Segmente starten erst nach der Chat-Antwort.
+- **Lernen (Phase 3)** – Seitenleiste „Lernen“, Erzeugen über den Knopf „Erzeugen“, aus der Quellen-Vorschau („Lernen“) oder im Chat-Kopf.
+  Bereich jeweils: **Quelle** (optional ein Abschnitt = Überschrift), **Auswahl** mehrerer Quellen, **Fach** oder **Chat-Verlauf**.
+  Alles läuft als Hintergrundjob (Fortschritt, Abbrechen, Erneut versuchen unter *Aufgaben*), mit niedrigster Priorität.
+  - **Zusammenfassungen/Notizen:** Stufen TL;DR / Gliederung / Ausführlich / Klausur-Spickzettel. **Map-Reduce**: Abschnitte werden in
+    Gruppen zerlegt, die in den Kontext passen (`num_ctx` 8192 ⇒ ~6 000 Token Text pro Aufruf), jede Gruppe wird zu Stichpunkten mit
+    Quellnummern, die dann (bei Bedarf in mehreren Runden) zusammengeführt werden. Zwischenergebnisse liegen im Cache (Schlüssel = Hash aus
+    Aufgabe + Text ⇒ ändert sich die Quelle, wird nur die betroffene Gruppe neu berechnet; die Stufe wechseln kostet keine Map-Aufrufe).
+    Ergebnis = bearbeitbare Markdown-Notiz mit klickbaren Zitaten `[n]` und Quellenliste (Seite/Folie/Zeit), Export als `.md`.
+  - **Karteikarten:** Typen Frage/Antwort, Lückentext (`{{…}}`), Bild (zeigt das Bild aus der Bibliothek). KI-Vorschläge kommen als
+    **Entwürfe** (annehmen / bearbeiten / verwerfen) – nichts landet ungeprüft im Lernstapel; manuelle Karten jederzeit. Jede Karte mit
+    Quellenverweis. **Wiederholen:** tägliche Fällig-Liste (fällige zuerst, dann neue), Leertaste = Antwort, **1–4** = Nochmal/Schwer/Gut/Leicht;
+    Filter nach Fach (oben) bzw. Quelle (aus der Schwächen-Analyse). Bearbeiten ändert nie Zeitplan oder Verlauf.
+    **Statistik:** Heatmap (26 Wochen), Fälligkeitsprognose (30 Tage), Trefferquote (Anteil ≠ „Nochmal“, 30 Tage), Zähler – je Fach.
+  - **Quiz:** Multiple Choice, Wahr/Falsch, Lückentext, Kurzantwort; Bereich Fach (oben), einzelne Quellen (Auswahl) oder alles.
+    **Üben** (sofortige Rückmeldung) oder **Klausursimulation** mit Timer (Abgabe automatisch bei Zeitablauf, Bewertung am Ende).
+    Geschlossene Fragen werden lokal bewertet, **Kurzantworten vom Modell gegen die Quellen** (Rubrik, Begründung, wörtliche Belege –
+    erfundene Zitate werden verworfen). Die Lösung kommt immer mit Quelle. Fragen bleiben im **Pool** (keine Duplikate), Runden bevorzugen
+    nie beantwortete und oft falsche Fragen. **Schwächen-Analyse** (Themen < 70 % richtig) ⇒ „Abschnitt wiederholen“, „Karten üben“, „Karten erzeugen“.
+  - **Wissensgraph:** Konzepte + Beziehungen je Quelle (strukturierte Ausgabe, im Cache), Duplikate werden zusammengeführt
+    (normalisierter Name: Groß/Klein, Umlaute, Artikel, Plural; sonst Embedding-Ähnlichkeit ≥ 0,92). Ansicht als Canvas (Zoom per Mausrad/
+    Knöpfe, Verschieben, Knoten ziehen, Klick = Details mit Quellen und Abschnitten, **„Frag dazu“** öffnet einen Chat mit den Quellen des
+    Konzepts und vorbelegter Frage) oder als **barrierefreie Liste/Tabelle**. Filter Fach/Quelle, ausblenden/umbenennen von Knoten,
+    Kanten umbenennen/ausblenden (Korrekturen bleiben bei erneutem Aufbau erhalten). Bei reduzierter Bewegung wird das Layout ohne Animation
+    berechnet; Ansicht bis 2 000 Knoten (die am stärksten vernetzten).
+  - **Qualität kleiner Modelle:** strukturierte Ausgabe (Ollama `format` + JSON-Schema), Validierung, max. 3 Versuche,
+    **Plausibilitätsprüfung gegen die Quelle** (Antwort/Konzept muss im zitierten Abschnitt vorkommen, sonst verworfen und gezählt),
+    Duplikate per Text-Fingerabdruck und Embedding. Alles KI-Erzeugte trägt die Kennzeichnung „KI-generiert“.
+  - **Löschen einer Quelle:** Karten und Quizfragen **behalten ihren Text**, verlieren den Link und zeigen „Quelle gelöscht: Name“;
+    Notizen bleiben unverändert, ihre Quellenverweise werden als gelöscht markiert (auch im Export); Zwischenergebnisse, Graph-Bezüge und
+    Konzepte, die nur aus dieser Quelle stammten, verschwinden (FK + Trigger, in derselben Transaktion). Wird eine Quelle neu verarbeitet,
+    verlieren Karten nur den Abschnitts-Link (die Quelle bleibt verknüpft).
 - **Hybrid-Suche:** SQLite-FTS5 (BM25) + Vektorsuche, fusioniert per Reciprocal Rank Fusion; Treffer mit Quelle, Fach, Seite/Folie/Blatt, Snippet.
 - **Chat:** jede Session ein eigener, persistenter Chat (umbenennen, löschen, Verlauf durchsuchen, Auto-Titel), pro Chat wählbarer
   Wissensbereich (alle Quellen / Fächer / einzelne Quellen / freier Chat) und Modell. Streaming mit Stopp/Neu-generieren,
@@ -137,6 +175,7 @@ Uni-Hotspot-Daten/
   files/ab/<sha256>              Originaldateien, content-addressed (Dedupe)
   logs/server.log                Log (rotiert ab 10 MB)
   backups/                       automatische DB-Kopie vor jeder Schema-Migration (die neuesten 3)
+  (Lernmodi: Notizen, Karten, Wiederholungen, Quiz, Graph, Zwischenergebnisse liegen in hotspot.sqlite)
   tmp/media/job-<n>/             Zwischendateien laufender Medien-Jobs (WAV-Segmente) – werden sofort wieder gelöscht
   electron-profile/              Browser-Profil der Desktop-App
 ```
@@ -144,7 +183,8 @@ Uni-Hotspot-Daten/
 **Backup = Ordner kopieren, während die App beendet ist** (SQLite im WAL-Modus).
 **Datenbank-Migrationen:** das Schema ist versioniert (`PRAGMA user_version`). Vor jeder Migration einer bestehenden DB legt die App per
 `VACUUM INTO` eine konsistente Kopie unter `backups/` an; jede Migration läuft in einer Transaktion (Fehler ⇒ Rollback). Eine DB einer
-neueren App-Version wird nicht angefasst (klare Meldung). Getestet mit einer echten Phase-1-Datenbank (`tests/fixtures/phase1.sqlite`).
+neueren App-Version wird nicht angefasst (klare Meldung). Getestet mit einer echten Phase-1-Datenbank (`tests/fixtures/phase1.sqlite`)
+und einer Phase-2-Datenbank (`tests/fixtures/phase2.sqlite`, Schema v3 → v4: Lernmodi-Tabellen; Backup `backups/hotspot-v3-….sqlite`).
 
 ## Architektur (kurz)
 
@@ -157,7 +197,9 @@ server/             Node.js + TypeScript (läuft ohne Build dank Node-Type-Strip
   chat/             Sessions, RAG-Prompt mit Token-Budget, Streaming, Think-Splitter, Auto-Titel
   media/            Medien-Queue (media-service), Vision (OCR+Beschreibung), ffmpeg/whisper.cpp (audio, proc: Prozessbaum),
                     Seitenbilder aus PDFs (Worker), Installer/Manifest (bestätigter SHA-256-Download)
-  scheduler.ts      Priorität Chat > Embedding > Medien, GPU-Arbeit seriell
+  learn/            Lernmodi: jobs.ts (persistente Lern-Jobs, Map-Reduce, Karten/Quiz/Graph), prompts.ts (Prompts, JSON-Schemas,
+                    Validierung), text.ts (Bereiche, Gruppen, Plausibilität), srs.ts (SM-2), data.ts (Abfragen), routes.ts (API)
+  scheduler.ts      Priorität Chat > Embedding > Medien > Lernmodi, GPU-Arbeit seriell, Lernaufrufe unterbrechbar
   ollama/           Client, Status-Monitor, Mock-Ollama (Tests)
 web/                React + Vite, Markdown via marked + DOMPurify, KaTeX (lazy)
 tests/              vitest (Fixtures werden zur Laufzeit erzeugt)
@@ -192,6 +234,15 @@ scripts/            start/dev/bench/e2e
 | Audio/Video | whisper.cpp + ffmpeg als externe Programme (Kindprozess, feste Argumente, kein Shell) | Python-Whisper, Node-Bindings (nativ) |
 | Downloads | `fetch` + `node:crypto` + vorhandenes `yauzl` | Download-Bibliotheken |
 
+**Phase 3: keine neue npm-Abhängigkeit.**
+
+| Bedarf | Lösung | verworfen |
+|---|---|---|
+| Wiederholungs-Algorithmus | eigenes **SM-2** (~30 Zeilen, `server/learn/srs.ts`), Referenzwerte von Hand nachrechenbar (Tests) | FSRS/`ts-fsrs`: besser mit optimierten Gewichten, die erst aus eigener Review-Historie entstehen; der vollständige Verlauf (Bewertung + Zeit) wird gespeichert, FSRS lässt sich später ohne Datenverlust nachrüsten |
+| Graph-Layout | eigene Force-Simulation (`web/src/lib/force.ts`, ~100 Zeilen) auf Canvas | `d3-force` (4 Pakete, 285 KB): bei 2 000 Knoten gleich schnell gemessen (siehe Messwerte), erst ab ~4 000 Knoten klar schneller |
+| Strukturierte Ausgabe | Ollama `format` (JSON-Schema) + eigene Validierung | JSON-Schema-Validator-Bibliothek |
+| Notizen/Karten rendern | vorhandenes `marked` + `DOMPurify` | – |
+
 Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` + `dompurify` (sicheres Markdown), `katex` (Formeln, lazy),
 `electron` (Desktop-Hülle; Binary wird erst beim ersten Desktop-Start geladen), `typescript`, `eslint`, `vitest`, `jsdom` (Sanitizer-Tests), `fflate` (Test-Fixtures).
 
@@ -207,6 +258,8 @@ npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
 npm run bench       # Messungen (Mock)
 npm run bench:media # Phase-2-Messungen (Mock-Ollama + Fake-Werkzeuge)
+npm run bench:learn # Phase-3-Messungen (Abfragen bei 2000 Quellen / 40k Abschnitten)
+npm run eval:learning -- <Datei|Ordner>  # Lernmodi an echten Unterlagen mit echtem Ollama -> Bericht zum Bewerten
 npm run setup-media # Medien-Werkzeuge laden (fragt vorher nach)
 npm run e2e         # Browser-Durchlauf mit Screenshots (benötigt eine Playwright-Installation)
 ```
@@ -218,6 +271,9 @@ Der Mock beantwortet auch Vision-Aufrufe (deterministischer Fake-Text). Für Aud
 (`tests/fake-tools/ffmpeg.mjs`, `whisper-cli.mjs` – Node-Skripte, die die Aufrufschnittstelle nachahmen); sie werden per
 `HOTSPOT_MEDIA_TOOLS_JSON` nur **im Mock-Modus** akzeptiert. Damit ist die ganze Pipeline headless testbar – über echte Erkennungsqualität
 und Laufzeit sagt das nichts.
+Für die Lernmodi erkennt der Mock die Aufgabe am `TASK: …` im System-Prompt und liefert deterministische, schema-gültige Ausgaben
+(Stichpunkte mit Quellnummern, Karten, Fragen, Konzepte, Bewertungen). Marker im Dokumenttext steuern Fehlerfälle:
+`MOCKBADJSON` (ungültige Ausgabe ⇒ 3 Versuche), `MOCKHALLU` (erfundene Antwort ⇒ Plausibilitätsprüfung verwirft), `MOCKEMPTY`.
 
 ## Sicherheit
 
@@ -236,6 +292,13 @@ und Laufzeit sagt das nichts.
   Prompt als Daten abgegrenzt (wie Dokumente, zusätzlich `generated="…"`). Datei-Route mit HTTP-Range (ein Bereich, 416 bei Unsinn),
   Medien nur mit eigenen, sicheren Content-Types, `nosniff`, Sandbox-CSP; Token- und ID-Prüfung unverändert. Downloads nur aus dem
   Manifest (https, feste SHA-256/Größe), entpackt wird flach nach `tools/`. Löschen einer Quelle entfernt Job, Zwischenstände, Temp-Dateien.
+- **Lernmodi (Phase 3):** Dokument- **und** Modelltext sind nicht vertrauenswürdig: im Prompt als `<documents>`/`<notes>`/`<answer>` abgegrenzt
+  (eingeschleuste Tags neutralisiert, Sicherheitshinweis im System-Prompt; die Freitext-Antwort des Studierenden kann keine Punkte
+  „anordnen“, die Punktzahl folgt der Rubrik). Modellausgaben werden validiert und in der Länge begrenzt; Notizen und Karten laufen durch
+  DOMPurify, Graph-Beschriftungen werden nur als Text gezeichnet (Canvas `fillText`, Liste als React-Text). Limits je Job: ≤ 800 Abschnitte
+  (Zusammenfassung), ≤ 50 Karten, ≤ 40 Fragen, ≤ 60 Konzepte/100 Beziehungen je Quelle, ≤ 400 neue Konzepte je Job, ≤ 50 wartende Jobs;
+  Textlängen (Karte 2 000/4 000 Zeichen, Notiz 200 000, Antwort 4 000) per Schema. Alle neuen Abfragen parametrisiert und per
+  `EXPLAIN QUERY PLAN` geprüft (Test + `npm run bench:learn`). Token/Host/Origin-Prüfung unverändert für alle neuen `/api`-Routen.
 - Electron: `contextIsolation`, `sandbox`, kein `nodeIntegration`, keine fremde Navigation/Popups/Berechtigungen, Netzwerk nur zum lokalen Server.
 
 ## Messwerte (Linux-Container, Node 22, Mock-Ollama; `npm run bench`)
@@ -280,6 +343,26 @@ und Laufzeit sagt das nichts.
 | PDF-Bildbombe 9000×9000 px (~240 MB entpackt, 0,3 MB Datei) | wird nicht dekodiert; RAM-Zuwachs im Test < 150 MB (vorher: volle Dekodierung) |
 | Phase-1-Werte (Suche, Bibliothek, Import) | unverändert (keine Änderung an diesen Pfaden außer zwei zusätzlichen Spalten im Treffer) |
 
+**Phase 3** (Windows 11, Node 24, Mock-Ollama; `npm run bench:learn`, E2E) – Abfragezeiten sind synchron, also zugleich die Event-Loop-Blockade.
+Testdaten: 2 000 Quellen, 40 000 Abschnitte, 10 000 Karten, 48 000 Wiederholungen, 4 000 Quizfragen, 20 000 Antworten, 2 000 Konzepte:
+
+| Messung | Ergebnis (p50) |
+|---|---|
+| Fällig-Liste (alle, 200 Karten) – vorher (Join + Zählung für jede fällige Karte) / nachher (erst IDs begrenzen) | 40,7 ms → 6,1 ms |
+| Kartenliste Entwürfe (500) – vorher / nachher | 18,0 ms → 7,0 ms |
+| Fällig-Liste je Fach · Karte bewerten (Transaktion) | 1,9 ms · 0,2 ms |
+| Statistik alle / je Fach (Heatmap 26 Wochen, Prognose, Trefferquote) | 36 ms / 2,5 ms |
+| Wissensgraph alle (2 000 Knoten) / je Fach · Konzept-Details | 15 ms / 1,3 ms · 0,1 ms |
+| Schwächen-Analyse · Quiz-Runde starten (20 Fragen) | 12,5 ms · 4,4 ms |
+| Bereich laden (Fach, 100 Quellen, max. 800 Abschnitte) | 1,2 ms |
+| Quelle löschen inkl. Karten/Fragen/Cache/Graph (FK + Trigger) | 3,4 ms; `integrity_check` ok, keine FK-Verstöße |
+| Graph-Layout pro Simulationsschritt, eigene Simulation vs. `d3-force` (Node, Mittel aus 30 Schritten) | 500 Knoten 0,5 vs. 1,5 ms · 1 000: 1,6 vs. 3,2 ms · **2 000: 6,9–7,3 vs. 6,7–6,8 ms** · 4 000: 32 vs. 16 ms |
+| Graph-Ansicht 2 000 Knoten / 2 999 Kanten im Browser (Chromium, 1440×900, während der Simulation) | 73–93 fps, längster Frame 18–43 ms |
+| Map-Reduce: Text pro Aufruf bei `num_ctx` 8192 / 2048 | ~6 140 / ~980 Token (Rest: Antwortreserve 900 bzw. 512 + System-Prompt) |
+
+Mit echtem Ollama dauert jeder Generierungsschritt Sekunden (abhängig von Modell und GPU) – genau das misst die Laptop-Checkliste
+(`HANDOFF.md`, Abschnitt 3b) bzw. `npm run eval:learning`.
+
 Echte Werte (Sekunden pro Bild, Minuten Rechenzeit pro Audio-Minute, VRAM) misst die Laptop-Checkliste in `HANDOFF.md`.
 
 Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der RTX 3060 typ. wenige ms; Antwort-Streaming abhängig vom Modell).
@@ -287,11 +370,17 @@ Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der 
 ## Roadmap
 
 - **Phase 2 (umgesetzt, nur mit Mock getestet):** Bilder/OCR/Vision, gescannte PDFs, Audio/Video-Transkription.
-- **Phase 3:** Lernmodi – Karteikarten mit Spaced Repetition, Quiz, Zusammenfassungen, Wissensgraph.
+- **Phase 3 (umgesetzt, nur mit Mock getestet):** Lernmodi – Karteikarten mit Spaced Repetition, Quiz, Zusammenfassungen, Wissensgraph.
 - **Phase 4:** Installer, Auto-Backup, Politur.
 
 ## Bekannte Grenzen
 
+- **Lernmodi:** Qualität der Zusammenfassungen, Karten, Fragen, Bewertungen und Graphen ist **nur mit Mock geprüft** – kleine Modelle
+  (4B) machen Fehler; Plausibilitätsprüfung und Entwurfs-Status fangen nur einen Teil ab. Bewertung an echten Unterlagen:
+  `npm run eval:learning -- <Datei|Ordner>`. Generiert wird in der Oberflächensprache. Sehr große Bereiche werden nach 800 Abschnitten
+  gekürzt (Hinweis in der Notiz). Karten/Fragen behalten das Fach, das ihre Quelle beim Erzeugen hatte (Verschieben der Quelle ändert es
+  nicht). Der Wissensgraph wird nur auf Wunsch aufgebaut (kein automatischer Hintergrundlauf für jede neue Quelle – spart GPU-Zeit).
+  Wiederholungs-Algorithmus SM-2 (statt FSRS, siehe Abhängigkeiten).
 - Nur mit Mock-Ollama getestet – echte Modellqualität, VRAM-Verhalten und Geschwindigkeit sind erst auf dem Laptop prüfbar (siehe `HANDOFF.md`).
 - **Migration aus Phase 1:** neu eingereiht werden nur Bilder/Audio/Video und PDFs, die als „kein/wenig Text“ markiert waren. Eine PDF mit
   überwiegend Text und **einzelnen** gescannten Seiten wird nicht automatisch neu verarbeitet (das würde alle Vektoren neu berechnen) –
