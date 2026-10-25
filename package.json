@@ -21,7 +21,9 @@
     "bench": "node --disable-warning=ExperimentalWarning scripts/bench.ts",
     "e2e": "node scripts/e2e-browser.mjs",
     "bench:media": "node --disable-warning=ExperimentalWarning scripts/bench-media.ts",
-    "setup-media": "node scripts/setup-media.mjs"
+    "setup-media": "node scripts/setup-media.mjs",
+    "bench:learn": "node --disable-warning=ExperimentalWarning scripts/bench-learn.ts",
+    "eval:learning": "node --disable-warning=ExperimentalWarning scripts/eval-learning.ts"
   },
   "dependencies": {
     "fastify": "^5.12.5",

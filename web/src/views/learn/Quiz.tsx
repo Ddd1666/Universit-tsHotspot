@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { get, post } from '../../api';
 import { Icon } from '../../components/Icon';
 import { AiTag, RefLink } from '../../components/LearnBits';
 import { Markdown } from '../../components/Markdown';
 import { formatClock, formatDate } from '../../lib/format';
 import { useApp, useHubEvent } from '../../store';
-import type { QuizQuestion, QuizResult, Weakness } from '../../types';
+import type { QuizQuestion, QuizResult, Source, Weakness } from '../../types';
 
 type Phase = 'setup' | 'run' | 'grading' | 'result';
 interface Session {
@@ -126,10 +126,19 @@ export function QuizTab({ subject }: { subject: number | null }) {
   const [history, setHistory] = useState<{ id: number; mode: string; startedAt: number; total: number; points: number }[]>([]);
   const [weak, setWeak] = useState<Weakness[]>([]);
   const submitted = useRef(false);
+  // Modus Quelle/Auswahl: einzelne Quellen ankreuzen (sonst ganzes Fach bzw. alles)
+  const [sources, setSources] = useState<Source[]>([]);
+  const [picked, setPicked] = useState<number[]>([]);
+  useEffect(() => {
+    setPicked([]);
+    get<{ items: Source[] }>(`/api/sources?subject=${subject ?? 'all'}&status=ready`)
+      .then((r) => setSources(r.items.filter((x) => x.chunkCount > 0).slice(0, 300)))
+      .catch(() => {});
+  }, [subject]);
 
-  const scope = subject ? { subjectId: subject } : {};
+  const scope = useMemo(() => (picked.length ? { sourceIds: picked } : subject ? { subjectId: subject } : {}), [picked, subject]);
   const loadMeta = useCallback(() => {
-    post<{ count: number }>('/api/quiz/pool', { scope: subject ? { subjectId: subject } : {} })
+    post<{ count: number }>('/api/quiz/pool', { scope })
       .then((r) => setPool(r.count))
       .catch(() => {});
     get<typeof history>('/api/quiz/history')
@@ -138,7 +147,7 @@ export function QuizTab({ subject }: { subject: number | null }) {
     get<Weakness[]>(`/api/quiz/weak${subject ? `?subject=${subject}` : ''}`)
       .then(setWeak)
       .catch(() => {});
-  }, [subject]);
+  }, [subject, scope]);
   useEffect(loadMeta, [loadMeta]);
   useHubEvent((e) => {
     if (e.type === 'learn-job' && e.job.kind === 'quiz' && e.job.state === 'done' && phase === 'setup') loadMeta();
@@ -239,12 +248,27 @@ export function QuizTab({ subject }: { subject: number | null }) {
               </label>
             )}
           </div>
+          {sources.length > 0 && (
+            <details className="quiz-sources">
+              <summary className="small">
+                {t('gen.scope.sources')} {picked.length ? `(${picked.length})` : `– ${subject ? t('gen.scope.subject') : t('learn.allSubjects')}`}
+              </summary>
+              <div className="scope-list gen-list" role="group" aria-label={t('gen.scope.sources')}>
+                {sources.map((x) => (
+                  <label key={x.id} className="check-row">
+                    <input type="checkbox" checked={picked.includes(x.id)} onChange={() => setPicked((p) => (p.includes(x.id) ? p.filter((y) => y !== x.id) : [...p, x.id]))} />
+                    <span className="ellipsis">{x.name}</span>
+                  </label>
+                ))}
+              </div>
+            </details>
+          )}
           <p className="muted small">{pool === null ? '' : pool ? t('quiz.pool', { n: pool }) : t('quiz.empty')}</p>
           <div className="row gap wrap">
             <button className="btn primary" onClick={() => void start()} disabled={!pool}>
               <Icon name="send" size={15} /> {t('quiz.start')}
             </button>
-            <button className="btn" onClick={() => openGenerate({ kind: 'quiz', ...(subject ? { scope: { kind: 'subject', id: subject } } : {}) })}>
+            <button className="btn" onClick={() => openGenerate({ kind: 'quiz', ...(picked.length ? { scope: { kind: 'sources', ids: picked } } : subject ? { scope: { kind: 'subject', id: subject } } : {}) })}>
               <Icon name="spark" size={15} /> {t('quiz.genMore')}
             </button>
           </div>

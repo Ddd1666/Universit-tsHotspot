@@ -300,7 +300,7 @@ function cardWhere(f: CardFilter): { sql: string; params: (string | number)[] } 
 export function listCards(db: DB, f: CardFilter): { items: CardDTO[]; total: number } {
   const { sql, params } = cardWhere(f);
   const limit = Math.min(f.limit ?? 200, LIMITS_TEXT.listMax);
-  const items = (db.prepare(`${CARD_SELECT} ${sql} ORDER BY c.id DESC LIMIT ?`).all(...params, limit) as unknown as CardRow[]).map(toCard);
+  const items = (db.prepare(`${CARD_SELECT} WHERE c.id IN (SELECT c.id FROM cards c ${sql} ORDER BY c.id DESC LIMIT ?) ORDER BY c.id DESC`).all(...params, limit) as unknown as CardRow[]).map(toCard);
   const total = items.length < limit ? items.length : (db.prepare(`SELECT count(*) AS n FROM cards c ${sql}`).get(...params) as { n: number }).n;
   return { items, total };
 }
@@ -388,7 +388,8 @@ export function dueCards(db: DB, f: { subjectId?: number; sourceId?: number; lim
     params.push(f.sourceId);
   }
   const sql = where.join(' AND ');
-  const items = (db.prepare(`${CARD_SELECT} WHERE ${sql} ORDER BY c.due IS NULL, c.due, c.id LIMIT ?`).all(...params, Math.min(f.limit ?? 200, LIMITS_TEXT.listMax)) as unknown as CardRow[]).map(toCard);
+  // erst die IDs sortieren/begrenzen, dann Details (sonst Join + Zählung für jede fällige Karte)
+  const items = (db.prepare(`${CARD_SELECT} WHERE c.id IN (SELECT c.id FROM cards c WHERE ${sql} ORDER BY c.due IS NULL, c.due, c.id LIMIT ?) ORDER BY c.due IS NULL, c.due, c.id`).all(...params, Math.min(f.limit ?? 200, LIMITS_TEXT.listMax)) as unknown as CardRow[]).map(toCard);
   const counts = db.prepare(`SELECT sum(c.due IS NOT NULL) AS due, sum(c.due IS NULL) AS fresh FROM cards c WHERE ${sql}`).get(...params) as { due: number | null; fresh: number | null };
   return { items, due: counts.due ?? 0, fresh: counts.fresh ?? 0 };
 }
