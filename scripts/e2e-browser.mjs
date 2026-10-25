@@ -284,7 +284,6 @@ try {
       null,
       { timeout: 60_000, polling: 300 },
     );
-  const sourceId = async (name) => (await api('GET', `/api/sources?q=${encodeURIComponent(name)}`)).items[0].id;
   const physik = async () => (await api('GET', '/api/subjects')).find((s) => s.name === 'Physik').id;
 
   await step('Phase 3: Zusammenfassung aus der Bibliothek → Notiz mit Quellen, KI-gekennzeichnet, Export', async () => {
