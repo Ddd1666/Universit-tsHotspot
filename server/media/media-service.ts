@@ -297,7 +297,7 @@ export class MediaService {
 
   /** Vision-Arbeit (Bild/Scan) wartet oder läuft – Lern-Jobs lassen ihr dann den GPU-Slot. */
   visionBusy(): boolean {
-    return !!this.deps.db.prepare("SELECT 1 FROM media_jobs WHERE state IN ('queued', 'running') AND kind IN ('image', 'scan') LIMIT 1").get();
+    return !this.stopped && !!this.deps.db.prepare("SELECT 1 FROM media_jobs WHERE state IN ('queued', 'running') AND kind IN ('image', 'scan') LIMIT 1").get();
   }
 
   counts(): { queued: number; running: number; error: number } {
