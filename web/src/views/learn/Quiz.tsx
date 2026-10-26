@@ -39,7 +39,7 @@ function ResultBox({ res }: { res: QuizResult }) {
   return (
     <div className="quiz-result" role="status">
       <div className="row gap wrap">
-        <Verdict score={res.score} />
+        {res.pending ? <span className="badge">{t('quiz.pending')}</span> : <Verdict score={res.score} />}
         <span className="muted small">{t('quiz.solution')}:</span>
         <strong>{res.answer === 'true' ? t('quiz.true') : res.answer === 'false' ? t('quiz.false') : res.answer}</strong>
       </div>
@@ -126,9 +126,12 @@ export function QuizTab({ subject }: { subject: number | null }) {
   const [busy, setBusy] = useState(false);
   const [grading, setGrading] = useState(0);
   const [now, setNow] = useState(Date.now());
-  const [history, setHistory] = useState<{ id: number; mode: string; startedAt: number; total: number; points: number }[]>([]);
+  const [history, setHistory] = useState<{ id: number; mode: string; startedAt: number; total: number; points: number; pending: number; late: boolean }[]>([]);
   const [weak, setWeak] = useState<Weakness[]>([]);
   const [failed, setFailed] = useState<Record<number, string>>({});
+  const [late, setLate] = useState(false);
+  const [submitError, setSubmitError] = useState(false);
+  const [regrading, setRegrading] = useState<number | null>(null);
   const submitted = useRef(false);
   // Modus Quelle/Auswahl: einzelne Quellen ankreuzen (sonst ganzes Fach bzw. alles)
   const [sources, setSources] = useState<Source[]>([]);
@@ -169,6 +172,8 @@ export function QuizTab({ subject }: { subject: number | null }) {
       setAnswers({});
       setResults({});
       setFailed({});
+      setLate(false);
+      setSubmitError(false);
       submitted.current = false;
       setPhase('run');
     } catch (err) {
@@ -190,25 +195,32 @@ export function QuizTab({ subject }: { subject: number | null }) {
     submitted.current = true;
     setPhase('grading');
     if (session.mode === 'exam') {
-      // Klausur: alle Antworten auf einmal abgeben (Server prüft das Zeitlimit), geschlossene Fragen sind damit bewertet;
-      // Freitext danach einzeln – ein Fehler bei einer Frage stoppt die übrigen nicht
+      // Klausur: alle Antworten auf einmal abgeben (Server markiert Überschreitungen), geschlossene Fragen sind damit
+      // bewertet; Freitext danach einzeln – ein Fehler bei einer Frage stoppt die übrigen nicht
+      let r: { results: Record<number, QuizResult>; pending: number[]; late: boolean };
       try {
-        const r = await post<{ results: Record<number, QuizResult | null>; pending: number[] }>(`/api/quiz/sessions/${session.id}/submit`, {
+        r = await post<typeof r>(`/api/quiz/sessions/${session.id}/submit`, {
           answers: questions.map((x) => ({ questionId: x.id, answer: answers[x.id] ?? '' })),
         });
-        setResults((old) => ({ ...old, ...Object.fromEntries(Object.entries(r.results).filter(([, v]) => v !== null)) }));
-        for (const [i, qid] of r.pending.entries()) {
-          setGrading(i + 1);
-          const x = questions.find((y) => y.id === qid);
-          if (!x) continue;
-          try {
-            await grade(x, answers[qid] ?? '');
-          } catch (err) {
-            setFailed((f) => ({ ...f, [qid]: apiErrorText(t, err) }));
-          }
-        }
       } catch (err) {
+        // nicht abschließen: Antworten bleiben, erneut abgeben möglich (keine automatische Wiederholung im Sekundentakt)
         toastError(err);
+        setSubmitError(true);
+        submitted.current = false;
+        setPhase('run');
+        return;
+      }
+      setResults((old) => ({ ...old, ...r.results }));
+      setLate(r.late);
+      for (const [i, qid] of r.pending.entries()) {
+        setGrading(i + 1);
+        const x = questions.find((y) => y.id === qid);
+        if (!x) continue;
+        try {
+          await grade(x, answers[qid] ?? '');
+        } catch (err) {
+          setFailed((f) => ({ ...f, [qid]: apiErrorText(t, err) }));
+        }
       }
     }
     try {
@@ -224,12 +236,46 @@ export function QuizTab({ subject }: { subject: number | null }) {
   const deadline = session?.timeLimitSec ? session.startedAt + session.timeLimitSec * 1000 : null;
   useEffect(() => {
     if (phase !== 'run' || !deadline) return;
-    const iv = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(iv);
+    const tick = () => setNow(Date.now());
+    const iv = setInterval(tick, 1000);
+    // minimiertes Fenster drosselt Timer: beim Sichtbarkeitswechsel sofort nachrechnen (und ggf. abgeben)
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', tick);
+    };
   }, [phase, deadline]);
+  const timeUp = deadline !== null && now >= deadline;
   useEffect(() => {
-    if (phase === 'run' && deadline && now >= deadline) void finish();
-  }, [now, deadline, phase, finish]);
+    if (phase === 'run' && timeUp && !submitError) void finish();
+  }, [timeUp, phase, finish, submitError]);
+
+  const retryGrade = async (x: QuizQuestion) => {
+    setRegrading(x.id);
+    try {
+      await grade(x, answers[x.id] ?? '');
+      setFailed((f) => {
+        const rest = { ...f };
+        delete rest[x.id];
+        return rest;
+      });
+    } catch (err) {
+      setFailed((f) => ({ ...f, [x.id]: apiErrorText(t, err) }));
+    } finally {
+      setRegrading(null);
+    }
+  };
+  const regradeSession = async (id: number) => {
+    setRegrading(id);
+    try {
+      await post(`/api/quiz/sessions/${id}/regrade`);
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setRegrading(null);
+      loadMeta();
+    }
+  };
 
   const q = questions[idx];
   const check = async () => {
@@ -334,6 +380,21 @@ export function QuizTab({ subject }: { subject: number | null }) {
                 {history.slice(0, 10).map((h) => (
                   <li key={h.id}>
                     <span className="muted">{formatDate(h.startedAt, lang)}</span> {t('quiz.historyItem', { mode: t(h.mode === 'exam' ? 'quiz.exam' : 'quiz.practice'), points: Math.round(h.points * 10) / 10, total: h.total })}
+                    {h.late && (
+                      <>
+                        {' '}
+                        <span className="badge warn">{t('quiz.historyLate')}</span>
+                      </>
+                    )}
+                    {h.pending > 0 && (
+                      <>
+                        {' '}
+                        <span className="badge">{t('quiz.historyPending', { n: h.pending })}</span>{' '}
+                        <button className="btn small ghost" onClick={() => void regradeSession(h.id)} disabled={regrading !== null}>
+                          {regrading === h.id ? <span className="spinner tiny" aria-hidden="true" /> : <Icon name="refresh" size={13} />} {t('quiz.retryGrade')}
+                        </button>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -362,6 +423,11 @@ export function QuizTab({ subject }: { subject: number | null }) {
             <Icon name="refresh" size={15} /> {t('quiz.again')}
           </button>
         </div>
+        {late && (
+          <p className="warn small" role="status">
+            <Icon name="clock" size={13} /> {t('quiz.late')}
+          </p>
+        )}
         {session?.mode === 'exam' &&
           questions.map((x, i) => (
             <article key={x.id} className="glass quiz-card">
@@ -373,9 +439,14 @@ export function QuizTab({ subject }: { subject: number | null }) {
               </p>
               {results[x.id] && <ResultBox res={results[x.id]!} />}
               {failed[x.id] && (
-                <p className="err small" role="alert">
-                  <Icon name="alert" size={13} /> {t('quiz.gradeFailed', { error: failed[x.id]! })}
-                </p>
+                <div className="row gap wrap">
+                  <p className="err small" role="alert">
+                    <Icon name="alert" size={13} /> {t('quiz.gradeFailed', { error: failed[x.id]! })}
+                  </p>
+                  <button className="btn small" onClick={() => void retryGrade(x)} disabled={regrading !== null}>
+                    {regrading === x.id ? <span className="spinner tiny" aria-hidden="true" /> : <Icon name="refresh" size={13} />} {t('quiz.retryGrade')}
+                  </button>
+                </div>
               )}
             </article>
           ))}
@@ -407,8 +478,13 @@ export function QuizTab({ subject }: { subject: number | null }) {
           <div className="quiz-question">
             <Markdown text={q.question} />
           </div>
-          <AnswerInput q={q} value={answers[q.id] ?? ''} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} disabled={!!res} />
+          <AnswerInput q={q} value={answers[q.id] ?? ''} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} disabled={!!res || timeUp} />
           {res && <ResultBox res={res} />}
+          {submitError && (
+            <p className="err small" role="alert">
+              <Icon name="alert" size={13} /> {t('quiz.submitFailed')}
+            </p>
+          )}
           <div className="row gap wrap">
             {session?.mode === 'exam' && idx > 0 && (
               <button className="btn ghost" onClick={() => setIdx(idx - 1)}>

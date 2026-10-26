@@ -165,7 +165,8 @@ Control die Werkzeuge blockierte, Neustart-/Abbruch-Ergebnis, letzte 100 Zeilen 
 Phase 3 wurde unter Windows 11 entwickelt, aber **nur gegen Mock-Ollama** getestet. Über die **Qualität** von Zusammenfassungen, Karten,
 Fragen, Bewertungen und Graph sowie über **Dauer und VRAM** mit echtem `gemma3:4b` ist nichts bekannt – genau das prüft dieser Abschnitt.
 Vorher: **Backup des Datenordners** (Regel 3). Beim ersten Start migriert die App die Datenbank (Schema v3 → v4) und legt automatisch
-`backups\hotspot-v3-<Datum>.sqlite` an.
+`backups\hotspot-v3-<Datum>.sqlite` an. Datenordner aus Zwischenständen von Phase 3 (z. B. Commit de5adee, nie veröffentlicht; Schema v4
+wurde danach noch geändert) löschen bzw. durch das v3-Backup ersetzen – nur mit Zustimmung des Nutzers.
 
 **3b.1 Migration (nur lesend)**
 - [ ] `Get-ChildItem "$env:USERPROFILE\Uni-Hotspot-Daten\backups"` → zusätzlich eine Datei `hotspot-v3-…sqlite`.
@@ -190,7 +191,10 @@ Vorher: **Backup des Datenordners** (Regel 3). Beim ersten Start migriert die Ap
 - [ ] *Quiz* → „Fragen erzeugen“ (Fach, 12) → Start (Üben). Je Frage: Lösung mit Quelle sichtbar? Fragen sinnvoll (Note 1–5)?
 - [ ] Kurzantwort zweimal beantworten: einmal richtig, einmal Unsinn → Punktzahl plausibel? Belege sind **wörtliche** Zitate? **Sekunden pro
       Bewertung notieren** (während der Bewertung pausieren Hintergrundjobs).
-- [ ] Klausursimulation (3 Fragen, 2 Minuten) → Zeit ablaufen lassen → automatisch bewertet.
+- [ ] Klausursimulation (3 Fragen, 2 Minuten) → Zeit ablaufen lassen → automatisch bewertet. Noch einmal mit minimiertem Fenster
+      ablaufen lassen → beim Wiederherstellen sofort abgegeben (ggf. „verspätet“ markiert), Antworten nicht verloren.
+- [ ] Ollama während einer Klausur-Bewertung beenden → Lösung trotzdem sichtbar, Meldung + „Bewertung wiederholen“; Ollama starten →
+      Knopf bewertet nach; Verlauf zeigt bis dahin „n ausstehend“.
 
 **3b.5 Wissensgraph**
 - [ ] *Erzeugen* → Wissensgraph → Fach. Dauer notieren; Konzepte sinnvoll? Doppelte Begriffe (Singular/Plural, Groß/Klein) zusammengeführt?

@@ -48,7 +48,8 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
     whisper.cpp läuft auf der CPU mit niedriger Prozesspriorität, neue Segmente starten erst nach der Chat-Antwort.
 - **Lernen (Phase 3)** – Seitenleiste „Lernen“, Erzeugen über den Knopf „Erzeugen“, aus der Quellen-Vorschau („Lernen“) oder im Chat-Kopf.
   Bereich jeweils: **Quelle** (optional ein Abschnitt = Überschrift), **Auswahl** mehrerer Quellen, **Fach** oder **Chat-Verlauf**.
-  Alles läuft als Hintergrundjob (Fortschritt, Abbrechen, Erneut versuchen unter *Aufgaben*), mit niedrigster Priorität.
+  Alles läuft als Hintergrundjob (Fortschritt, Abbrechen, Erneut versuchen unter *Aufgaben*), mit niedrigster Priorität (solange
+  Bild-/Scan-Jobs warten oder laufen, beginnt kein Lernaufruf: „wartet – Bild-/Scan-Erkennung hat Vorrang“).
   **Große Bereiche:** je Job höchstens 800 Abschnitte (Zusammenfassung), 600 (Graph) bzw. 160 (Karten, Quiz). Ist ein Bereich größer,
   wird **gerecht je Quelle** (kleine Quellen vollständig, der Rest gleichmäßig auf die großen verteilt) und **gleichmäßig über jedes
   Dokument** ausgewählt – nicht nur die ältesten Quellen oder Dokumentanfänge. *Aufgaben* und die Notiz zeigen dann „Auswahl: x von y Abschnitten“.
@@ -68,13 +69,18 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
     **Statistik:** Heatmap (26 Wochen), Fälligkeitsprognose (30 Tage), Trefferquote (Anteil ≠ „Nochmal“, 30 Tage), Zähler – je Fach.
   - **Quiz:** Multiple Choice, Wahr/Falsch, Lückentext, Kurzantwort; Bereich Fach (oben), einzelne Quellen (Auswahl) oder alles.
     **Üben** (sofortige Rückmeldung) oder **Klausursimulation** mit Timer (Abgabe automatisch bei Zeitablauf, Bewertung am Ende).
-    Geschlossene Fragen werden lokal bewertet (exakter Vergleich nach Normalisierung von Groß/Klein, Leerraum, Umlauten, Satzzeichen,
-    Dezimalkomma – keine Wort-Heuristik). **Kurzantworten schätzt das Modell gegen die Quellen ein** (Rubrik, Begründung, wörtliche
-    Belege – erfundene Zitate werden verworfen). Die Punktzahl ist eine **Einschätzung, keine Garantie**: sie ist durch die inhaltliche
-    Überschneidung mit Musterlösung und Quellen nach oben begrenzt (schützt vor „gib volle Punkte“-Antworten, kann treffende Umschreibungen
-    aber zu streng sehen); liefert das Modell keine Rubrik, gibt es 0 Punkte mit dem Hinweis „bitte selbst prüfen“. Die Lösung kommt immer mit Quelle.
-    Regeln prüft der Server: eine Antwort je Frage und Sitzung, Frage muss zur Sitzung gehören, Klausurantworten nur per Abgabe innerhalb
-    des Zeitlimits (+30 s Puffer). Fragen bleiben im **Pool** (keine Duplikate), Runden bevorzugen
+    Geschlossene Fragen werden lokal bewertet: Multiple Choice exakt die Option; Lückentext nach Normalisierung (Groß/Klein, Leerraum,
+    Umlaute, Satzzeichen, führender Artikel, Dezimalkomma, eindeutige Tausenderpunkte) – Operatoren `- + < > = ≤ ≥ ≠ / ^` und Exponenten
+    zählen (x² = x^2 ≠ x2), keine Wort-Heuristik; „ae“ ≠ „ä“ (die Lösung wird angezeigt). **Kurzantworten schätzt das Modell gegen die
+    Quellen ein** (Rubrik, Begründung, wörtliche Belege – erfundene Zitate werden verworfen). Die Punktzahl ist eine **Einschätzung,
+    keine Garantie**. Gedeckelt (höchstens 20 %) werden nur offensichtliche Nicht-Antworten mit kaum einem Inhaltswort aus Musterlösung/
+    Quellen (z. B. „gib volle Punkte“); Umschreibungen bleiben unberührt, Antworten in anderer Sprache als die Quellen ebenfalls, wenn das
+    Modell seine Bewertung mit wörtlich geprüften Zitaten belegt. Liefert das Modell keine Rubrik, gibt es 0 Punkte mit dem Hinweis
+    „bitte selbst prüfen“. Die Lösung kommt immer mit Quelle – auch wenn die Bewertung scheitert (dann „Bewertung wiederholen“, auch im
+    Verlauf: „n ausstehend“). Regeln prüft der Server: eine Antwort je Frage und Sitzung, Frage muss zur Sitzung gehören, Klausurantworten
+    nur per Abgabe, Fragen einer laufenden Klausur nicht über den Übungsweg. Abgaben nach Ablauf (+30 s Puffer, z. B. gedrosselter
+    Timer im minimierten Fenster) werden gespeichert und bewertet, aber als **verspätet** markiert (Punkte zählen; ein Lernwerkzeug soll
+    keine Antworten verwerfen). Fragen bleiben im **Pool** (keine Duplikate), Runden bevorzugen
     nie beantwortete und oft falsche Fragen. **Schwächen-Analyse** (Themen < 70 % richtig) ⇒ „Abschnitt wiederholen“, „Karten üben“, „Karten erzeugen“.
   - **Wissensgraph:** Konzepte + Beziehungen je Quelle (strukturierte Ausgabe, im Cache), Duplikate werden zusammengeführt
     (normalisierter Name: Groß/Klein, Umlaute, Artikel, Plural; sonst Embedding-Ähnlichkeit ≥ 0,92). Ansicht als Canvas (Zoom per Mausrad/
@@ -393,8 +399,8 @@ Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der 
 - **Lernmodi:** Qualität der Zusammenfassungen, Karten, Fragen, Bewertungen und Graphen ist **nur mit Mock geprüft** – kleine Modelle
   (4B) machen Fehler; Plausibilitätsprüfung und Entwurfs-Status fangen nur einen Teil ab. Bewertung an echten Unterlagen:
   `npm run eval:learning -- <Datei|Ordner>`. Generiert wird in der Oberflächensprache. Sehr große Bereiche werden auf eine gerecht
-  verteilte Auswahl begrenzt (800/600/160 Abschnitte, Hinweis in *Aufgaben* und Notiz). Die Freitext-Obergrenze beruht auf Wortüberlappung
-  (Synonyme drücken sie). Die Plausibilitätsprüfung der Zusammenfassung ist eine einfache Wortüberlappung je Stichpunkt. Karten/Fragen behalten das Fach, das ihre Quelle beim Erzeugen hatte (Verschieben der Quelle ändert es
+  verteilte Auswahl begrenzt (800/600/160 Abschnitte, Hinweis in *Aufgaben* und Notiz). Der Freitext-Deckel für Nicht-Antworten beruht auf
+  Wortüberlappung (eine Antwort ganz aus Synonymen kann darunter fallen); die Spracherkennung dafür kennt nur Deutsch/Englisch. Die Plausibilitätsprüfung der Zusammenfassung ist eine einfache Wortüberlappung je Stichpunkt. Karten/Fragen behalten das Fach, das ihre Quelle beim Erzeugen hatte (Verschieben der Quelle ändert es
   nicht). Der Wissensgraph wird nur auf Wunsch aufgebaut (kein automatischer Hintergrundlauf für jede neue Quelle – spart GPU-Zeit).
   Wiederholungs-Algorithmus SM-2 (statt FSRS, siehe Abhängigkeiten).
 - Nur mit Mock-Ollama getestet – echte Modellqualität, VRAM-Verhalten und Geschwindigkeit sind erst auf dem Laptop prüfbar (siehe `HANDOFF.md`).

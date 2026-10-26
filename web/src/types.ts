@@ -295,7 +295,7 @@ export interface LearnJob {
   total: number | null;
   detail: string | null;
   result: Record<string, number> | null;
-  note: 'waiting_ollama' | 'waiting_chat' | null;
+  note: 'waiting_ollama' | 'waiting_chat' | 'waiting_media' | null;
   etaSec: number | null;
   createdAt: number;
   updatedAt: number;
@@ -365,10 +365,12 @@ export interface QuizQuestion {
 
 export interface QuizResult {
   score: number;
+  /** Freitext abgegeben, Bewertung durch das Modell steht noch aus (Lösung ist trotzdem dabei) */
+  pending?: boolean;
   answer: string;
   explanation: string | null;
   source: LearnRef;
-  feedback: { score: number; rubric: { criterion: string; met: boolean }[]; reasoning: string; quotes: { doc: number; text: string }[]; refs: LearnRef[]; unverified?: boolean; capped?: boolean } | null;
+  feedback?: { score: number; rubric: { criterion: string; met: boolean }[]; reasoning: string; quotes: { doc: number; text: string }[]; refs: LearnRef[]; unverified?: boolean; capped?: boolean } | null;
 }
 
 export interface Weakness {
