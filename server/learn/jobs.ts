@@ -1,4 +1,4 @@
-import { tx, type DB } from '../db.ts';
+import { getMeta, setMeta, tx, type DB } from '../db.ts';
 import type { EventBus } from '../events.ts';
 import { HttpError, type Library } from '../library.ts';
 import type { SettingsStore } from '../settings.ts';
@@ -13,6 +13,7 @@ import { OllamaError, type OllamaClient } from '../ollama/client.ts';
 import {
   callValidated,
   CARD_SCHEMA,
+  citesIn,
   cardMessages,
   GRAPH_SCHEMA,
   graphMessages,
@@ -33,7 +34,7 @@ import {
   type Level,
   type QuestionDraft,
 } from './prompts.ts';
-import { documentsBlock, fingerprint, groupChunks, groupKey, loadScope, locOf, refOf, type LChunk, type LearnScope, type Ref } from './text.ts';
+import { documentsBlock, fingerprint, groupChunks, groupKey, loadScope, locOf, refOf, support, type LChunk, type LearnScope, type Ref } from './text.ts';
 
 export type LearnKind = 'summary' | 'cards' | 'quiz' | 'graph';
 export type LearnState = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
@@ -84,6 +85,8 @@ interface Active {
   startProgress: number;
   progress: number;
   total: number | null;
+  /** einmal pro Job festgehalten: Modell/Kontext/Sprache (Cache-Schlüssel und Aufrufe passen zusammen) */
+  cfg: { model: string; numCtx: number; lang: 'de' | 'en' };
 }
 
 /** Obergrenzen pro Job (Laufzeit, Speicher, Qualität vor Menge). */
@@ -102,6 +105,13 @@ export const LIMITS = {
 /** Ab dieser Ähnlichkeit gelten zwei Karten/Fragen/Konzepte als Duplikat. */
 export const DUP_SIMILARITY = 0.92;
 const LEVEL_PREDICT: Record<Level, number> = { tldr: 400, outline: 1000, detailed: 1500, cheatsheet: 1200 };
+/** Antwortlänge je Aufgabe (höchstens ein Viertel von num_ctx – das Text-Budget rechnet mit demselben Wert) */
+const TASK_PREDICT = { map: 900, cards: 1500, quiz: 1800, graph: 1200 };
+export const predictFor = (base: number, numCtx: number) => Math.min(base, Math.floor(numCtx / 4));
+/** nach so vielen Zeitüberschreitungen in Folge bricht ein Job ab (statt endlos "wartet auf Ollama") */
+const MAX_TIMEOUTS = 3;
+/** Map-Ausgabe gilt als schwach belegt, wenn weniger als dieser Anteil ihrer Inhaltswörter im Abschnitt steht */
+const WEAK_SUPPORT = 0.4;
 
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
@@ -134,6 +144,8 @@ export interface LearnDeps {
   log: (msg: string, extra?: unknown) => void;
   /** Tests: Fehler im letzten Schreibschritt einschleusen (Transaktion muss zurückrollen) */
   failBeforeCommit?: (kind: LearnKind) => void;
+  /** Zeitlimit je Modellaufruf (Standard 10 min; Tests kürzer) */
+  callTimeoutMs?: number;
 }
 
 /**
@@ -310,7 +322,7 @@ export class LearnService {
         this.waker = null;
         continue;
       }
-      const a: Active = { id: job.id, ctrl: new AbortController(), userCancelled: false, sources: new Set(), note: null, startedAt: Date.now(), startProgress: 0, progress: 0, total: null };
+      const a: Active = { id: job.id, ctrl: new AbortController(), userCancelled: false, sources: new Set(), note: null, startedAt: Date.now(), startProgress: 0, progress: 0, total: null, cfg: { model: '', numCtx: 8192, lang: 'de' } };
       this.active = a;
       this.emit(job.id, true);
       try {
@@ -385,25 +397,32 @@ export class LearnService {
    * und wiederholt den Schritt danach. Ollama offline -> geduldig warten (Backoff), wie die Medien-Queue.
    */
   private async llm<T>(a: Active, fn: (o: CallOpts) => Promise<T>): Promise<T> {
-    const { scheduler, settings, client } = this.deps;
+    const { scheduler, client } = this.deps;
     let backoff = 2000;
     let httpFailures = 0;
+    let timeouts = 0;
     for (;;) {
       if (scheduler.chatActive) this.setNote(a, 'waiting_chat');
       const release = await scheduler.acquire('learn', a.ctrl.signal).catch(() => {
         throw codedError('abgebrochen', 'learn_cancelled');
       });
       const chat = scheduler.chatSignal();
+      // höhere Klasse (Embedding/Medien) wartet -> Slot abgeben und Schritt danach wiederholen
+      const preempt = scheduler.holderSignal();
       try {
         this.setNote(a, null);
-        const s = settings.get();
-        return await fn({ client, model: s.chatModel, numCtx: s.numCtx, think: await this.think(s.chatModel), signal: AbortSignal.any([a.ctrl.signal, chat]) });
+        return await fn({ client, model: a.cfg.model, numCtx: a.cfg.numCtx, think: await this.think(a.cfg.model), signal: AbortSignal.any([a.ctrl.signal, chat, preempt]), timeoutMs: this.deps.callTimeoutMs });
       } catch (err) {
         if (a.ctrl.signal.aborted) throw codedError('abgebrochen', 'learn_cancelled');
-        if (chat.aborted) continue; // Chat hat Vorrang: Schritt nach der Antwort wiederholen
+        if (chat.aborted || preempt.aborted) continue; // Vorrang: Schritt danach wiederholen (fertige liegen im Cache)
         if (err instanceof OllamaError && err.code === 'model_missing') throw codedError(err.message, 'learn_model_missing', err);
         if (err instanceof OllamaError && err.code === 'oom') throw codedError(err.message, 'learn_oom', err);
         if (err instanceof OllamaError && err.code === 'http' && ++httpFailures >= 3) throw codedError(err.message, 'learn_failed', err);
+        if (err instanceof OllamaError && err.code === 'timeout') {
+          // Ollama erreichbar, aber zu langsam (Modell zu groß für die GPU?) -> nicht endlos warten
+          if (++timeouts >= MAX_TIMEOUTS) throw codedError(err.message, 'learn_timeout', err);
+          continue;
+        }
         if (!isTransient(err) && !(err instanceof OllamaError && err.code === 'http')) throw err;
       } finally {
         release();
@@ -411,6 +430,24 @@ export class LearnService {
       this.setNote(a, 'waiting_ollama');
       await sleep(backoff, a.ctrl.signal);
       backoff = Math.min(60_000, backoff * 2);
+    }
+  }
+
+  /**
+   * Eine Textgruppe verarbeiten. Liefert das Modell auch nach 3 Versuchen keine gültige Ausgabe, wird die Gruppe einmal
+   * halbiert (kürzere Eingabe/Ausgabe) und sonst übersprungen – eine kaputte Gruppe kippt nicht den ganzen Job.
+   */
+  private async tryGroup<T>(g: LChunk[], run: (g: LChunk[]) => Promise<T>, stats: { failed: number }, depth = 0): Promise<{ g: LChunk[]; r: T }[]> {
+    try {
+      return [{ g, r: await run(g) }];
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'learn_invalid_output') throw err;
+      if (depth === 0 && g.length > 1) {
+        const mid = Math.ceil(g.length / 2);
+        return [...(await this.tryGroup(g.slice(0, mid), run, stats, 1)), ...(await this.tryGroup(g.slice(mid), run, stats, 1))];
+      }
+      stats.failed++;
+      return [];
     }
   }
 
@@ -464,43 +501,65 @@ export class LearnService {
   private async run(job: JobRow, params: LearnParams, a: Active): Promise<void> {
     const max = job.kind === 'summary' ? LIMITS.summaryChunks : job.kind === 'graph' ? LIMITS.graphChunks : job.kind === 'cards' ? LIMITS.cardsChunks : LIMITS.quizChunks;
     if (job.kind === 'graph' && params.scope.kind === 'chat') throw codedError('Graph nur aus Quellen', 'learn_invalid_scope');
+    const s = this.deps.settings.get();
+    a.cfg = { model: s.chatModel, numCtx: s.numCtx, lang: s.language };
     const loaded = loadScope(this.deps.db, params.scope, max);
     if (!loaded.chunks.length) throw codedError('Kein Text im Bereich', 'learn_no_text');
     for (const c of loaded.chunks) if (c.sourceId !== null) a.sources.add(c.sourceId);
+    // Kennzahlen der Auswahl (bei zu großem Bereich: gerechte, gleichmäßig verteilte Auswahl – Hinweis in der Oberfläche)
+    const scope = { chunks: loaded.chunks.length, total: loaded.total, truncated: loaded.truncated ? 1 : 0 };
     if (job.kind === 'summary') return this.runSummary(a, params, loaded);
-    if (job.kind === 'cards') return this.runCards(a, params, loaded.chunks);
-    if (job.kind === 'quiz') return this.runQuiz(a, params, loaded.chunks);
-    return this.runGraph(a, loaded.chunks);
+    if (job.kind === 'cards') return this.runCards(a, params, loaded.chunks, scope);
+    if (job.kind === 'quiz') return this.runQuiz(a, params, loaded.chunks, scope);
+    return this.runGraph(a, loaded.chunks, scope);
   }
 
   private async runSummary(a: Active, params: LearnParams, loaded: ReturnType<typeof loadScope>): Promise<void> {
-    const s = this.deps.settings.get();
-    const lang = s.language;
+    const { lang, numCtx, model } = a.cfg;
     const level: Level = LEVELS.includes(params.level as Level) ? params.level! : 'outline';
-    const mapPredict = Math.min(900, Math.floor(s.numCtx / 4));
-    const groups = groupChunks(loaded.chunks, LearnService.docBudget(s.numCtx, mapPredict));
+    const mapPredict = predictFor(TASK_PREDICT.map, numCtx);
+    // globale Nummer je Abschnitt (bleibt auch beim Halbieren einer Gruppe erhalten)
+    const chunks = loaded.chunks.map((c, i) => ({ ...c, gi: i }));
+    const groups = groupChunks(chunks, LearnService.docBudget(numCtx, mapPredict));
     const refs = loaded.chunks.map((c, i) => refOf(c, i + 1));
+    const stats = { failed: 0 };
+    let weak = 0;
     let done = 0;
     const total = groups.length + 1;
     this.progress(a, 0, total);
     const partials: string[] = [];
-    let offset = 0;
     for (const g of groups) {
-      const local = await this.cached(groupKey('summary-map:v1', g, [lang, s.chatModel]), g[0]!.sourceId, () =>
-        this.llm(a, (o) => callValidated(o, mapMessages(documentsBlock(g), lang), null, mapPredict, (raw) => parseNotes(raw, g.length))),
+      const parts = await this.tryGroup(
+        g,
+        (sub) =>
+          this.cached(groupKey('summary-map:v1', sub, [lang, model]), sub[0]!.sourceId, () =>
+            this.llm(a, (o) => callValidated(o, mapMessages(documentsBlock(sub), lang), null, mapPredict, (raw) => parseNotes(raw, sub.length))),
+          ),
+        stats,
       );
-      partials.push(renumber(local, offset));
-      offset += g.length;
+      for (const { g: sub, r: local } of parts) {
+        // kurze Plausibilitätsprüfung je Stichpunkt: steht die Aussage überhaupt im Abschnitt?
+        const srcText = sub.map((c) => c.text).join('\n');
+        weak += local.split('\n').filter((l) => /^\s*[-*]/.test(l) && support(l.replace(/\[\d+\]/g, ''), srcText) < WEAK_SUPPORT).length;
+        partials.push(renumber(local, (sub[0] as LChunk & { gi: number }).gi));
+      }
       this.progress(a, ++done, total);
     }
+    if (!partials.length) throw codedError('Modell lieferte für keinen Teil eine gültige Ausgabe', 'learn_invalid_output');
     // Reduce: so lange zusammenführen, bis alles in einen Aufruf passt (Kontext nur num_ctx)
-    const predict = Math.min(LEVEL_PREDICT[level], Math.floor(s.numCtx / 3));
-    const budget = LearnService.docBudget(s.numCtx, predict);
+    const predict = Math.min(LEVEL_PREDICT[level], Math.floor(numCtx / 3));
+    const budget = LearnService.docBudget(numCtx, predict);
     let notes = partials;
     const cut = () => {
       // Modell kürzt nicht (mehr): hart auf das Budget begrenzen, Notiz bekommt den Hinweis "gekürzt"
       notes = [notes.join('\n').slice(0, budget * 3)];
       loaded.truncated = true;
+    };
+    // nur Quellnummern behalten, die in der jeweiligen Eingabe vorkamen (das Modell darf keine erfinden)
+    const reduce = (text: string, lvl: Level | 'merge') => {
+      const input = text.slice(0, budget * 3);
+      const allowed = citesIn(input);
+      return this.llm(a, (o) => callValidated(o, reduceMessages(input, lvl, lang, loaded.title), null, predict, (raw) => parseNotes(raw, allowed)));
     };
     for (let round = 0; estimateTokens(notes.join('\n')) > budget; round++) {
       const before = estimateTokens(notes.join('\n'));
@@ -517,11 +576,7 @@ export class LearnService {
       const merged: string[] = [];
       for (const b of batches) {
         const text = b.join('\n');
-        merged.push(
-          b.length === 1 && estimateTokens(text) <= budget / 2
-            ? text
-            : await this.llm(a, (o) => callValidated(o, reduceMessages(text.slice(0, budget * 3), 'merge', lang, loaded.title), null, predict, (raw) => parseNotes(raw, refs.length))),
-        );
+        merged.push(b.length === 1 && estimateTokens(text) <= budget / 2 ? text : await reduce(text, 'merge'));
       }
       notes = merged;
       if (estimateTokens(notes.join('\n')) >= before) {
@@ -529,7 +584,7 @@ export class LearnService {
         break;
       }
     }
-    const final = await this.llm(a, (o) => callValidated(o, reduceMessages(notes.join('\n').slice(0, budget * 3), level, lang, loaded.title), null, predict, (raw) => parseNotes(raw, refs.length)));
+    const final = await reduce(notes.join('\n'), level);
     // nur tatsächlich zitierte Quellen, kompakt neu nummeriert (1..k)
     const used = [...usedCitationNumbers(final)].filter((n) => refs[n - 1]).sort((x, y) => x - y);
     const map = new Map(used.map((n, i) => [n, i + 1]));
@@ -541,9 +596,18 @@ export class LearnService {
       const noteId = Number(
         this.deps.db
           .prepare('INSERT INTO notes(title, body, level, scope, citations, subject_id, ai, created_at, updated_at) VALUES (?, ?, ?, ?, ?, (SELECT id FROM subjects WHERE id = ?), 1, ?, ?)')
-          .run(loaded.title, body, level, JSON.stringify({ ...params.scope, truncated: loaded.truncated }), JSON.stringify(citations), loaded.subjectId, now, now).lastInsertRowid,
+          .run(
+            loaded.title,
+            body,
+            level,
+            JSON.stringify({ ...params.scope, truncated: loaded.truncated, chunks: loaded.chunks.length, total: loaded.total, failed: stats.failed, weak }),
+            JSON.stringify(citations),
+            loaded.subjectId,
+            now,
+            now,
+          ).lastInsertRowid,
       );
-      return { noteId, chunks: loaded.chunks.length, truncated: loaded.truncated ? 1 : 0 };
+      return { noteId, chunks: loaded.chunks.length, total: loaded.total, truncated: loaded.truncated ? 1 : 0, failed: stats.failed, weak };
     });
   }
 
@@ -553,27 +617,37 @@ export class LearnService {
     chunks: LChunk[],
     task: string,
     want: number,
+    predict: number,
     call: (o: CallOpts, docs: string, perGroup: number, g: LChunk[]) => Promise<{ items: T[]; rejected: number }>,
-  ): Promise<{ items: (T & { chunk: LChunk })[]; rejected: number }> {
-    const s = this.deps.settings.get();
-    // Auswahl/Fach: Quellen abwechselnd bedienen (sonst kämen alle Karten aus der ersten Quelle)
+  ): Promise<{ items: (T & { chunk: LChunk })[]; rejected: number; failed: number }> {
+    const { lang, numCtx, model } = a.cfg;
+    // Auswahl/Fach: Quellen abwechselnd bedienen, innerhalb einer Quelle über das ganze Dokument gestreut
+    // (der Lauf stoppt, sobald genug Kandidaten da sind – sonst kämen alle aus Quelle 1 bzw. vom Dokumentanfang)
     const bySource = new Map<number | null, LChunk[][]>();
-    for (const g of groupChunks(chunks, Math.min(2500, LearnService.docBudget(s.numCtx, 1500)))) bySource.set(g[0]!.sourceId, [...(bySource.get(g[0]!.sourceId) ?? []), g]);
-    const lanes = [...bySource.values()];
+    for (const g of groupChunks(chunks, Math.min(2500, LearnService.docBudget(numCtx, predict)))) bySource.set(g[0]!.sourceId, [...(bySource.get(g[0]!.sourceId) ?? []), g]);
+    const spread = (l: LChunk[][]) => l.map((g, i) => ({ g, k: (i * 0.6180339887) % 1 })).sort((x, y) => x.k - y.k).map((x) => x.g);
+    const lanes = [...bySource.values()].map(spread);
     const groups: LChunk[][] = [];
-    for (let i = 0; groups.length < chunks.length && lanes.some((l) => l[i]); i++) for (const l of lanes) if (l[i]) groups.push(l[i]!);
+    for (let i = 0; lanes.some((l) => l[i]); i++) for (const l of lanes) if (l[i]) groups.push(l[i]!);
     const perGroup = Math.min(10, Math.max(2, Math.ceil(want / groups.length) + 1));
     const items: (T & { chunk: LChunk })[] = [];
     let rejected = 0;
+    const stats = { failed: 0 };
     this.progress(a, 0, groups.length + 1);
     for (let i = 0; i < groups.length && items.length < want * 2; i++) {
-      const g = groups[i]!;
-      const r = await this.cached(groupKey(task, g, [s.language, perGroup, s.chatModel]), g[0]!.sourceId, () => this.llm(a, (o) => call(o, documentsBlock(g), perGroup, g)));
-      items.push(...r.items.map((it) => ({ ...it, chunk: g[it.doc - 1]! })));
-      rejected += r.rejected;
+      const parts = await this.tryGroup(
+        groups[i]!,
+        (g) => this.cached(groupKey(task, g, [lang, perGroup, model]), g[0]!.sourceId, () => this.llm(a, (o) => call(o, documentsBlock(g), perGroup, g))),
+        stats,
+      );
+      for (const { g, r } of parts) {
+        items.push(...r.items.map((it) => ({ ...it, chunk: g[it.doc - 1]! })));
+        rejected += r.rejected;
+      }
       this.progress(a, i + 1, groups.length + 1);
     }
-    return { items, rejected };
+    if (stats.failed && !items.length && stats.failed >= groups.length) throw codedError('Modell lieferte für keinen Teil eine gültige Ausgabe', 'learn_invalid_output');
+    return { items, rejected, failed: stats.failed };
   }
 
   /** Duplikate entfernen: gleicher Text-Fingerabdruck oder Embedding-Ähnlichkeit ≥ DUP_SIMILARITY (auch gegen Bestand). */
@@ -607,11 +681,11 @@ export class LearnService {
     return r ?? { subjectId: null, kind: null };
   }
 
-  private async runCards(a: Active, params: LearnParams, chunks: LChunk[]): Promise<void> {
-    const s = this.deps.settings.get();
+  private async runCards(a: Active, params: LearnParams, chunks: LChunk[], scope: Record<string, number>): Promise<void> {
     const max = Math.min(LIMITS.maxCards, Math.max(1, params.count ?? 20));
-    const { items, rejected } = await this.collect<CardDraft>(a, chunks, 'cards:v1', max, async (o, docs, n, g) => {
-      const r = await callValidated(o, cardMessages(docs, n, s.language), CARD_SCHEMA, 1500, (raw) => parseCards(raw, g, n));
+    const predict = predictFor(TASK_PREDICT.cards, a.cfg.numCtx);
+    const { items, rejected, failed } = await this.collect<CardDraft>(a, chunks, 'cards:v1', max, predict, async (o, docs, n, g) => {
+      const r = await callValidated(o, cardMessages(docs, n, a.cfg.lang), CARD_SCHEMA, predict, (raw) => parseCards(raw, g, n));
       return { items: r.cards, rejected: r.rejected };
     });
     const srcIds = [...a.sources];
@@ -628,18 +702,19 @@ export class LearnService {
       );
       for (const c of kept) {
         const meta = this.sourceMeta(c.chunk.sourceId);
-        const type = meta.kind === 'image' ? 'image' : c.type;
+        // Frage/Antwort aus einem Bild -> Bildkarte; Lückentext bleibt Lückentext (das Bild zeigt die Karte zusätzlich)
+        const type = meta.kind === 'image' && c.type === 'qa' ? 'image' : c.type;
         ins.run(type, c.front, c.back, meta.subjectId, c.chunk.sourceId, c.chunk.id, c.chunk.sourceId !== null ? c.chunk.sourceName : null, JSON.stringify(c.chunk.chatId ? { chat: c.chunk.chatId, t: c.chunk.sourceName } : locOf(c.chunk)), a.id, now, now);
       }
-      return { created: kept.length, rejected, duplicates };
+      return { created: kept.length, rejected, duplicates, failed, ...scope };
     });
   }
 
-  private async runQuiz(a: Active, params: LearnParams, chunks: LChunk[]): Promise<void> {
-    const s = this.deps.settings.get();
+  private async runQuiz(a: Active, params: LearnParams, chunks: LChunk[], scope: Record<string, number>): Promise<void> {
     const max = Math.min(LIMITS.maxQuestions, Math.max(1, params.count ?? 12));
-    const { items, rejected } = await this.collect<QuestionDraft>(a, chunks, 'quiz:v1', max, async (o, docs, n, g) => {
-      const r = await callValidated(o, quizMessages(docs, n, s.language), QUIZ_SCHEMA, 1800, (raw) => parseQuiz(raw, g, n));
+    const predict = predictFor(TASK_PREDICT.quiz, a.cfg.numCtx);
+    const { items, rejected, failed } = await this.collect<QuestionDraft>(a, chunks, 'quiz:v1', max, predict, async (o, docs, n, g) => {
+      const r = await callValidated(o, quizMessages(docs, n, a.cfg.lang), QUIZ_SCHEMA, predict, (raw) => parseQuiz(raw, g, n));
       return { items: r.questions, rejected: r.rejected };
     });
     const existing = (this.deps.db.prepare('SELECT question FROM quiz_questions WHERE source_id IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT 2000').all(JSON.stringify([...a.sources])) as {
@@ -659,18 +734,30 @@ export class LearnService {
           ins.run(q.type, q.question, q.options ? JSON.stringify(q.options) : null, q.answer, q.explanation, (q.chunk.heading ?? q.chunk.sourceName).slice(0, 200), fingerprint(q.question), meta.subjectId, q.chunk.sourceId, q.chunk.id, q.chunk.sourceId !== null ? q.chunk.sourceName : null, JSON.stringify(q.chunk.chatId ? { chat: q.chunk.chatId, t: q.chunk.sourceName } : locOf(q.chunk)), now).changes,
         );
       }
-      return { created, rejected, duplicates: duplicates + kept.length - created };
+      return { created, rejected, duplicates: duplicates + kept.length - created, failed, ...scope };
     });
   }
 
   /* ------------------------------------------------------------ Wissensgraph */
 
-  private async runGraph(a: Active, chunks: LChunk[]): Promise<void> {
+  private async runGraph(a: Active, chunks: LChunk[], scope: Record<string, number>): Promise<void> {
     const { db } = this.deps;
-    const s = this.deps.settings.get();
+    const { lang, numCtx, model } = a.cfg;
+    const predict = predictFor(TASK_PREDICT.graph, numCtx);
+    // Konzept-Vektoren gehören zu einem Embedding-Modell: nach einem Modellwechsel nicht mehr vergleichbar -> verwerfen
+    const embedModel = this.deps.vectors.info().model ?? this.deps.settings.get().embeddingModel;
+    const vecModel = getMeta(db, 'concept_vec_model');
+    if (vecModel === null) setMeta(db, 'concept_vec_model', embedModel); // erster Lauf: vorhandene Vektoren stammen vom aktuellen Modell
+    else if (vecModel !== embedModel) {
+      tx(db, () => {
+        db.exec('UPDATE concepts SET vec = NULL');
+        setMeta(db, 'concept_vec_model', embedModel);
+      });
+    }
+    const stats = { failed: 0 };
     const bySource = new Map<number, LChunk[]>();
     for (const c of chunks) bySource.set(c.sourceId!, [...(bySource.get(c.sourceId!) ?? []), c]);
-    const plan = [...bySource.entries()].map(([id, cs]) => ({ id, groups: groupChunks(cs, LearnService.docBudget(s.numCtx, 1200)) }));
+    const plan = [...bySource.entries()].map(([id, cs]) => ({ id, groups: groupChunks(cs, LearnService.docBudget(numCtx, predict)) }));
     const total = plan.reduce((n, p) => n + p.groups.length, 0);
     let done = 0;
     let concepts = 0;
@@ -679,9 +766,13 @@ export class LearnService {
     const known = this.conceptVectors();
     for (const p of plan) {
       const drafts: (GraphDraft & { group: LChunk[] })[] = [];
-      for (const g of p.groups) {
-        const d = await this.cached(groupKey('graph:v1', g, [s.language, s.chatModel]), p.id, () => this.llm(a, (o) => callValidated(o, graphMessages(documentsBlock(g), s.language), GRAPH_SCHEMA, 1200, (raw) => parseGraph(raw, g))));
-        drafts.push({ ...d, group: g });
+      for (const group of p.groups) {
+        const parts = await this.tryGroup(
+          group,
+          (g) => this.cached(groupKey('graph:v1', g, [lang, model]), p.id, () => this.llm(a, (o) => callValidated(o, graphMessages(documentsBlock(g), lang), GRAPH_SCHEMA, predict, (raw) => parseGraph(raw, g)))),
+          stats,
+        );
+        for (const { g, r } of parts) drafts.push({ ...r, group: g });
         this.progress(a, ++done, total);
       }
       // Konzepte der Quelle zusammenführen (gleicher normalisierter Name), begrenzen
@@ -736,18 +827,20 @@ export class LearnService {
           if (!x || !y || x === y) continue;
           const [ea, eb] = x < y ? [x, y] : [y, x];
           const row = db
-            .prepare('INSERT INTO concept_edges(a, b, label, source_id) VALUES (?, ?, ?, ?) ON CONFLICT(a, b, source_id) DO UPDATE SET label = excluded.label RETURNING id')
+            // vom Nutzer umbenannte Kanten (edited = 1) behalten ihre Bezeichnung
+            .prepare('INSERT INTO concept_edges(a, b, label, source_id) VALUES (?, ?, ?, ?) ON CONFLICT(a, b, source_id) DO UPDATE SET label = CASE WHEN edited THEN label ELSE excluded.label END RETURNING id')
             .get(ea, eb, r.label, p.id) as { id: number };
           keepEdges.push(row.id);
           relations++;
         }
         // Veraltete Bezüge dieser Quelle entfernen (Nutzer-Korrekturen an weiter vorhandenen Konzepten/Kanten bleiben)
-        db.prepare('DELETE FROM concept_edges WHERE source_id = ? AND id NOT IN (SELECT value FROM json_each(?))').run(p.id, JSON.stringify(keepEdges));
+        db.prepare('DELETE FROM concept_edges WHERE source_id = ? AND edited = 0 AND id NOT IN (SELECT value FROM json_each(?))').run(p.id, JSON.stringify(keepEdges));
         db.prepare('DELETE FROM concept_sources WHERE source_id = ? AND concept_id NOT IN (SELECT value FROM json_each(?))').run(p.id, JSON.stringify([...idOf.values()]));
       });
       await new Promise<void>((r) => setImmediate(r));
     }
-    this.finish(a, 'graph', () => ({ concepts, relations, sources: plan.length }));
+    if (stats.failed && stats.failed >= total && !concepts && !relations) throw codedError('Modell lieferte für keinen Teil eine gültige Ausgabe', 'learn_invalid_output');
+    this.finish(a, 'graph', () => ({ concepts, relations, sources: plan.length, failed: stats.failed, ...scope }));
   }
 
   private conceptVectors(): { id: number; vec: Float32Array }[] {

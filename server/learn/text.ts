@@ -78,15 +78,16 @@ const CHUNK_COLS = `c.id, c.source_id AS sourceId, s.name AS sourceName, s.kind 
  * Abschnitte eines Bereichs in Lesereihenfolge (je Quelle nach ord), höchstens `max`. Fach/Auswahl schließen Archiv-Inhalte ein.
  * Chat: jede Nachricht wird ein Pseudo-Abschnitt (ohne Quelle).
  */
-export function loadScope(db: DB, scope: LearnScope, max: number): { chunks: LChunk[]; truncated: boolean; title: string; subjectId: number | null } {
+export function loadScope(db: DB, scope: LearnScope, max: number): { chunks: LChunk[]; truncated: boolean; total: number; title: string; subjectId: number | null } {
   if (scope.kind === 'chat') {
     const chat = db.prepare('SELECT title FROM chat_sessions WHERE id = ?').get(scope.id) as { title: string } | undefined;
     if (!chat) throw new HttpError(404, 'not_found', 'Chat nicht gefunden');
-    const rows = db
-      .prepare("SELECT role, content FROM chat_messages WHERE session_id = ? AND content != '' AND status IN ('done', 'aborted') ORDER BY id LIMIT ?")
-      .all(scope.id, max + 1) as { role: string; content: string }[];
+    const all = db
+      .prepare("SELECT role, content FROM chat_messages WHERE session_id = ? AND content != '' AND status IN ('done', 'aborted') ORDER BY id LIMIT 5000")
+      .all(scope.id) as { role: string; content: string }[];
+    const rows = evenPick(all.length, max).map((i) => all[i]!);
     const name = `Chat: ${chat.title || '…'}`;
-    const chunks = rows.slice(0, max).map((r, i) => ({
+    const chunks = rows.map((r, i) => ({
       id: null,
       sourceId: null,
       sourceName: name,
@@ -100,7 +101,7 @@ export function loadScope(db: DB, scope: LearnScope, max: number): { chunks: LCh
       origin: null,
       chatId: scope.id,
     }));
-    return { chunks, truncated: rows.length > max, title: chat.title || name, subjectId: null };
+    return { chunks, truncated: all.length > max, total: all.length, title: chat.title || name, subjectId: null };
   }
   let ids: number[];
   let title: string;
@@ -114,20 +115,62 @@ export function loadScope(db: DB, scope: LearnScope, max: number): { chunks: LCh
   } else {
     const list = scope.kind === 'source' ? [scope.id] : scope.ids;
     ids = [...(allowedSourceIds(db, { mode: 'sources', ids: list }) ?? [])];
-    const first = db.prepare('SELECT name, subject_id AS subjectId FROM sources WHERE id = ?').get(list[0]!) as { name: string; subjectId: number | null } | undefined;
+    // Titel/Fach aus der ersten noch vorhandenen Quelle der Auswahl
+    const existing = new Map(
+      (db.prepare('SELECT id, name, subject_id AS subjectId FROM sources WHERE id IN (SELECT value FROM json_each(?))').all(jsonList(list)) as {
+        id: number;
+        name: string;
+        subjectId: number | null;
+      }[]).map((r) => [r.id, r]),
+    );
+    const first = list.map((id) => existing.get(id)).find(Boolean);
     if (!first) throw new HttpError(404, 'not_found', 'Quelle nicht gefunden');
-    title = scope.kind === 'source' ? (scope.heading ? `${first.name} – ${scope.heading}` : first.name) : `${first.name} +${list.length - 1}`;
+    title = scope.kind === 'source' ? (scope.heading ? `${first.name} – ${scope.heading}` : first.name) : existing.size > 1 ? `${first.name} +${existing.size - 1}` : first.name;
     subjectId = first.subjectId;
   }
   const heading = scope.kind === 'source' ? scope.heading : null;
+  // Erst nur IDs (Index), dann gerecht je Quelle und gleichmäßig über jedes Dokument auswählen – nicht nur älteste Quellen/Anfänge
+  const all = db
+    .prepare(`SELECT c.id, c.source_id AS sourceId FROM chunks c WHERE c.source_id IN (SELECT value FROM json_each(?)) ${heading ? 'AND c.heading = ?' : ''} ORDER BY c.source_id, c.ord`)
+    .all(...(heading ? [jsonList(ids), heading] : [jsonList(ids)])) as { id: number; sourceId: number }[];
+  const chosen = all.length > max ? sampleChunks(all, max) : all.map((r) => r.id);
   const rows = db
-    .prepare(
-      `SELECT ${CHUNK_COLS} FROM chunks c JOIN sources s ON s.id = c.source_id
-       WHERE c.source_id IN (SELECT value FROM json_each(?)) ${heading ? 'AND c.heading = ?' : ''}
-       ORDER BY c.source_id, c.ord LIMIT ?`,
-    )
-    .all(...(heading ? [jsonList(ids), heading, max + 1] : [jsonList(ids), max + 1])) as unknown as LChunk[];
-  return { chunks: rows.slice(0, max), truncated: rows.length > max, title, subjectId };
+    .prepare(`SELECT ${CHUNK_COLS} FROM chunks c JOIN sources s ON s.id = c.source_id WHERE c.id IN (SELECT value FROM json_each(?)) ORDER BY c.source_id, c.ord`)
+    .all(jsonList(chosen)) as unknown as LChunk[];
+  return { chunks: rows, truncated: all.length > max, total: all.length, title, subjectId };
+}
+
+/** k von n Indizes gleichmäßig verteilt (Anfang, Mitte, Ende). */
+export function evenPick(n: number, k: number): number[] {
+  if (k >= n) return Array.from({ length: n }, (_, i) => i);
+  return Array.from({ length: Math.max(0, k) }, (_, j) => Math.floor((j * n) / k));
+}
+
+/**
+ * Auswahl bei zu vielen Abschnitten: gerechtes Kontingent je Quelle (kleine Quellen geben ihren Rest an große ab),
+ * innerhalb jeder Quelle gleichmäßig über das Dokument verteilt. `rows` in Lesereihenfolge je Quelle.
+ */
+export function sampleChunks(rows: { id: number; sourceId: number | null }[], max: number): number[] {
+  const bySource = new Map<number | null, number[]>();
+  for (const r of rows) {
+    const l = bySource.get(r.sourceId);
+    if (l) l.push(r.id);
+    else bySource.set(r.sourceId, [r.id]);
+  }
+  const lists = [...bySource.values()].sort((a, b) => a.length - b.length);
+  const quota = lists.map(() => 0);
+  let remaining = max;
+  lists.forEach((l, i) => {
+    quota[i] = Math.min(l.length, Math.floor(remaining / (lists.length - i)));
+    remaining -= quota[i]!;
+  });
+  for (let i = 0; i < lists.length && remaining > 0; i++) {
+    if (quota[i]! < lists[i]!.length) {
+      quota[i]!++;
+      remaining--;
+    }
+  }
+  return lists.flatMap((l, i) => evenPick(l.length, quota[i]!).map((j) => l[j]!));
 }
 
 /** Abschnitte in Gruppen bis `maxTokens` (nie über Quellgrenzen, damit Zwischenergebnisse einer Quelle zugeordnet bleiben). */
@@ -178,9 +221,24 @@ export function groupKey(task: string, group: LChunk[], extra: unknown = null): 
 
 /* ------------------------------------------------------------ Normalisierung / Plausibilität */
 
+// Verneinungen (nicht/kein/not/no) sind bewusst KEINE Stoppwörter: "nimmt ab" ≠ "nimmt nicht ab"
 const STOP = new Set(
-  'der die das den dem des ein eine einer eines einem einen und oder aber nicht ist sind war wird werden mit von zu im in am an auf aus bei für fur als auch wie was wer the a an and or of to in on for is are was be with by as at from that this it its'.split(' '),
+  'der die das den dem des ein eine einer eines einem einen und oder aber ist sind war wird werden mit von zu im in am an auf aus bei für fur als auch wie was wer the a an and or of to in on for is are was be with by as at from that this it its'.split(' '),
 );
+
+/** Text vergleichbar machen: Kleinschrift, ohne Diakritika, Dezimalkomma -> Punkt, Satzzeichen -> Leerzeichen. */
+export function normalizeText(s: string): string {
+  return s
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/(\d),(\d)/g, '$1.$2')
+    .replace(/(\d)\.(\d)/g, '$1$2') // Dezimalpunkt kurz schützen (Zeichen aus dem Privatbereich)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(//g, '.')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /** Inhaltswörter (≥ 3 Zeichen, ohne Stoppwörter), gestemmt, ohne Diakritika. */
 export function contentTokens(s: string): string[] {
@@ -213,6 +271,9 @@ export function normalizeName(name: string): string {
  * Kleine Modelle erfinden gern – Karten/Fragen/Konzepte unter der Schwelle werden verworfen.
  */
 export function support(claim: string, sourceText: string): number {
+  // kurze/numerische Antworten ("pH", "9,81 m/s²") haben kaum Inhaltswörter -> wörtlich im Quelltext enthalten zählt voll
+  const n = normalizeText(claim);
+  if (n && ` ${normalizeText(sourceText)} `.includes(` ${n} `)) return 1;
   const c = [...new Set(contentTokens(claim))];
   if (!c.length) return 0;
   const src = new Set(contentTokens(sourceText));
@@ -226,8 +287,9 @@ export function isQuoteOf(quote: string, sourceText: string): boolean {
   return q.length >= 8 && norm(sourceText).includes(q);
 }
 
+/** Exakte Duplikate (normalisierter Text inkl. Zahlen und Verneinung); ähnliche erkennt die Embedding-Prüfung. */
 export function fingerprint(s: string): string {
-  return cacheKey(contentTokens(s).join(' '));
+  return cacheKey(normalizeText(s));
 }
 
 /** Steuerzeichen raus, Länge begrenzen. */

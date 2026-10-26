@@ -38,14 +38,17 @@ export interface CallOpts {
  */
 export async function callValidated<T>(o: CallOpts, messages: ChatMessage[], format: unknown, numPredict: number, parse: (raw: string) => T | null): Promise<T> {
   for (let attempt = 1; ; attempt++) {
+    // Wiederholung nicht identisch: Hinweis auf die ungültige Antwort + etwas mehr Temperatur (sonst oft dieselbe Ausgabe)
+    const retry: ChatMessage[] =
+      attempt > 1 ? [{ role: 'user', content: format ? 'Your previous answer was invalid. Answer again with valid JSON that follows the schema exactly.' : 'Your previous answer was empty or invalid. Answer again.' }] : [];
     const raw = await o.client.chatOnce(
       {
         model: o.model,
-        messages,
+        messages: [...messages, ...retry],
         think: o.think,
         ...(format ? { format } : {}),
         // gleiche num_ctx wie im Chat – sonst lädt Ollama dasselbe Modell neu (VRAM)
-        options: { num_ctx: o.numCtx, num_predict: numPredict, temperature: 0.2 },
+        options: { num_ctx: o.numCtx, num_predict: numPredict, temperature: 0.2 + 0.25 * (attempt - 1) },
       },
       o.timeoutMs ?? 10 * 60_000,
       o.signal,
@@ -97,20 +100,41 @@ export function reduceMessages(notes: string, level: Level | 'merge', lang: 'de'
     {
       role: 'system',
       content: `TASK: summary-reduce
-You turn study notes into ${LEVEL_TEXT[level]}. Topic: "${title.replace(/["\n]/g, ' ').slice(0, 120)}". Write in ${language(lang)}, Markdown, math in LaTeX ($…$).
+You turn study notes into ${LEVEL_TEXT[level]}. The topic is given in the "topic" attribute of <notes>. Write in ${language(lang)}, Markdown, math in LaTeX ($…$).
 The notes contain source markers like [12]. Keep the markers after the statements they support; never invent new marker numbers. Only use the notes.
 ${SECURITY}`,
     },
-    { role: 'user', content: `<notes>\n${notes.replace(/<\s*\/?\s*notes?\b[^>]*>/gi, '[tag removed]')}\n</notes>` },
+    // Titel (Dateiname!) ist Fremdtext -> in den Datenblock, nicht in den System-Prompt
+    { role: 'user', content: `<notes topic="${title.replace(/["<>\n\r]/g, ' ').slice(0, 120)}">\n${notes.replace(/<\s*\/?\s*notes?\b[^>]*>/gi, '[tag removed]')}\n</notes>` },
   ];
 }
 
+/** Zitatschreibweisen vereinheitlichen: [1, 3] -> [1][3], [2–4] -> [2][3][4] (höchstens 20 Nummern je Klammer). */
+export function normalizeCites(text: string): string {
+  return text.replace(/\[(\d{1,4}(?:\s*[,;–-]\s*\d{1,4}){1,30})\]/g, (m, inner: string) => {
+    const out: number[] = [];
+    for (const part of inner.split(/\s*[,;]\s*/)) {
+      const r = /^(\d{1,4})\s*[–-]\s*(\d{1,4})$/.exec(part);
+      if (r) for (let n = Number(r[1]); n <= Number(r[2]) && out.length < 20; n++) out.push(n);
+      else if (/^\d{1,4}$/.test(part)) out.push(Number(part));
+      else return m;
+    }
+    return out.map((n) => `[${n}]`).join('');
+  });
+}
+
 /** Map-/Reduce-Ausgabe prüfen: nicht leer; [n] außerhalb 1..max werden entfernt. */
-export function parseNotes(raw: string, maxCite: number): string | null {
-  const text = cleanText(raw, 40_000)
-    .replace(/\[(\d{1,4})\]/g, (m, n: string) => (Number(n) >= 1 && Number(n) <= maxCite ? m : ''))
+export function parseNotes(raw: string, allowed: number | Set<number>): string | null {
+  const ok = (n: number) => (typeof allowed === 'number' ? n >= 1 && n <= allowed : allowed.has(n));
+  const text = normalizeCites(cleanText(raw, 40_000))
+    .replace(/\[(\d{1,4})\]/g, (m, n: string) => (ok(Number(n)) ? m : ''))
     .replace(/[ \t]+$/gm, '');
   return text.length >= 3 ? text : null;
+}
+
+/** Quellnummern, die in einem Text vorkommen (Reduce darf nur diese behalten). */
+export function citesIn(text: string): Set<number> {
+  return new Set([...normalizeCites(text).matchAll(/\[(\d{1,4})\]/g)].map((m) => Number(m[1])));
 }
 
 /** Lokale Nummern [k] einer Gruppe auf globale Nummern umschreiben. */
@@ -303,6 +327,10 @@ export interface Grade {
   rubric: { criterion: string; met: boolean }[];
   reasoning: string;
   quotes: { doc: number; text: string }[];
+  /** Modell lieferte keine verwertbare Bewertung (0 Punkte, bitte selbst prüfen) */
+  unverified?: boolean;
+  /** Punktzahl durch die Überschneidung mit Musterlösung/Quellen begrenzt */
+  capped?: boolean;
 }
 
 /** Bewertung prüfen: Punktzahl 0..1 (passend zur Rubrik), Zitate müssen wörtlich im angegebenen Abschnitt stehen. */
@@ -313,12 +341,12 @@ export function parseGrade(raw: string, docs: LChunk[]): Grade | null {
     .slice(0, 8)
     .map((r) => ({ criterion: cleanText(r?.criterion, 300), met: r?.met === true }))
     .filter((r) => r.criterion);
+  // ohne Rubrik keine nachvollziehbare Punktzahl -> ungültig (wird wiederholt, zuletzt "bitte selbst prüfen")
+  if (!rubric.length) return null;
   let score = Math.min(1, Math.max(0, j.score > 1 && j.score <= 100 ? j.score / 100 : j.score));
   // Rubrik ist die Begründung der Punktzahl: weicht das Modell stark ab, zählt die Rubrik
-  if (rubric.length) {
-    const byRubric = rubric.filter((r) => r.met).length / rubric.length;
-    if (Math.abs(byRubric - score) > 0.34) score = byRubric;
-  }
+  const byRubric = rubric.filter((r) => r.met).length / rubric.length;
+  if (Math.abs(byRubric - score) > 0.34) score = byRubric;
   const quotes = (Array.isArray(j.quotes) ? (j.quotes as Record<string, unknown>[]) : [])
     .slice(0, 5)
     .map((q) => ({ doc: Number(q?.source), text: cleanText(q?.text, 500) }))

@@ -158,7 +158,17 @@ export function NotesTab({ subject, noteId, onOpen }: { subject: number | null; 
             {note.ai && <p className="muted small">{t('learn.aiHint')}</p>}
             {note.scope.truncated && (
               <p className="warn small">
-                <Icon name="alert" size={13} /> {t('notes.truncated')}
+                <Icon name="alert" size={13} /> {note.scope.total ? t('notes.sampled', { chunks: note.scope.chunks ?? 0, total: note.scope.total }) : t('notes.truncated')}
+              </p>
+            )}
+            {!!note.scope.failed && (
+              <p className="warn small">
+                <Icon name="alert" size={13} /> {t('notes.partial', { n: note.scope.failed })}
+              </p>
+            )}
+            {!!note.scope.weak && (
+              <p className="warn small">
+                <Icon name="alert" size={13} /> {t('notes.weak', { n: note.scope.weak })}
               </p>
             )}
             <div className="note-body">

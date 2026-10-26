@@ -265,12 +265,21 @@ export function registerLearnRoutes(app: FastifyInstance, s: Services): void {
     async (req) => {
       const q = data.getQuestion(s.db, (req.params as { id: number }).id);
       const b = req.body as { answer: string; sessionId?: number | null };
+      // Regeln je Sitzung: Frage gehört dazu, nur eine Antwort je Frage, Klausur nur über die Abgabe (Zeitlimit dort)
+      let attempt: ReturnType<typeof data.getAttempt>;
+      if (b.sessionId) {
+        const session = data.sessionFor(s.db, b.sessionId, q.id);
+        attempt = data.getAttempt(s.db, b.sessionId, q.id);
+        if (attempt && !attempt.pending) throw new HttpError(409, 'quiz_already_answered', 'Diese Frage wurde bereits beantwortet');
+        if (!attempt && session.mode === 'exam') throw new HttpError(409, 'quiz_not_submitted', 'Klausur zuerst abgeben');
+      }
+      const answer = attempt ? attempt.answer : b.answer;
       let score: number;
       let feedback: Awaited<ReturnType<typeof data.gradeShort>> | null = null;
       if (q.type === 'short') {
-        if (!b.answer.trim()) score = 0;
+        if (!answer.trim()) score = 0;
         else {
-          feedback = await data.gradeShort(s.db, q, b.answer, {
+          feedback = await data.gradeShort(s.db, q, answer, {
             call: interactive,
             lang: s.settings.get().language,
             numCtx: s.settings.get().numCtx,
@@ -278,10 +287,34 @@ export function registerLearnRoutes(app: FastifyInstance, s: Services): void {
           });
           score = feedback.score;
         }
-      } else score = data.gradeClosed(q, b.answer);
-      data.recordAttempt(s.db, q.id, b.sessionId ?? null, b.answer, score, feedback);
+      } else score = data.gradeClosed(q, answer);
+      if (attempt) data.updateAttempt(s.db, attempt.id, score, feedback);
+      else data.recordAttempt(s.db, q.id, b.sessionId ?? null, answer, score, feedback);
       return { score, answer: q.answer, explanation: q.explanation, source: data.questionRef(q, s.db), feedback };
     },
+  );
+
+  // Klausur abgeben: alle Antworten auf einmal; Zeitlimit wird beim Abgeben geprüft, Freitext danach einzeln bewertet
+  app.post(
+    '/api/quiz/sessions/:id/submit',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          properties: {
+            answers: {
+              type: 'array',
+              maxItems: 100,
+              items: { type: 'object', properties: { questionId: { type: 'integer', minimum: 1 }, answer: { type: 'string', maxLength: 4000 } }, required: ['questionId', 'answer'], additionalProperties: false },
+            },
+          },
+          required: ['answers'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (req) => data.submitExam(s.db, (req.params as { id: number }).id, (req.body as { answers: { questionId: number; answer: string }[] }).answers),
   );
 
   /* ------------------------------------------------------------ Wissensgraph */

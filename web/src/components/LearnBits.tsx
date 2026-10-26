@@ -61,7 +61,7 @@ export function CardFace({ card, side }: { card: Pick<Card, 'type' | 'front' | '
   const front = card.type === 'cloze' ? clozeText(card.front, side === 'back') : card.front;
   return (
     <div className="card-face">
-      {card.type === 'image' && card.sourceId !== null && card.sourceKind === 'image' && <img className="card-img" src={fileUrl(card.sourceId)} alt="" loading="lazy" />}
+      {card.sourceId !== null && card.sourceKind === 'image' && <img className="card-img" src={fileUrl(card.sourceId)} alt="" loading="lazy" />}
       <Markdown text={front} />
       {side === 'back' && card.back && (
         <div className="card-back">

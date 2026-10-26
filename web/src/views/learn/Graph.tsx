@@ -157,7 +157,9 @@ function GraphCanvas({ data, selected, onSelect }: { data: GraphData; selected: 
       // ohne Animation: Layout in Häppchen berechnen (Oberfläche bleibt bedienbar), dann einmal zeichnen
       const step = () => {
         if (stopped) return;
-        for (let i = 0; i < 25 && !sim.done; i++) sim.tick();
+        // Zeitscheiben < ~12 ms: auch 2 000 Knoten erzeugen keine langen Tasks (Oberfläche bleibt bedienbar)
+        const t0 = performance.now();
+        while (!sim.done && performance.now() - t0 < 12) sim.tick();
         if (sim.done) {
           fit();
           draw();
@@ -303,6 +305,11 @@ function ConceptPanel({ id, onClose, onChanged }: { id: number; onClose(): void;
       });
   }, [id, toastError, onClose]);
   useEffect(load, [load]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.overlay') && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   const update = async (body: Record<string, unknown>) => {
     try {
       setC(await patch<ConceptDetail>(`/api/graph/concepts/${id}`, body));
@@ -424,7 +431,17 @@ export function GraphTab({ subject }: { subject: number | null }) {
       .then((r) => setSources(r.items.slice(0, 500)))
       .catch(() => {});
   }, [subject]);
-  const close = useCallback(() => setSelected(null), []);
+  // Fokus nach dem Schließen dorthin zurück, wo er vor dem Öffnen war (Tabellenzeile/Canvas)
+  const opener = useRef<HTMLElement | null>(null);
+  const select = useCallback((id: number | null) => {
+    if (id !== null) opener.current = document.activeElement as HTMLElement | null;
+    setSelected(id);
+  }, []);
+  const close = useCallback(() => {
+    setSelected(null);
+    const el = opener.current;
+    requestAnimationFrame(() => el?.focus?.());
+  }, []);
 
   const sorted = useMemo(() => [...(data?.nodes ?? [])].sort((a, b) => b.degree - a.degree || a.name.localeCompare(b.name)), [data]);
   return (
@@ -457,7 +474,7 @@ export function GraphTab({ subject }: { subject: number | null }) {
         <AiTag />
       </div>
       {data && data.nodes.length === 0 && <p className="muted pad">{t('graph.empty')}</p>}
-      {data && data.nodes.length > 0 && mode === 'graph' && <GraphCanvas data={data} selected={selected} onSelect={setSelected} />}
+      {data && data.nodes.length > 0 && mode === 'graph' && <GraphCanvas data={data} selected={selected} onSelect={select} />}
       {data && data.nodes.length > 0 && mode === 'list' && (
         <div className="graph-table-wrap">
           <table className="graph-table">
@@ -472,7 +489,7 @@ export function GraphTab({ subject }: { subject: number | null }) {
               {sorted.map((n) => (
                 <tr key={n.id} className={n.hidden ? 'muted' : ''}>
                   <th scope="row">
-                    <button className="link" onClick={() => setSelected(n.id)} aria-current={selected === n.id ? 'true' : undefined}>
+                    <button className="link" onClick={() => select(n.id)} aria-current={selected === n.id ? 'true' : undefined}>
                       {n.name}
                     </button>
                   </th>

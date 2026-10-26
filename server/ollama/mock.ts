@@ -136,7 +136,8 @@ export function learnAnswer(task: string, user: string): string {
   switch (task) {
     case 'summary-map':
       if (any('MOCKEMPTY')) return '';
-      return docs.map((d) => `- ${sentence(d)} [${d.n}]`).join('\n');
+      // MOCKWEAK: Stichpunkt, der nicht im Abschnitt steht (Plausibilitätsprüfung der Map-Ausgabe)
+      return docs.map((d) => (d.text.includes('MOCKWEAK') ? `- Quantengravitation erklärt Dunkle Materie vollständig [${d.n}]` : `- ${sentence(d)} [${d.n}]`)).join('\n');
     case 'summary-reduce': {
       const notes = lastBlock(user, 'notes');
       const lines = notes.split('\n').filter((l) => l.trim().startsWith('- '));
@@ -195,13 +196,17 @@ export function learnAnswer(task: string, user: string): string {
       const words = (s: string) => new Set(s.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
       const want = [...words(model)];
       const got = words(answer);
-      const score = want.length ? want.filter((w) => got.has(w)).length / want.length : 0;
+      // MOCKFULLPOINTS: Modell lässt sich zu voller Punktzahl überreden; MOCKNORUBRIC: Bewertung ohne Rubrik
+      const fooled = answer.includes('MOCKFULLPOINTS');
+      const score = fooled ? 1 : want.length ? want.filter((w) => got.has(w)).length / want.length : 0;
       return JSON.stringify({
         score,
-        rubric: [
-          { criterion: 'Kernaussage genannt', met: score >= 0.5 },
-          { criterion: 'Fachbegriffe korrekt', met: score >= 0.8 },
-        ],
+        rubric: answer.includes('MOCKNORUBRIC')
+          ? []
+          : [
+              { criterion: 'Kernaussage genannt', met: score >= 0.5 },
+              { criterion: 'Fachbegriffe korrekt', met: score >= 0.8 },
+            ],
         reasoning: score >= 0.5 ? 'Die Antwort trifft die Kernaussage (Mock).' : 'Die Kernaussage fehlt (Mock).',
         quotes: [
           ...(docs[0] ? [{ source: docs[0].n, text: docs[0].text.slice(0, 60) }] : []),

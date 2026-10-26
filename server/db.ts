@@ -149,7 +149,9 @@ const MIGRATIONS: string[] = [
   UPDATE sources SET status = 'queued', status_detail = NULL
     WHERE kind = 'pdf' AND status = 'ready' AND (status_detail LIKE '%no_text%' OR status_detail LIKE '%partial_text%');
   `,
-  // v4 – Phase 3: Lernmodi (Notizen, Karteikarten + Wiederholung, Quiz, Wissensgraph, Lern-Jobs)
+  // v4 – Phase 3: Lernmodi (Notizen, Karteikarten + Wiederholung, Quiz, Wissensgraph, Lern-Jobs).
+  // Korrekturrunde 1 hat v4 direkt erweitert statt v5 anzulegen: Phase 3 war noch nicht veröffentlicht (nie gepusht/auf dem Laptop),
+  // es kann also keine Nutzer-DB mit dem alten v4 geben; eine zusätzliche Migration wäre toter Code.
   // Löschen einer Quelle: Karten/Fragen behalten ihren Text, verlieren den Link (SET NULL; source_name bleibt als Hinweis),
   // Zwischenergebnisse und Graph-Bezüge verschwinden (CASCADE), Konzepte ohne Quelle per Trigger. Notizen bleiben unverändert.
   `
@@ -268,10 +270,13 @@ const MIGRATIONS: string[] = [
     answer TEXT NOT NULL,
     score REAL NOT NULL,
     feedback TEXT,
-    created_at INTEGER NOT NULL
+    -- Klausur: Antwort abgegeben, Freitext-Bewertung steht noch aus
+    pending INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    -- je Sitzung genau eine Antwort pro Frage (Übungen ohne Sitzung: session_id NULL, beliebig oft)
+    UNIQUE (session_id, question_id)
   );
   CREATE INDEX quiz_attempts_question ON quiz_attempts(question_id);
-  CREATE INDEX quiz_attempts_session ON quiz_attempts(session_id);
 
   CREATE TABLE concepts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -300,6 +305,8 @@ const MIGRATIONS: string[] = [
     label TEXT NOT NULL,
     source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     hidden INTEGER NOT NULL DEFAULT 0,
+    -- vom Nutzer umbenannt: Bezeichnung bleibt beim erneuten Aufbau erhalten
+    edited INTEGER NOT NULL DEFAULT 0,
     UNIQUE (a, b, source_id)
   );
   CREATE INDEX concept_edges_b ON concept_edges(b);

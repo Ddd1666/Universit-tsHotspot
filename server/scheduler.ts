@@ -28,6 +28,7 @@ export class Scheduler {
   private waiters: Waiter[] = [];
   private idle: (() => void)[] = [];
   private chatCtrl = new AbortController();
+  private holderCtrl: AbortController | null = null;
 
   /** Chat beginnt zu streamen; Rückgabe beendet ihn (mehrfacher Aufruf ist harmlos). */
   chatStarted(): () => void {
@@ -46,6 +47,11 @@ export class Scheduler {
   /** Löst aus, sobald der nächste Chat startet (unterbrechbare Hintergrundaufrufe). */
   chatSignal(): AbortSignal {
     return this.chatCtrl.signal;
+  }
+
+  /** Signal des aktuellen Slot-Halters: löst aus, sobald eine höhere Klasse wartet (unterbrechbare Lernaufrufe geben dann ab). */
+  holderSignal(): AbortSignal {
+    return this.holderCtrl?.signal ?? new AbortController().signal;
   }
 
   get chatActive(): boolean {
@@ -70,6 +76,7 @@ export class Scheduler {
       };
       signal?.addEventListener('abort', onAbort, { once: true });
       this.waiters.push(w);
+      if (this.holder && PRIO[cls] < PRIO[this.holder]) this.holderCtrl?.abort();
       this.pump();
     });
   }
@@ -107,10 +114,13 @@ export class Scheduler {
     const next = this.waiters.reduce((a, b) => (PRIO[b.cls] < PRIO[a.cls] || (PRIO[b.cls] === PRIO[a.cls] && b.seq < a.seq) ? b : a));
     this.waiters.splice(this.waiters.indexOf(next), 1);
     this.holder = next.cls;
+    const ctrl = new AbortController();
+    this.holderCtrl = ctrl;
     let released = false;
     next.resolve(() => {
       if (released) return;
       released = true;
+      if (this.holderCtrl === ctrl) this.holderCtrl = null;
       this.holder = null;
       this.pump();
     });

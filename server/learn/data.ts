@@ -1,10 +1,10 @@
 import { jsonList, tx, type DB } from '../db.ts';
 import { HttpError } from '../library.ts';
-import { estimateTokens } from '../ingest/chunker.ts';
+import { estimateTokens, formatClock } from '../ingest/chunker.ts';
 import type { SearchHit } from '../search/hybrid.ts';
 import { CLOZE_RE, callValidated, GRADE_SCHEMA, gradeMessages, parseGrade, type CallOpts, type Grade } from './prompts.ts';
 import { review, type Rating } from './srs.ts';
-import { cleanText, contentTokens, documentsBlock, type LChunk, type Loc, type Ref } from './text.ts';
+import { cleanText, documentsBlock, normalizeText, support, type LChunk, type Loc, type Ref } from './text.ts';
 
 /**
  * Datenzugriff der Lernmodi (Notizen, Karten + Wiederholung, Quiz, Graph). Alles parametrisiert; jede neue Abfrage
@@ -28,22 +28,28 @@ function existingSources(db: DB, ids: (number | null)[]): Set<number> {
   return new Set((db.prepare('SELECT id FROM sources WHERE id IN (SELECT value FROM json_each(?))').all(jsonList(list)) as { id: number }[]).map((r) => r.id));
 }
 
-/** Positionsangabe für Export/Hinweise (Oberfläche formatiert selbst). */
+/** Positionsangabe für den Export – gleiches Format wie die Oberfläche (web/src/lib/format.ts locLabel + i18n). */
 export function locText(loc: Loc | null, lang: 'de' | 'en'): string {
-  if (!loc || loc.s === null) return '';
-  const r = loc.e !== null && loc.e !== loc.s ? `${loc.s}–${loc.e}` : `${loc.s}`;
-  const clock = (n: number) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+  if (!loc) return '';
+  const de = lang === 'de';
+  const r = loc.s !== null ? (loc.e !== null && loc.e !== loc.s ? `${loc.s}–${loc.e}` : `${loc.s}`) : '';
   switch (loc.k) {
     case 'page':
-      return `${lang === 'de' ? 'S.' : 'p.'} ${r}`;
+      return r ? `${de ? 'S.' : 'p.'} ${r}` : '';
     case 'slide':
-      return `${lang === 'de' ? 'Folie' : 'slide'} ${r}`;
-    case 'time':
-      return `${clock(loc.s)}–${clock(loc.e ?? loc.s)}`;
+      return r ? `${de ? 'Folie' : 'slide'} ${r}` : '';
     case 'sheet':
-      return `${lang === 'de' ? 'Blatt' : 'sheet'} ${loc.l ?? ''}`;
+      return (de ? `Blatt „${loc.l ?? ''}“` : `sheet “${loc.l ?? ''}”`) + (r ? `, ${de ? 'Zeilen' : 'rows'} ${r}` : '');
+    case 'rows':
+      return r ? `${de ? 'Zeilen' : 'rows'} ${r}` : '';
+    case 'lines':
+      return r ? `${de ? 'Zeilen' : 'lines'} ${r}` : '';
+    case 'section':
+      return loc.l ?? '';
+    case 'time':
+      return loc.s !== null ? `${formatClock(loc.s)}–${formatClock(loc.e ?? loc.s)}` : '';
     default:
-      return loc.l ?? r;
+      return '';
   }
 }
 
@@ -398,7 +404,7 @@ export function reviewCard(db: DB, id: number, rating: Rating, now = Date.now())
   return tx(db, () => {
     const c = getCard(db, id);
     if (c.status !== 'active') throw new HttpError(409, 'card_not_active', 'Nur aktive Karten werden wiederholt');
-    const next = review({ reps: c.reps, ease: c.ease, intervalDays: c.intervalDays }, rating, now);
+    const next = review({ reps: c.reps, ease: c.ease, intervalDays: c.intervalDays, lastReview: c.lastReview }, rating, now);
     db.prepare('INSERT INTO reviews(card_id, rating, reviewed_at, interval_days, ease) VALUES (?, ?, ?, ?, ?)').run(id, rating, now, next.intervalDays, next.ease);
     db.prepare('UPDATE cards SET reps = ?, ease = ?, interval_days = ?, lapses = lapses + ?, due = ?, last_review = ? WHERE id = ?').run(
       next.reps,
@@ -495,7 +501,7 @@ export function startSession(db: DB, input: { mode: 'practice' | 'exam'; scope: 
     .prepare(
       `SELECT q.id, q.type, q.question, q.options, q.topic, q.source_id, coalesce(s.name, q.source_name) AS live_name
        FROM quiz_questions q LEFT JOIN sources s ON s.id = q.source_id
-       LEFT JOIN (SELECT question_id, count(*) AS n, avg(score) AS avg FROM quiz_attempts GROUP BY question_id) st ON st.question_id = q.id
+       LEFT JOIN (SELECT question_id, count(*) AS n, avg(score) AS avg FROM quiz_attempts WHERE pending = 0 GROUP BY question_id) st ON st.question_id = q.id
        ${sql} ORDER BY st.n IS NOT NULL, st.avg, random() LIMIT ?`,
     )
     .all(...params, Math.min(100, Math.max(1, input.count))) as unknown as QuestionRow[];
@@ -518,13 +524,14 @@ export function getQuestion(db: DB, id: number): QuestionRow {
   return q;
 }
 
-const normAnswer = (s: string) => contentTokens(s).join(' ') || s.trim().toLowerCase();
-
-/** Geschlossene Fragen lokal bewerten (keine KI nötig). */
+/**
+ * Geschlossene Fragen lokal bewerten (keine KI nötig): exakte Gleichheit nach Normalisierung (Groß/Klein, Leerraum,
+ * Diakritika, Satzzeichen, Dezimalkomma) – keine Wort-Heuristik ("2. Hauptsatz" ≠ "3. Hauptsatz", "nimmt zu" ≠ "nimmt ab").
+ */
 export function gradeClosed(q: QuestionRow, answer: string): number {
-  if (q.type === 'mc') return answer.trim() === q.answer.trim() ? 1 : 0;
   if (q.type === 'tf') return answer.trim().toLowerCase() === q.answer ? 1 : 0;
-  return normAnswer(answer) === normAnswer(q.answer) ? 1 : 0;
+  const a = normalizeText(answer);
+  return a !== '' && a === normalizeText(q.answer) ? 1 : 0;
 }
 
 export interface GradeDeps {
@@ -566,9 +573,81 @@ export async function gradeShort(db: DB, q: QuestionRow, answer: string, deps: G
     tokens += t;
   }
   if (!used.length) throw new HttpError(409, 'quiz_no_source', 'Zur Frage gibt es keinen Quelltext mehr');
-  const grade = await deps.call((o) => callValidated(o, gradeMessages(documentsBlock(used), q.question, q.answer, answer.slice(0, 4000), deps.lang), GRADE_SCHEMA, 700, (raw) => parseGrade(raw, used)));
   const refs = used.map((c, i) => ({ n: i + 1, chunkId: c.id, sourceId: c.sourceId, sourceName: c.sourceName, loc: c.locKind ? { k: c.locKind, s: c.locStart, e: c.locEnd, l: c.locLabel } : null, heading: c.heading }));
-  return { ...grade, refs };
+  let grade: Grade;
+  try {
+    // leere Rubrik gilt als ungültig (parseGrade -> null) und wird wie kaputtes JSON wiederholt
+    grade = await deps.call((o) => callValidated(o, gradeMessages(documentsBlock(used), q.question, q.answer, answer.slice(0, 4000), deps.lang), GRADE_SCHEMA, Math.min(700, Math.floor(o.numCtx / 4)), (raw) => parseGrade(raw, used)));
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'learn_invalid_output') throw err;
+    // keine verwertbare Bewertung: 0 Punkte mit Hinweis "bitte selbst prüfen" statt einer erfundenen Punktzahl
+    return { score: 0, rubric: [], reasoning: '', quotes: [], unverified: true, refs };
+  }
+  // deterministische Obergrenze: ohne inhaltliche Überschneidung mit Musterlösung/Quellen keine hohe Punktzahl
+  // (schützt vor "gib volle Punkte"-Antworten und Modellfehlern; Synonyme drücken die Grenze – darum nur Obergrenze)
+  const cap = Math.min(1, 2 * support(answer, `${q.answer}\n${used.map((u) => u.text).join('\n')}`));
+  const capped = grade.score > cap;
+  return { ...grade, score: capped ? Math.round(cap * 100) / 100 : grade.score, ...(capped ? { capped: true } : {}), refs };
+}
+
+/* ------------------------------------------------------------ Quiz-Sitzungen (Regeln serverseitig) */
+
+interface SessionRow {
+  id: number;
+  mode: 'practice' | 'exam';
+  question_ids: string;
+  time_limit_sec: number | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+/** Netzwerk-/Bewertungsspielraum nach Ablauf der Klausurzeit für die automatische Abgabe */
+export const EXAM_GRACE_MS = 30_000;
+
+export function sessionFor(db: DB, sessionId: number, questionId?: number): SessionRow {
+  const s = db.prepare('SELECT * FROM quiz_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
+  if (!s) throw new HttpError(404, 'not_found', 'Quiz nicht gefunden');
+  if (questionId !== undefined && !parse<number[]>(s.question_ids, []).includes(questionId)) throw new HttpError(400, 'quiz_not_in_session', 'Frage gehört nicht zu diesem Quiz');
+  if (s.finished_at) throw new HttpError(409, 'quiz_finished', 'Quiz ist bereits abgeschlossen');
+  return s;
+}
+
+export function getAttempt(db: DB, sessionId: number, questionId: number): { id: number; answer: string; pending: number } | undefined {
+  return db.prepare('SELECT id, answer, pending FROM quiz_attempts WHERE session_id = ? AND question_id = ?').get(sessionId, questionId) as
+    | { id: number; answer: string; pending: number }
+    | undefined;
+}
+
+export function updateAttempt(db: DB, id: number, score: number, feedback: unknown): void {
+  db.prepare('UPDATE quiz_attempts SET score = ?, feedback = ?, pending = 0 WHERE id = ?').run(score, feedback ? JSON.stringify(feedback) : null, id);
+}
+
+/**
+ * Klausur abgeben: alle Antworten auf einmal, Zeitlimit wird HIER geprüft (Zeitpunkt der Abgabe). Geschlossene Fragen
+ * werden sofort bewertet, Freitext als "ausstehend" gespeichert und danach einzeln vom Modell bewertet.
+ */
+export function submitExam(db: DB, sessionId: number, answers: { questionId: number; answer: string }[], now = Date.now()) {
+  const s = sessionFor(db, sessionId);
+  if (s.mode !== 'exam') throw new HttpError(409, 'quiz_not_exam', 'Nur Klausuren werden gesammelt abgegeben');
+  if (s.time_limit_sec && now > s.started_at + s.time_limit_sec * 1000 + EXAM_GRACE_MS) throw new HttpError(409, 'quiz_time_up', 'Die Zeit ist abgelaufen');
+  const given = new Map(answers.map((a) => [a.questionId, a.answer.slice(0, 4000)]));
+  const results: Record<number, { score: number; answer: string; explanation: string | null; source: Ref } | null> = {};
+  const pending: number[] = [];
+  tx(db, () => {
+    if (db.prepare('SELECT 1 FROM quiz_attempts WHERE session_id = ?').get(sessionId)) throw new HttpError(409, 'quiz_already_answered', 'Bereits abgegeben');
+    const ins = db.prepare('INSERT INTO quiz_attempts(question_id, session_id, answer, score, pending, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+    for (const qid of parse<number[]>(s.question_ids, [])) {
+      const q = db.prepare('SELECT q.*, s.name AS live_name FROM quiz_questions q LEFT JOIN sources s ON s.id = q.source_id WHERE q.id = ?').get(qid) as QuestionRow | undefined;
+      if (!q) continue; // Frage inzwischen gelöscht (Quelle weg -> Frage bleibt eigentlich; nur bei manuellem Löschen)
+      const answer = given.get(qid) ?? '';
+      const open = q.type === 'short' && answer.trim() !== '';
+      const score = q.type === 'short' ? 0 : gradeClosed(q, answer);
+      ins.run(qid, sessionId, answer, score, open ? 1 : 0, now);
+      if (open) pending.push(qid);
+      results[qid] = open ? null : { score, answer: q.answer, explanation: q.explanation, source: questionRef(q, db) };
+    }
+  });
+  return { results, pending };
 }
 
 export function questionRef(q: QuestionRow, db: DB): Ref & { chat?: number } {
@@ -625,7 +704,7 @@ export function weaknesses(db: DB, subjectId?: number) {
       `SELECT q.topic, q.source_id AS sourceId, coalesce(s.name, q.source_name) AS sourceName, min(q.chunk_id) AS chunkId,
               count(*) AS attempts, avg(a.score) AS avg
        FROM quiz_attempts a JOIN quiz_questions q ON q.id = a.question_id LEFT JOIN sources s ON s.id = q.source_id
-       ${subjectId ? 'WHERE q.subject_id = ?' : ''}
+       WHERE a.pending = 0 ${subjectId ? 'AND q.subject_id = ?' : ''}
        GROUP BY q.topic, q.source_id HAVING avg(a.score) < 0.7 ORDER BY avg(a.score), count(*) DESC LIMIT 10`,
     )
     .all(...(subjectId ? [subjectId] : [])) as { topic: string | null; sourceId: number | null; sourceName: string | null; chunkId: number | null; attempts: number; avg: number }[];
@@ -663,7 +742,7 @@ export function graphData(db: DB, f: { subjectId?: number; sourceId?: number; in
   const ids = jsonList(nodes.map((n) => n.id));
   const edges = db
     .prepare(
-      `SELECT min(e.id) AS id, e.a, e.b, min(e.label) AS label, max(e.hidden) AS hidden FROM concept_edges e
+      `SELECT min(e.id) AS id, e.a, e.b, coalesce(max(CASE WHEN e.edited THEN e.label END), min(e.label)) AS label, max(e.hidden) AS hidden FROM concept_edges e
        WHERE e.a IN (SELECT value FROM json_each(?)) AND e.b IN (SELECT value FROM json_each(?)) GROUP BY e.a, e.b`,
     )
     .all(ids, ids) as { id: number; a: number; b: number; label: string; hidden: number }[];
@@ -698,8 +777,10 @@ export function conceptDetail(db: DB, id: number) {
     .all(id) as { sourceId: number; sourceName: string; subjectId: number | null; chunkId: number | null; text: string | null; loc_kind: string | null; loc_start: number | null; loc_end: number | null; loc_label: string | null }[];
   const neighbors = db
     .prepare(
-      `SELECT e.id AS edgeId, e.label, e.hidden, CASE WHEN e.a = ? THEN e.b ELSE e.a END AS id, k.name
-       FROM concept_edges e JOIN concepts k ON k.id = CASE WHEN e.a = ? THEN e.b ELSE e.a END WHERE e.a = ? OR e.b = ? ORDER BY k.name LIMIT 200`,
+      // eine Zeile je Nachbar, auch wenn mehrere Quellen dieselbe Verbindung liefern (vom Nutzer umbenannte Bezeichnung zuerst)
+      `SELECT min(e.id) AS edgeId, coalesce(max(CASE WHEN e.edited THEN e.label END), min(e.label)) AS label, max(e.hidden) AS hidden,
+              CASE WHEN e.a = ? THEN e.b ELSE e.a END AS id, k.name
+       FROM concept_edges e JOIN concepts k ON k.id = CASE WHEN e.a = ? THEN e.b ELSE e.a END WHERE e.a = ? OR e.b = ? GROUP BY 4 ORDER BY k.name LIMIT 200`,
     )
     .all(id, id, id, id) as { edgeId: number; label: string; hidden: number; id: number; name: string }[];
   return {
@@ -738,8 +819,9 @@ export function updateEdge(db: DB, id: number, patch: { label?: string; hidden?:
   if (patch.label !== undefined) {
     const l = cleanText(patch.label, 60);
     if (!l) throw new HttpError(400, 'invalid_name', 'Bezeichnung fehlt');
-    db.prepare('UPDATE concept_edges SET label = ? WHERE a = ? AND b = ?').run(l, e.a, e.b);
+    // edited = 1: erneuter Graph-Aufbau überschreibt die Korrektur nicht
+    db.prepare('UPDATE concept_edges SET label = ?, edited = 1 WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)').run(l, e.a, e.b, e.b, e.a);
   }
-  if (patch.hidden !== undefined) db.prepare('UPDATE concept_edges SET hidden = ? WHERE a = ? AND b = ?').run(patch.hidden ? 1 : 0, e.a, e.b);
+  if (patch.hidden !== undefined) db.prepare('UPDATE concept_edges SET hidden = ? WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)').run(patch.hidden ? 1 : 0, e.a, e.b, e.b, e.a);
 }
 

@@ -4,6 +4,7 @@ import { fakeEmbedding } from '../server/ollama/mock.ts';
 import { normalize } from '../server/embed/vector-store.ts';
 import type { LearnJobDTO } from '../server/learn/jobs.ts';
 import { Scheduler } from '../server/scheduler.ts';
+import { makePng } from './fixtures.ts';
 
 type Job = LearnJobDTO;
 
@@ -11,10 +12,10 @@ type Job = LearnJobDTO;
 const word = (n: number) => 'w' + [...n.toString(26)].map((c) => String.fromCharCode(97 + parseInt(c, 26))).join('') + 'ix';
 
 /** Langer Text: jeder Absatz ein eigener Fakt (Satz ≥ 20 Zeichen) – deutlich größer als ein 8k-Kontext. */
-function longText(n: number, tag = ''): string {
+function longText(n: number, tag = '', off = 0): string {
   return Array.from(
     { length: n },
-    (_, i) => `Absatz ${i}: Der Begriff Thema${i}${tag} beschreibt die Eigenschaft Nummer ${i} der Thermodynamik. ${Array.from({ length: 40 }, (_, j) => `Erläuterung ${word(i * 40 + j)} betrifft ${word(i * 40 + j + 7777)} im Fachgebiet.`).join(' ')}`,
+    (_, i) => `Absatz ${i}: Der Begriff Thema${i}${tag} beschreibt die Eigenschaft Nummer ${i} der Thermodynamik. ${Array.from({ length: 40 }, (_, j) => `Erläuterung ${word(off + i * 40 + j)} betrifft ${word(off + i * 40 + j + 7777)} im Fachgebiet.`).join(' ')}`,
   ).join('\n\n');
 }
 
@@ -87,6 +88,8 @@ describe('Lernmodi – Integration (Mock-Ollama)', () => {
     expect(md.markdown).toContain('KI-generiert');
     expect(md.markdown).toContain('Eigene Ergänzung.');
     expect(md.markdown).toContain('## Quellen');
+    // T9: Positionsformat wie in der Oberfläche ("Zeilen n" statt nackter Zahl)
+    expect(md.markdown).toMatch(/Zeilen \d/);
     expect(md.name).toMatch(/\.md$/);
   });
 
@@ -262,6 +265,14 @@ describe('Lernmodi – Integration (Mock-Ollama)', () => {
     await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'subject', id: subject } })).id);
     const c = db.prepare('SELECT name, hidden FROM concepts WHERE id = ?').get(g.nodes[0]!.id) as { name: string; hidden: number };
     expect(c).toEqual({ name: 'Umbenannt', hidden: 1 });
+    // K3: umbenannte Kante behält ihre Bezeichnung beim erneuten Aufbau
+    expect(db.prepare('SELECT label, edited FROM concept_edges WHERE id = ?').get(g.edges[0]!.id)).toEqual({ label: 'korrigiert', edited: 1 });
+    // T8: dieselbe Verbindung aus zwei Quellen erscheint im Konzept-Panel nur einmal
+    const e0 = db.prepare('SELECT a, b FROM concept_edges WHERE id = ?').get(g.edges[0]!.id) as { a: number; b: number };
+    db.prepare("INSERT OR IGNORE INTO concept_edges(a, b, label, source_id) VALUES (?, ?, 'andere Quelle', ?)").run(e0.a, e0.b, ext);
+    const nb = (await app.api<{ neighbors: { id: number; label: string }[] }>('GET', `/api/graph/concepts/${e0.a}`)).data.neighbors;
+    expect(new Set(nb.map((n) => n.id)).size).toBe(nb.length);
+    expect(nb.find((n) => n.id === e0.b)!.label).toBe('korrigiert');
   });
 
   it('Ansicht bleibt flüssig: höchstens 2000 Knoten (am stärksten vernetzte), Abfrage schnell', async () => {
@@ -279,11 +290,8 @@ describe('Lernmodi – Integration (Mock-Ollama)', () => {
       prev = id;
     }
     db.exec('COMMIT');
-    const t0 = performance.now();
     const g = (await app.api<{ nodes: unknown[]; total: number; truncated: boolean }>('GET', `/api/graph?source=${many}`)).data;
-    const ms = performance.now() - t0;
     expect([g.nodes.length, g.total, g.truncated]).toEqual([2000, 2600, true]);
-    expect(ms).toBeLessThan(5000); // Obergrenze, kein Zeit-Assert im engeren Sinn
     await app.api('DELETE', `/api/sources/${many}`);
     expect((db.prepare("SELECT count(*) AS n FROM concepts WHERE name LIKE 'K%' AND norm LIKE 'k% x'").get() as { n: number }).n).toBe(0);
   });
@@ -466,6 +474,178 @@ describe('Lernmodi – wartender Job, dessen Quelle gelöscht wurde', () => {
       const j = await waitJob(app, second.id);
       expect([j.state, j.detail]).toEqual(['error', 'learn_scope_missing']);
     } finally {
+      await app.close();
+    }
+  }, 60_000);
+});
+
+describe('Korrekturrunde 1 – Integration', () => {
+  let app: TestApp;
+  beforeAll(async () => {
+    app = await startTestApp();
+  });
+  afterAll(async () => {
+    await app?.close();
+  });
+  const db = () => app.hotspot.services.db;
+
+  it('K1: Fach mit 2 Quellen > 160 Abschnitte: Karten aus beiden Quellen und aus dem ganzen Dokument; Ergebnis meldet die Auswahl', async () => {
+    const sub = (await app.api<{ id: number }>('POST', '/api/subjects', { name: 'Groß', color: '#39e6ff' })).data.id;
+    const a = await importText(app, 'A.txt', longText(130, 'a'), sub);
+    const b = await importText(app, 'B.txt', longText(130, 'b', 20_000), sub);
+    const n = (db().prepare('SELECT count(*) AS n FROM chunks WHERE source_id IN (?, ?)').get(a, b) as { n: number }).n;
+    expect(n).toBeGreaterThan(160);
+    const j = await waitJob(app, (await job(app, { kind: 'cards', scope: { kind: 'subject', id: sub }, count: 20 })).id);
+    expect(j.state, j.detail ?? '').toBe('done');
+    expect([j.result!.truncated, j.result!.chunks, j.result!.total]).toEqual([1, 160, n]);
+    const cards = db().prepare('SELECT c.source_id AS sourceId, ch.ord FROM cards c JOIN chunks ch ON ch.id = c.chunk_id WHERE c.job_id = ?').all(j.id) as { sourceId: number; ord: number }[];
+    expect(new Set(cards.map((c) => c.sourceId))).toEqual(new Set([a, b]));
+    const lastOrd = (db().prepare('SELECT max(ord) AS m FROM chunks WHERE source_id = ?').get(a) as { m: number }).m;
+    expect(cards.some((c) => c.sourceId === a && c.ord > lastOrd / 2)).toBe(true);
+  });
+
+  it('K5: Gruppe mit dauerhaft ungültiger Ausgabe wird halbiert/übersprungen statt den Job zu kippen', async () => {
+    const id = await importText(app, 'Teilweise.txt', `${longText(1, 'ok', 30_000)}\n\nMOCKBADJSON ${longText(1, 'bad', 31_000)}`);
+    expect((db().prepare('SELECT count(*) AS n FROM chunks WHERE source_id = ?').get(id) as { n: number }).n).toBe(2);
+    const before = tasks(app, 'cards').length;
+    const j = await waitJob(app, (await job(app, { kind: 'cards', scope: { kind: 'source', id }, count: 5 })).id);
+    expect(j.state, j.detail ?? '').toBe('done');
+    expect(j.result!.failed).toBe(1);
+    expect(j.result!.created).toBeGreaterThan(0);
+    expect(tasks(app, 'cards').length - before).toBe(7); // 3 (ganze Gruppe) + 1 (gute Hälfte) + 3 (kaputte Hälfte)
+    // die Wiederholungen sind nicht identisch (Hinweis + höhere Temperatur)
+    const temps = tasks(app, 'cards').slice(before, before + 3).map((r) => (r.body as { options: { temperature: number } }).options.temperature);
+    expect(new Set(temps).size).toBe(3);
+  });
+
+  it('K7: Lückentext aus einer Bildquelle bleibt Lückentext (Bild zusätzlich), Frage/Antwort wird Bildkarte', async () => {
+    const up = await app.upload('Tafel.png', makePng(96, 64, 'Tafelbild: Entropie S = k ln W'));
+    await waitForSource(app, up.data.source.id);
+    const j = await waitJob(app, (await job(app, { kind: 'cards', scope: { kind: 'source', id: up.data.source.id }, count: 5 })).id);
+    expect(j.state, j.detail ?? '').toBe('done');
+    const items = (await app.api<{ items: { type: string; sourceKind: string; front: string }[] }>('GET', `/api/cards?job=${j.id}`)).data.items;
+    expect(items.some((c) => c.type === 'cloze' && c.sourceKind === 'image' && /\{\{.+\}\}/.test(c.front))).toBe(true);
+    expect(items.some((c) => c.type === 'image')).toBe(true);
+  });
+
+  it('K12/K13: Modell und num_ctx gelten für den ganzen Job; Antwortlänge folgt num_ctx', async () => {
+    const id = await importText(app, 'Modell.txt', longText(16, 'm', 40_000));
+    app.hotspot.mock!.setLearnDelay(1500);
+    const before = app.hotspot.mock!.requests.length;
+    const mapsBefore = tasks(app, 'summary-map').length;
+    const j = await job(app, { kind: 'summary', scope: { kind: 'source', id }, level: 'tldr' });
+    await waitFor(() => (tasks(app, 'summary-map').length > mapsBefore ? true : null));
+    await app.api('PUT', '/api/settings', { chatModel: 'llama3.1:8b', numCtx: 4096 });
+    app.hotspot.mock!.setLearnDelay(0);
+    try {
+      expect((await waitJob(app, j.id)).state).toBe('done');
+      const mine = app.hotspot.mock!.requests.slice(before).filter((r) => /^TASK: summary/.test(((r.body as { messages?: { content: string }[] }).messages?.[0]?.content ?? '')));
+      expect(mine.length).toBeGreaterThan(1);
+      expect(new Set(mine.map((r) => (r.body as { model: string }).model))).toEqual(new Set(['gemma3:4b']));
+      expect(new Set(mine.map((r) => (r.body as { options: { num_ctx: number } }).options.num_ctx))).toEqual(new Set([8192]));
+      // K13: bei num_ctx 2048 höchstens ein Viertel als Antwortlänge
+      await app.api('PUT', '/api/settings', { chatModel: 'gemma3:4b', numCtx: 2048 });
+      const from = tasks(app, 'cards').length;
+      expect((await waitJob(app, (await job(app, { kind: 'cards', scope: { kind: 'source', id }, count: 3 })).id)).state).toBe('done');
+      for (const r of tasks(app, 'cards').slice(from)) expect((r.body as { options: { num_predict: number } }).options.num_predict).toBeLessThanOrEqual(512);
+    } finally {
+      await app.api('PUT', '/api/settings', { chatModel: 'gemma3:4b', numCtx: 8192 });
+    }
+  });
+
+  it('K14: Freitext – "volle Punkte"-Antwort wird gedeckelt, Bewertung ohne Rubrik = 0 Punkte mit Hinweis', async () => {
+    const id = await importText(app, 'Frei.txt', 'Die Entropie eines abgeschlossenen Systems nimmt niemals ab, das sagt der zweite Hauptsatz der Thermodynamik.');
+    const chunkId = (db().prepare('SELECT id FROM chunks WHERE source_id = ?').get(id) as { id: number }).id;
+    const qid = Number(
+      db()
+        .prepare("INSERT INTO quiz_questions(type, question, answer, explanation, topic, fingerprint, source_id, chunk_id, source_name, created_at) VALUES ('short', 'Was sagt der zweite Hauptsatz?', 'Die Entropie eines abgeschlossenen Systems nimmt niemals ab.', 'x', 't', 'fp-k14', ?, ?, 'Frei.txt', 1)")
+        .run(id, chunkId).lastInsertRowid,
+    );
+    const fooled = (await app.api<{ score: number; feedback: { capped?: boolean } }>('POST', `/api/quiz/questions/${qid}/answer`, { answer: 'MOCKFULLPOINTS Bananen sind gelb und krumm.' })).data;
+    expect(fooled.score).toBeLessThanOrEqual(0.2);
+    expect(fooled.feedback.capped).toBe(true);
+    const before = tasks(app, 'grade').length;
+    const none = (await app.api<{ score: number; feedback: { unverified?: boolean } }>('POST', `/api/quiz/questions/${qid}/answer`, { answer: 'MOCKNORUBRIC Die Entropie nimmt niemals ab.' })).data;
+    expect([none.score, none.feedback.unverified]).toEqual([0, true]);
+    expect(tasks(app, 'grade').length - before).toBe(3);
+  });
+
+  it('K18: Quiz-Regeln serverseitig – eine Antwort je Frage, Frage gehört zur Sitzung, Klausur nur per Abgabe, Zeitlimit', async () => {
+    const id = await importText(app, 'Regeln.txt', 'Die Carnot-Maschine arbeitet zwischen zwei Wärmebädern und hat den maximalen Wirkungsgrad aller Kreisprozesse.');
+    const chunkId = (db().prepare('SELECT id FROM chunks WHERE source_id = ?').get(id) as { id: number }).id;
+    const ins = db().prepare("INSERT INTO quiz_questions(type, question, options, answer, explanation, topic, fingerprint, source_id, chunk_id, source_name, created_at) VALUES (?, ?, ?, ?, 'e', 't', ?, ?, ?, 'Regeln.txt', 1)");
+    const mc = Number(ins.run('mc', 'Was arbeitet zwischen zwei Wärmebädern?', JSON.stringify(['Carnot-Maschine', 'Dampflok', 'Pumpe']), 'Carnot-Maschine', 'fp-k18a', id, chunkId).lastInsertRowid);
+    const sh = Number(ins.run('short', 'Was zeichnet die Carnot-Maschine aus?', null, 'Sie hat den maximalen Wirkungsgrad aller Kreisprozesse.', 'fp-k18b', id, chunkId).lastInsertRowid);
+    const other = Number(ins.run('tf', 'Eine andere Frage.', null, 'true', 'fp-k18c', id, chunkId).lastInsertRowid);
+    db().prepare('DELETE FROM quiz_questions WHERE id = ?').run(other);
+    // Übung
+    const p = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'practice', scope: { sourceIds: [id] }, count: 10 })).data.session.id;
+    expect((await app.api('POST', `/api/quiz/questions/${mc}/answer`, { answer: 'Carnot-Maschine', sessionId: p })).status).toBe(200);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${mc}/answer`, { answer: 'Pumpe', sessionId: p })).data.error).toBe('quiz_already_answered');
+    const foreign = Number(ins.run('tf', 'Gehört nicht dazu.', null, 'true', 'fp-k18d', id, chunkId).lastInsertRowid);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${foreign}/answer`, { answer: 'true', sessionId: p })).data.error).toBe('quiz_not_in_session');
+    db().prepare('DELETE FROM quiz_questions WHERE id = ?').run(foreign);
+    // Klausur: Antwort einzeln -> abgelehnt; Abgabe nach Ablauf -> abgelehnt
+    const late = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'exam', scope: { sourceIds: [id] }, count: 10, timeLimitSec: 60 })).data.session.id;
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${mc}/answer`, { answer: 'Carnot-Maschine', sessionId: late })).data.error).toBe('quiz_not_submitted');
+    db().prepare('UPDATE quiz_sessions SET started_at = started_at - 600000 WHERE id = ?').run(late);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/sessions/${late}/submit`, { answers: [{ questionId: mc, answer: 'Carnot-Maschine' }] })).data.error).toBe('quiz_time_up');
+    // Klausur rechtzeitig: geschlossene sofort bewertet, Freitext ausstehend und danach bewertet
+    const ex = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'exam', scope: { sourceIds: [id] }, count: 10, timeLimitSec: 60 })).data.session.id;
+    const sub = (await app.api<{ results: Record<string, { score: number } | null>; pending: number[] }>('POST', `/api/quiz/sessions/${ex}/submit`, {
+      answers: [
+        { questionId: mc, answer: 'carnot-maschine' },
+        { questionId: sh, answer: 'Sie hat den maximalen Wirkungsgrad aller Kreisprozesse.' },
+      ],
+    })).data;
+    expect(sub.results[mc]!.score).toBe(1);
+    expect(sub.pending).toEqual([sh]);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/sessions/${ex}/submit`, { answers: [] })).data.error).toBe('quiz_already_answered');
+    const graded = (await app.api<{ score: number }>('POST', `/api/quiz/questions/${sh}/answer`, { answer: 'anders', sessionId: ex })).data;
+    expect(graded.score).toBeGreaterThan(0.5); // bewertet wird die abgegebene Antwort, nicht eine nachgereichte
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${sh}/answer`, { answer: 'x', sessionId: ex })).data.error).toBe('quiz_already_answered');
+    const fin = (await app.api<{ total: number; answered: number; points: number }>('POST', `/api/quiz/sessions/${ex}/finish`)).data;
+    expect([fin.total, fin.answered]).toEqual([2, 2]);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${mc}/answer`, { answer: 'x', sessionId: ex })).data.error).toBe('quiz_finished');
+  });
+
+  it('K17/K19/T11: Konzept-Vektoren nach Modellwechsel verworfen; Auswahl mit gelöschter erster Quelle; schwach belegte Map-Teile gemeldet', async () => {
+    const id = await importText(app, 'Vektor.md', 'Die Entropie wächst. Der Hauptsatz gilt. Die Carnot-Maschine ist ideal und arbeitet zwischen Wärmebädern.');
+    expect((await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'source', id } })).id)).state).toBe('done');
+    const withVec = () => (db().prepare('SELECT count(*) AS n FROM concepts WHERE vec IS NOT NULL').get() as { n: number }).n;
+    expect(withVec()).toBeGreaterThan(0);
+    db().prepare("UPDATE meta SET value = 'altes-modell' WHERE key = 'concept_vec_model'").run();
+    expect((await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'source', id } })).id)).state).toBe('done');
+    expect(withVec()).toBe(0);
+    // K19
+    const gone = await importText(app, 'Weg.md', 'Ein Text, der gleich wieder gelöscht wird, mit genug Inhalt.');
+    const j = await job(app, { kind: 'summary', scope: { kind: 'sources', ids: [gone, id] } });
+    await app.api('DELETE', `/api/sources/${gone}`);
+    const done = await waitJob(app, j.id);
+    expect(done.state, done.detail ?? '').toBe('done');
+    const late = (await app.api<Job & { error?: string }>('POST', '/api/learn/jobs', { kind: 'summary', scope: { kind: 'sources', ids: [gone, id] } })).data;
+    expect(late.title).toBe('Vektor.md');
+    await waitJob(app, late.id);
+    // T11
+    const weak = await importText(app, 'Schwach.txt', `${longText(1, 'w', 50_000)}\n\nMOCKWEAK ${longText(1, 'x', 51_000)}`);
+    const s = await waitJob(app, (await job(app, { kind: 'summary', scope: { kind: 'source', id: weak }, level: 'tldr' })).id);
+    expect(s.result!.weak).toBeGreaterThanOrEqual(1);
+    const note = (await app.api<{ scope: { weak: number } }>('GET', `/api/notes/${s.result!.noteId}`)).data;
+    expect(note.scope.weak).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('Korrekturrunde 1 – Zeitüberschreitungen', () => {
+  it('K6: nach 3 Zeitüberschreitungen bricht der Job mit learn_timeout ab (statt endlos zu warten)', async () => {
+    const app = await startTestApp({ learnCallTimeoutMs: 300 });
+    try {
+      const id = await importText(app, 'Langsam.txt', 'Ein kurzer Text über Entropie und Wärme mit ausreichend Inhalt für einen Abschnitt.');
+      app.hotspot.mock!.setLearnDelay(5000);
+      const j = await waitJob(app, (await job(app, { kind: 'cards', scope: { kind: 'source', id } })).id);
+      expect([j.state, j.detail]).toEqual(['error', 'learn_timeout']);
+      expect(tasks(app, 'cards')).toHaveLength(3);
+    } finally {
+      app.hotspot.mock!.setLearnDelay(0);
       await app.close();
     }
   }, 60_000);

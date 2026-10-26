@@ -4,6 +4,7 @@ import { Icon } from '../../components/Icon';
 import { AiTag, RefLink } from '../../components/LearnBits';
 import { Markdown } from '../../components/Markdown';
 import { formatClock, formatDate } from '../../lib/format';
+import { apiErrorText } from '../../lib/errors';
 import { useApp, useHubEvent } from '../../store';
 import type { QuizQuestion, QuizResult, Source, Weakness } from '../../types';
 
@@ -52,7 +53,9 @@ function ResultBox({ res }: { res: QuizResult }) {
       {res.feedback && (
         <div className="grade-box">
           <AiTag />
-          <p className="small">{res.feedback.reasoning}</p>
+          {res.feedback.unverified && <p className="warn small">{t('quiz.unverified')}</p>}
+          {res.feedback.capped && <p className="warn small">{t('quiz.capped')}</p>}
+          {res.feedback.reasoning && <p className="small">{res.feedback.reasoning}</p>}
           {res.feedback.rubric.length > 0 && (
             <>
               <span className="muted small">{t('quiz.rubric')}</span>
@@ -125,6 +128,7 @@ export function QuizTab({ subject }: { subject: number | null }) {
   const [now, setNow] = useState(Date.now());
   const [history, setHistory] = useState<{ id: number; mode: string; startedAt: number; total: number; points: number }[]>([]);
   const [weak, setWeak] = useState<Weakness[]>([]);
+  const [failed, setFailed] = useState<Record<number, string>>({});
   const submitted = useRef(false);
   // Modus Quelle/Auswahl: einzelne Quellen ankreuzen (sonst ganzes Fach bzw. alles)
   const [sources, setSources] = useState<Source[]>([]);
@@ -157,11 +161,14 @@ export function QuizTab({ subject }: { subject: number | null }) {
     try {
       const r = await post<{ session: Session; questions: QuizQuestion[] }>('/api/quiz/sessions', { mode, scope, count, ...(mode === 'exam' ? { timeLimitSec: minutes * 60 } : {}) });
       // Restzeit nach der eigenen Uhr (nicht der Serverzeit) – keine Anzeige über dem Limit
-      setSession({ ...r.session, startedAt: Date.now() });
+      const t0 = Date.now();
+      setSession({ ...r.session, startedAt: t0 });
+      setNow(t0); // Timer zeigt ab der ersten Sekunde die volle Zeit
       setQuestions(r.questions);
       setIdx(0);
       setAnswers({});
       setResults({});
+      setFailed({});
       submitted.current = false;
       setPhase('run');
     } catch (err) {
@@ -182,21 +189,36 @@ export function QuizTab({ subject }: { subject: number | null }) {
     if (submitted.current || !session) return;
     submitted.current = true;
     setPhase('grading');
-    try {
-      if (session.mode === 'exam') {
-        // Klausur: erst am Ende bewerten (Freitext durch das Modell, nacheinander)
-        for (let i = 0; i < questions.length; i++) {
+    if (session.mode === 'exam') {
+      // Klausur: alle Antworten auf einmal abgeben (Server prüft das Zeitlimit), geschlossene Fragen sind damit bewertet;
+      // Freitext danach einzeln – ein Fehler bei einer Frage stoppt die übrigen nicht
+      try {
+        const r = await post<{ results: Record<number, QuizResult | null>; pending: number[] }>(`/api/quiz/sessions/${session.id}/submit`, {
+          answers: questions.map((x) => ({ questionId: x.id, answer: answers[x.id] ?? '' })),
+        });
+        setResults((old) => ({ ...old, ...Object.fromEntries(Object.entries(r.results).filter(([, v]) => v !== null)) }));
+        for (const [i, qid] of r.pending.entries()) {
           setGrading(i + 1);
-          await grade(questions[i]!, answers[questions[i]!.id] ?? '');
+          const x = questions.find((y) => y.id === qid);
+          if (!x) continue;
+          try {
+            await grade(x, answers[qid] ?? '');
+          } catch (err) {
+            setFailed((f) => ({ ...f, [qid]: apiErrorText(t, err) }));
+          }
         }
+      } catch (err) {
+        toastError(err);
       }
+    }
+    try {
       await post(`/api/quiz/sessions/${session.id}/finish`);
     } catch (err) {
       toastError(err);
     }
     setPhase('result');
     loadMeta();
-  }, [session, questions, answers, grade, toastError, loadMeta]);
+  }, [session, questions, answers, grade, toastError, loadMeta, t]);
 
   // Klausur-Timer: läuft ab -> automatisch abgeben
   const deadline = session?.timeLimitSec ? session.startedAt + session.timeLimitSec * 1000 : null;
@@ -215,6 +237,8 @@ export function QuizTab({ subject }: { subject: number | null }) {
     setBusy(true);
     try {
       await grade(q, answers[q.id] ?? '');
+      // Fokus auf "Weiter"/"Abgeben" (Tastatur: Ergebnis lesen, Enter weiter)
+      requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.quiz-card .quiz-next')?.focus());
     } catch (err) {
       toastError(err);
     } finally {
@@ -348,6 +372,11 @@ export function QuizTab({ subject }: { subject: number | null }) {
                 {answers[x.id] === 'true' ? t('quiz.true') : answers[x.id] === 'false' ? t('quiz.false') : answers[x.id] || '–'}
               </p>
               {results[x.id] && <ResultBox res={results[x.id]!} />}
+              {failed[x.id] && (
+                <p className="err small" role="alert">
+                  <Icon name="alert" size={13} /> {t('quiz.gradeFailed', { error: failed[x.id]! })}
+                </p>
+              )}
             </article>
           ))}
       </div>
@@ -393,12 +422,12 @@ export function QuizTab({ subject }: { subject: number | null }) {
               </button>
             )}
             {(session?.mode === 'exam' || res) && idx < questions.length - 1 && (
-              <button className="btn primary" onClick={() => setIdx(idx + 1)}>
+              <button className="btn primary quiz-next" onClick={() => setIdx(idx + 1)}>
                 {t('quiz.next')}
               </button>
             )}
             {(session?.mode === 'exam' || res) && idx === questions.length - 1 && (
-              <button className="btn primary" onClick={() => void finish()}>
+              <button className="btn primary quiz-next" onClick={() => void finish()}>
                 {t('quiz.finish')}
               </button>
             )}

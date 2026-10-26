@@ -178,6 +178,8 @@ export function QueueView() {
             </div>
           )}
           {summary && <span className="muted small">{summary}</span>}
+          {j.state === 'done' && !!r?.truncated && !!r.total && <span className="warn small">{t('queue.result.scope', { chunks: r.chunks ?? 0, total: r.total })}</span>}
+          {j.state === 'done' && !!r?.failed && <span className="warn small">{t('queue.result.failed', { n: r.failed })}</span>}
           {detail && j.state === 'error' && (
             <p className="err small" role="note">
               <Icon name="alert" size={13} /> {detail}

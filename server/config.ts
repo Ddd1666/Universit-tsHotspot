@@ -41,6 +41,8 @@ export interface AppConfig {
   mediaAllowLocalHttp?: boolean;
   /** Tests: Fehler im abschließenden Schreibschritt eines Lern-Jobs einschleusen */
   learnFailBeforeCommit?: (kind: 'summary' | 'cards' | 'quiz' | 'graph') => void;
+  /** Tests: Zeitlimit je Lern-Modellaufruf */
+  learnCallTimeoutMs?: number;
 }
 
 /** Fake-Werkzeuge per Umgebungsvariable – wird nur im Mock-Modus akzeptiert (klar getrennt vom echten Betrieb). */
