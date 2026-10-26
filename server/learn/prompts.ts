@@ -109,24 +109,27 @@ ${SECURITY}`,
   ];
 }
 
-/** Zitatschreibweisen vereinheitlichen: [1, 3] -> [1][3], [2–4] -> [2][3][4] (höchstens 20 Nummern je Klammer). */
-export function normalizeCites(text: string): string {
+/**
+ * Zitatschreibweisen vereinheitlichen: [1, 3] -> [1][3], [2–4] -> [2][3][4] – nur wenn JEDE Nummer eine gültige Quelle ist
+ * (sonst ist es Mathematik wie das Intervall [0, 1] oder [2, 50]); höchstens 20 Nummern je Klammer.
+ */
+export function normalizeCites(text: string, ok: (n: number) => boolean = (n) => n >= 1): string {
   return text.replace(/\[(\d{1,4}(?:\s*[,;–-]\s*\d{1,4}){1,30})\]/g, (m, inner: string) => {
     const out: number[] = [];
     for (const part of inner.split(/\s*[,;]\s*/)) {
       const r = /^(\d{1,4})\s*[–-]\s*(\d{1,4})$/.exec(part);
-      if (r) for (let n = Number(r[1]); n <= Number(r[2]) && out.length < 20; n++) out.push(n);
-      else if (/^\d{1,4}$/.test(part)) out.push(Number(part));
-      else return m;
+      const [a, b] = r ? [Number(r[1]), Number(r[2])] : /^\d{1,4}$/.test(part) ? [Number(part), Number(part)] : [NaN, NaN];
+      if (!(a <= b) || b - a >= 20) return m;
+      for (let n = a; n <= b; n++) out.push(n);
     }
-    return out.map((n) => `[${n}]`).join('');
+    return out.length <= 20 && out.every(ok) ? out.map((n) => `[${n}]`).join('') : m;
   });
 }
 
 /** Map-/Reduce-Ausgabe prüfen: nicht leer; [n] außerhalb 1..max werden entfernt. */
 export function parseNotes(raw: string, allowed: number | Set<number>): string | null {
   const ok = (n: number) => (typeof allowed === 'number' ? n >= 1 && n <= allowed : allowed.has(n));
-  const text = normalizeCites(cleanText(raw, 40_000))
+  const text = normalizeCites(cleanText(raw, 40_000), ok)
     .replace(/\[(\d{1,4})\]/g, (m, n: string) => (ok(Number(n)) ? m : ''))
     .replace(/[ \t]+$/gm, '');
   return text.length >= 3 ? text : null;
@@ -199,7 +202,8 @@ export function parseCards(raw: string, group: LChunk[], max: number): { cards: 
       rejected++;
       continue;
     }
-    const claim = type === 'cloze' ? [...front.matchAll(CLOZE_RE)].map((m) => m[1]).join(' ') : back;
+    // Lückentext: der ganze Satz (Lücke gefüllt) muss im Abschnitt stehen – kurze Lückenwörter ("pH", "1") belegen allein nichts
+    const claim = type === 'cloze' ? front.replace(CLOZE_RE, '$1') : back;
     if (support(claim, chunk.text) < MIN_SUPPORT) {
       rejected++;
       continue;
@@ -403,7 +407,8 @@ export function parseGraph(raw: string, group: LChunk[]): GraphDraft | null {
     const doc = Number(c?.source);
     const chunk = Number.isInteger(doc) ? group[doc - 1] : undefined;
     const norm = normalizeName(name);
-    if (name.length < 2 || !norm || !chunk || seen.has(norm) || support(name, chunk.text) < 1) continue;
+    // Konzeptnamen müssen wörtlich vorkommen; zweibuchstabige Fachbegriffe ("pH") sind erlaubt
+    if (name.length < 2 || !norm || !chunk || seen.has(norm) || support(name, chunk.text, 2) < 1) continue;
     seen.add(norm);
     if (concepts.length < GRAPH_PER_GROUP.concepts) concepts.push({ name, norm, description: cleanText(c?.description, 400), doc });
   }

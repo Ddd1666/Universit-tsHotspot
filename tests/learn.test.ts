@@ -510,7 +510,7 @@ describe('Korrekturrunde 1 – Integration', () => {
     const before = tasks(app, 'cards').length;
     const j = await waitJob(app, (await job(app, { kind: 'cards', scope: { kind: 'source', id }, count: 5 })).id);
     expect(j.state, j.detail ?? '').toBe('done');
-    expect(j.result!.failed).toBe(1);
+    expect(j.result!.failed).toBe(0); // K10 (Runde 2): nur ganz gescheiterte Gruppen zählen – die gute Hälfte lieferte Karten
     expect(j.result!.created).toBeGreaterThan(0);
     expect(tasks(app, 'cards').length - before).toBe(7); // 3 (ganze Gruppe) + 1 (gute Hälfte) + 3 (kaputte Hälfte)
     // die Wiederholungen sind nicht identisch (Hinweis + höhere Temperatur)
@@ -585,16 +585,15 @@ describe('Korrekturrunde 1 – Integration', () => {
     const foreign = Number(ins.run('tf', 'Gehört nicht dazu.', null, 'true', 'fp-k18d', id, chunkId).lastInsertRowid);
     expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${foreign}/answer`, { answer: 'true', sessionId: p })).data.error).toBe('quiz_not_in_session');
     db().prepare('DELETE FROM quiz_questions WHERE id = ?').run(foreign);
-    // Klausur: Antwort einzeln -> abgelehnt; Abgabe nach Ablauf -> abgelehnt
-    const late = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'exam', scope: { sourceIds: [id] }, count: 10, timeLimitSec: 60 })).data.session.id;
-    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${mc}/answer`, { answer: 'Carnot-Maschine', sessionId: late })).data.error).toBe('quiz_not_submitted');
-    db().prepare('UPDATE quiz_sessions SET started_at = started_at - 600000 WHERE id = ?').run(late);
-    expect((await app.api<{ error: string }>('POST', `/api/quiz/sessions/${late}/submit`, { answers: [{ questionId: mc, answer: 'Carnot-Maschine' }] })).data.error).toBe('quiz_time_up');
+    // Klausur: Antwort einzeln -> abgelehnt (verspätete Abgabe: siehe Korrekturrunde 2, K4)
+    const unsubmitted = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'exam', scope: { sourceIds: [id] }, count: 10, timeLimitSec: 60 })).data.session.id;
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${mc}/answer`, { answer: 'Carnot-Maschine', sessionId: unsubmitted })).data.error).toBe('quiz_not_submitted');
+    await app.api('POST', `/api/quiz/sessions/${unsubmitted}/finish`);
     // Klausur rechtzeitig: geschlossene sofort bewertet, Freitext ausstehend und danach bewertet
     const ex = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'exam', scope: { sourceIds: [id] }, count: 10, timeLimitSec: 60 })).data.session.id;
     const sub = (await app.api<{ results: Record<string, { score: number } | null>; pending: number[] }>('POST', `/api/quiz/sessions/${ex}/submit`, {
       answers: [
-        { questionId: mc, answer: 'carnot-maschine' },
+        { questionId: mc, answer: 'Carnot-Maschine' }, // Auswahl: exakt die Option (K1, Runde 2)
         { questionId: sh, answer: 'Sie hat den maximalen Wirkungsgrad aller Kreisprozesse.' },
       ],
     })).data;
@@ -612,11 +611,14 @@ describe('Korrekturrunde 1 – Integration', () => {
   it('K17/K19/T11: Konzept-Vektoren nach Modellwechsel verworfen; Auswahl mit gelöschter erster Quelle; schwach belegte Map-Teile gemeldet', async () => {
     const id = await importText(app, 'Vektor.md', 'Die Entropie wächst. Der Hauptsatz gilt. Die Carnot-Maschine ist ideal und arbeitet zwischen Wärmebädern.');
     expect((await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'source', id } })).id)).state).toBe('done');
-    const withVec = () => (db().prepare('SELECT count(*) AS n FROM concepts WHERE vec IS NOT NULL').get() as { n: number }).n;
-    expect(withVec()).toBeGreaterThan(0);
+    const vecSizes = () => (db().prepare('SELECT coalesce(length(vec), 0) AS n FROM concepts').all() as { n: number }[]).map((r) => r.n);
+    const dims = vecSizes()[0]!;
+    expect(dims).toBeGreaterThan(4);
+    // Vektoren eines "alten Modells" (Attrappe) werden verworfen und mit dem aktuellen Modell neu eingebettet (K9, Runde 2)
+    db().prepare("UPDATE concepts SET vec = X'00000000'").run();
     db().prepare("UPDATE meta SET value = 'altes-modell' WHERE key = 'concept_vec_model'").run();
     expect((await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'source', id } })).id)).state).toBe('done');
-    expect(withVec()).toBe(0);
+    expect(new Set(vecSizes())).toEqual(new Set([dims]));
     // K19
     const gone = await importText(app, 'Weg.md', 'Ein Text, der gleich wieder gelöscht wird, mit genug Inhalt.');
     const j = await job(app, { kind: 'summary', scope: { kind: 'sources', ids: [gone, id] } });
@@ -649,6 +651,142 @@ describe('Korrekturrunde 1 – Zeitüberschreitungen', () => {
       await app.close();
     }
   }, 60_000);
+});
+
+describe('Korrekturrunde 2 – Integration', () => {
+  let app: TestApp;
+  let id: number;
+  let chunkId: number;
+  let n = 0;
+  beforeAll(async () => {
+    app = await startTestApp();
+    id = await importText(app, 'Runde2.txt', 'Die Entropie eines abgeschlossenen Systems nimmt niemals ab, das sagt der zweite Hauptsatz der Thermodynamik.');
+    chunkId = (db().prepare('SELECT id FROM chunks WHERE source_id = ?').get(id) as { id: number }).id;
+  });
+  afterAll(async () => {
+    await app?.close();
+  });
+  const db = () => app.hotspot.services.db;
+  /** Frage direkt anlegen (deterministisch, ohne Generierung) */
+  const question = (type: string, text: string, answer: string, options: string[] | null = null) =>
+    Number(
+      db()
+        .prepare("INSERT INTO quiz_questions(type, question, options, answer, explanation, topic, fingerprint, source_id, chunk_id, source_name, created_at) VALUES (?, ?, ?, ?, 'e', 't', ?, ?, ?, 'Runde2.txt', 1)")
+        .run(type, text, options ? JSON.stringify(options) : null, answer, `fp-r2-${++n}`, id, chunkId).lastInsertRowid,
+    );
+  const exam = async (ids: number[]) => {
+    // Sitzung nur mit genau diesen Fragen (Pool der Quelle kann mehr enthalten)
+    const s = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'exam', scope: { sourceIds: [id] }, count: 100, timeLimitSec: 60 })).data.session.id;
+    db().prepare('UPDATE quiz_sessions SET question_ids = ? WHERE id = ?').run(JSON.stringify(ids), s);
+    return s;
+  };
+  const model = 'Die Entropie eines abgeschlossenen Systems nimmt niemals ab.';
+
+  it('K3: korrekte Umschreibung und Antwort in anderer Sprache werden nicht gedeckelt, Nicht-Antwort schon', async () => {
+    const qid = question('short', 'Was sagt der zweite Hauptsatz?', model);
+    const answer = async (text: string) => (await app.api<{ score: number; feedback: { capped?: boolean; quotes: unknown[] } }>('POST', `/api/quiz/questions/${qid}/answer`, { answer: text })).data;
+    // MOCKFULLPOINTS: das Modell vergibt volle Punkte (hier: zu Recht)
+    const para = await answer('MOCKFULLPOINTS In einem isolierten System sinkt die Entropie nie.');
+    expect([para.score, para.feedback.capped]).toEqual([1, undefined]);
+    const en = await answer('MOCKFULLPOINTS In an isolated container, the disorder can only grow over time.');
+    expect(en.feedback.quotes.length).toBeGreaterThan(0);
+    expect([en.score, en.feedback.capped]).toEqual([1, undefined]);
+    const none = await answer('MOCKFULLPOINTS Bananen sind gelb und krumm.');
+    expect([none.score, none.feedback.capped]).toEqual([0.2, true]);
+  });
+
+  it('K4: verspätete Klausurabgabe wird gespeichert, bewertet und als verspätet markiert', async () => {
+    const mc = question('mc', 'Was nimmt niemals ab?', 'Entropie', ['Entropie', 'Energie', 'Masse']);
+    const s = await exam([mc]);
+    db().prepare('UPDATE quiz_sessions SET started_at = started_at - 600000 WHERE id = ?').run(s);
+    const sub = await app.api<{ results: Record<string, { score: number }>; late: boolean }>('POST', `/api/quiz/sessions/${s}/submit`, { answers: [{ questionId: mc, answer: 'Entropie' }] });
+    expect(sub.status).toBe(200);
+    expect([sub.data.results[mc]!.score, sub.data.late]).toEqual([1, true]);
+    const fin = (await app.api<{ points: number; late: boolean }>('POST', `/api/quiz/sessions/${s}/finish`)).data;
+    expect([fin.points, fin.late]).toEqual([1, true]);
+    const hist = (await app.api<{ id: number; late: boolean }[]>('GET', '/api/quiz/history')).data;
+    expect(hist.find((h) => h.id === s)!.late).toBe(true);
+  });
+
+  it('K5/T2: Bewertung scheitert an Ollama-HTTP-500 -> eigener Code, Lösung trotzdem da; nach Abschluss nachbewertbar, Verlauf zeigt "ausstehend"', async () => {
+    const a = question('short', 'Was nimmt niemals ab (1)?', model);
+    const b = question('short', 'Was nimmt niemals ab (2)?', model);
+    const s = await exam([a, b]);
+    const sub = (await app.api<{ results: Record<string, { pending?: boolean; answer: string }>; pending: number[] }>('POST', `/api/quiz/sessions/${s}/submit`, {
+      answers: [
+        { questionId: a, answer: model },
+        { questionId: b, answer: model },
+      ],
+    })).data;
+    expect(sub.pending).toEqual([a, b]);
+    expect([sub.results[a]!.pending, sub.results[a]!.answer]).toEqual([true, model]); // Lösung schon vor der Bewertung
+    app.hotspot.mock!.setLearnStatus(500);
+    try {
+      const fail = await app.api<{ error: string }>('POST', `/api/quiz/questions/${a}/answer`, { answer: '', sessionId: s });
+      expect([fail.status, fail.data.error]).toEqual([502, 'ollama_error']);
+    } finally {
+      app.hotspot.mock!.setLearnStatus(0);
+    }
+    const fin = (await app.api<{ pending: number }>('POST', `/api/quiz/sessions/${s}/finish`)).data;
+    expect(fin.pending).toBe(2);
+    expect((await app.api<{ id: number; pending: number }[]>('GET', '/api/quiz/history')).data.find((h) => h.id === s)!.pending).toBe(2);
+    // einzeln nachbewerten ("Bewertung wiederholen" im Ergebnis) – auch nach Abschluss
+    const one = await app.api<{ score: number }>('POST', `/api/quiz/questions/${a}/answer`, { answer: 'egal', sessionId: s });
+    expect(one.status).toBe(200);
+    expect(one.data.score).toBeGreaterThan(0.5);
+    // Rest der Sitzung nachbewerten (Verlauf)
+    expect((await app.api<{ graded: number; pending: number }>('POST', `/api/quiz/sessions/${s}/regrade`)).data).toEqual({ graded: 1, pending: 0 });
+    expect((await app.api<{ id: number; pending: number; points: number }[]>('GET', '/api/quiz/history')).data.find((h) => h.id === s)!.pending).toBe(0);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${a}/answer`, { answer: 'x', sessionId: s })).data.error).toBe('quiz_finished');
+  });
+
+  it('K7/T1: parallele Doppelantwort auf eine Freitextfrage -> 409 statt 500', async () => {
+    const qid = question('short', 'Was nimmt niemals ab (3)?', model);
+    const p = (await app.api<{ session: { id: number } }>('POST', '/api/quiz/sessions', { mode: 'practice', scope: { sourceIds: [id] }, count: 100 })).data.session.id;
+    app.hotspot.mock!.setLearnDelay(400);
+    try {
+      const r = await Promise.all([1, 2].map(() => app.api<{ error?: string }>('POST', `/api/quiz/questions/${qid}/answer`, { answer: model, sessionId: p })));
+      expect(r.map((x) => x.status).sort()).toEqual([200, 409]);
+      expect(r.find((x) => x.status === 409)!.data.error).toBe('quiz_already_answered');
+    } finally {
+      app.hotspot.mock!.setLearnDelay(0);
+    }
+  });
+
+  it('K6: Übungsantwort ohne Sitzung auf eine Frage einer laufenden Klausur wird abgelehnt', async () => {
+    const qid = question('tf', 'Die Entropie nimmt niemals ab.', 'true');
+    const s = await exam([qid]);
+    expect((await app.api<{ error: string }>('POST', `/api/quiz/questions/${qid}/answer`, { answer: 'true' })).data.error).toBe('quiz_exam_running');
+    await app.api('POST', `/api/quiz/sessions/${s}/submit`, { answers: [{ questionId: qid, answer: 'true' }] });
+    expect((await app.api('POST', `/api/quiz/questions/${qid}/answer`, { answer: 'true' })).status).toBe(200);
+  });
+
+  it('K9: Konzepte ohne Vektor werden beim nächsten Graph-Lauf nachträglich eingebettet', async () => {
+    expect((await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'source', id } })).id)).state).toBe('done');
+    db().prepare('UPDATE concepts SET vec = NULL').run();
+    const other = await importText(app, 'Anderes.txt', 'Die Carnot-Maschine arbeitet zwischen zwei Wärmebädern.');
+    expect((await waitJob(app, (await job(app, { kind: 'graph', scope: { kind: 'source', id: other } })).id)).state).toBe('done');
+    expect((db().prepare('SELECT count(*) AS n FROM concepts WHERE vec IS NULL').get() as { n: number }).n).toBe(0);
+  });
+
+  it('K12: solange Bild-/Scan-Jobs warten, beginnt kein Lernaufruf (Slot-Übergabe an Medien)', async () => {
+    const deps = (app.hotspot.services.learn as unknown as { deps: { mediaBusy?: () => boolean } }).deps;
+    const original = deps.mediaBusy;
+    let busy = true;
+    deps.mediaBusy = () => busy;
+    try {
+      const before = tasks(app, 'cards').length;
+      const j = await job(app, { kind: 'cards', scope: { kind: 'source', id }, count: 3 });
+      await waitFor(() => (app.hotspot.services.learn.get(j.id)?.note === 'waiting_media' ? true : null));
+      await new Promise((r) => setTimeout(r, 1200));
+      expect(tasks(app, 'cards').length).toBe(before);
+      busy = false;
+      expect((await waitJob(app, j.id)).state).toBe('done');
+      expect(tasks(app, 'cards').length).toBeGreaterThan(before);
+    } finally {
+      deps.mediaBusy = original;
+    }
+  });
 });
 
 describe('Scheduler: Lern-Generierung hat die niedrigste Priorität', () => {

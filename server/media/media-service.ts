@@ -295,6 +295,11 @@ export class MediaService {
     return r ? this.dto(r, r.source_name) : null;
   }
 
+  /** Vision-Arbeit (Bild/Scan) wartet oder läuft – Lern-Jobs lassen ihr dann den GPU-Slot. */
+  visionBusy(): boolean {
+    return !!this.deps.db.prepare("SELECT 1 FROM media_jobs WHERE state IN ('queued', 'running') AND kind IN ('image', 'scan') LIMIT 1").get();
+  }
+
   counts(): { queued: number; running: number; error: number } {
     const rows = this.deps.db.prepare("SELECT state, count(*) AS n FROM media_jobs WHERE state IN ('queued', 'running', 'error') GROUP BY state").all() as {
       state: string;

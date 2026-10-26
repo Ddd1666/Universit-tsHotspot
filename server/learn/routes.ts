@@ -245,13 +245,29 @@ export function registerLearnRoutes(app: FastifyInstance, s: Services): void {
       if (err instanceof OllamaError) {
         if (err.code === 'model_missing') throw new HttpError(409, 'model_missing', err.message, s.settings.get().chatModel);
         if (err.code === 'oom') throw new HttpError(503, 'learn_oom', err.message);
-        throw new HttpError(503, 'ollama_unreachable', err.message);
+        if (err.code === 'unreachable') throw new HttpError(503, 'ollama_unreachable', err.message);
+        if (err.code === 'timeout' || err.code === 'aborted') throw new HttpError(504, 'ollama_timeout', err.message);
+        // Ollama erreichbar, meldet aber einen Fehler (z. B. HTTP 500) – nicht als "nicht erreichbar" ausgeben
+        throw new HttpError(502, 'ollama_error', err.message, err.message.slice(0, 200));
       }
       if ((err as { code?: string }).code === 'learn_invalid_output') throw new HttpError(502, 'learn_invalid_output', (err as Error).message);
       throw err;
     } finally {
       end();
     }
+  };
+
+  /** Antwort bewerten: geschlossen lokal, Freitext vom Modell gegen die Quellen. */
+  const gradeAnswer = async (q: data.QuestionRow, answer: string): Promise<{ score: number; feedback: Awaited<ReturnType<typeof data.gradeShort>> | null }> => {
+    if (q.type !== 'short') return { score: data.gradeClosed(q, answer), feedback: null };
+    if (!answer.trim()) return { score: 0, feedback: null };
+    const feedback = await data.gradeShort(s.db, q, answer, {
+      call: interactive,
+      lang: s.settings.get().language,
+      numCtx: s.settings.get().numCtx,
+      search: async (text, ids) => (await hybridSearch({ db: s.db, vectors: s.vectors, client: s.searchClient() }, text, { scope: ids ? { mode: 'sources', ids } : { mode: 'all' }, limit: 4 })).hits,
+    });
+    return { score: feedback.score, feedback };
   };
 
   app.post(
@@ -265,34 +281,37 @@ export function registerLearnRoutes(app: FastifyInstance, s: Services): void {
     async (req) => {
       const q = data.getQuestion(s.db, (req.params as { id: number }).id);
       const b = req.body as { answer: string; sessionId?: number | null };
-      // Regeln je Sitzung: Frage gehört dazu, nur eine Antwort je Frage, Klausur nur über die Abgabe (Zeitlimit dort)
+      // Regeln je Sitzung: Frage gehört dazu, nur eine Antwort je Frage, Klausur nur über die Abgabe
       let attempt: ReturnType<typeof data.getAttempt>;
       if (b.sessionId) {
-        const session = data.sessionFor(s.db, b.sessionId, q.id);
+        const session = data.sessionFor(s.db, b.sessionId, q.id, true);
         attempt = data.getAttempt(s.db, b.sessionId, q.id);
+        // ausstehende Freitext-Bewertung darf auch nach Abschluss nachgeholt werden ("Bewertung wiederholen")
+        if (session.finished_at && !attempt?.pending) throw new HttpError(409, 'quiz_finished', 'Quiz ist bereits abgeschlossen');
         if (attempt && !attempt.pending) throw new HttpError(409, 'quiz_already_answered', 'Diese Frage wurde bereits beantwortet');
         if (!attempt && session.mode === 'exam') throw new HttpError(409, 'quiz_not_submitted', 'Klausur zuerst abgeben');
-      }
+      } else if (data.inOpenExam(s.db, q.id)) throw new HttpError(409, 'quiz_exam_running', 'Frage gehört zu einer laufenden Klausur');
       const answer = attempt ? attempt.answer : b.answer;
-      let score: number;
-      let feedback: Awaited<ReturnType<typeof data.gradeShort>> | null = null;
-      if (q.type === 'short') {
-        if (!answer.trim()) score = 0;
-        else {
-          feedback = await data.gradeShort(s.db, q, answer, {
-            call: interactive,
-            lang: s.settings.get().language,
-            numCtx: s.settings.get().numCtx,
-            search: async (text, ids) => (await hybridSearch({ db: s.db, vectors: s.vectors, client: s.searchClient() }, text, { scope: ids ? { mode: 'sources', ids } : { mode: 'all' }, limit: 4 })).hits,
-          });
-          score = feedback.score;
-        }
-      } else score = data.gradeClosed(q, answer);
-      if (attempt) data.updateAttempt(s.db, attempt.id, score, feedback);
-      else data.recordAttempt(s.db, q.id, b.sessionId ?? null, answer, score, feedback);
+      const { score, feedback } = await gradeAnswer(q, answer);
+      // nach dem Warten auf das Modell: parallele Doppelantwort/-bewertung -> 409 (nicht 500)
+      if (attempt) {
+        if (!data.updateAttempt(s.db, attempt.id, score, feedback)) throw new HttpError(409, 'quiz_already_answered', 'Diese Frage wurde bereits bewertet');
+      } else data.recordAttempt(s.db, q.id, b.sessionId ?? null, answer, score, feedback);
       return { score, answer: q.answer, explanation: q.explanation, source: data.questionRef(q, s.db), feedback };
     },
   );
+
+  // Ausstehende Freitext-Bewertungen einer (auch abgeschlossenen) Sitzung nachholen – z. B. nachdem Ollama wieder läuft
+  app.post('/api/quiz/sessions/:id/regrade', { schema: { params: idParam } }, async (req) => {
+    const id = (req.params as { id: number }).id;
+    data.sessionFor(s.db, id, undefined, true);
+    let graded = 0;
+    for (const p of data.pendingAttempts(s.db, id)) {
+      const { score, feedback } = await gradeAnswer(data.getQuestion(s.db, p.questionId), p.answer);
+      if (data.updateAttempt(s.db, p.id, score, feedback)) graded++;
+    }
+    return { graded, pending: data.pendingAttempts(s.db, id).length };
+  });
 
   // Klausur abgeben: alle Antworten auf einmal; Zeitlimit wird beim Abgeben geprüft, Freitext danach einzeln bewertet
   app.post(

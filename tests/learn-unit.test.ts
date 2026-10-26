@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NEW_CARD, review, type Rating, type SrsState } from '../server/learn/srs.ts';
 import { citesIn, normalizeCites, parseCards, parseGrade, parseGraph, parseNotes, parseQuiz, renumber, reduceMessages, mapMessages } from '../server/learn/prompts.ts';
-import { documentsBlock, evenPick, fingerprint, groupChunks, isQuoteOf, normalizeName, sampleChunks, support, type LChunk } from '../server/learn/text.ts';
+import { documentsBlock, evenPick, fingerprint, groupChunks, guessLang, isQuoteOf, normalizeName, sampleChunks, support, type LChunk } from '../server/learn/text.ts';
 import { gradeClosed, type QuestionRow } from '../server/learn/data.ts';
 import { Scheduler } from '../server/scheduler.ts';
 import { LearnService } from '../server/learn/jobs.ts';
@@ -238,7 +238,6 @@ describe('Pathologische Eingaben (Zeitlimit)', () => {
 
 describe('Korrekturrunde 1: Auswahl, Normalisierung, Zitate, Bewertung', () => {
   it('K1: Kontingent je Quelle + gleichmäßig über das Dokument (nicht nur älteste Quellen/Anfang)', () => {
-    expect(evenPick(10, 3)).toEqual([0, 3, 6]);
     expect(evenPick(3, 10)).toEqual([0, 1, 2]);
     const rows = [...Array.from({ length: 200 }, (_, i) => ({ id: i + 1, sourceId: 1 })), ...Array.from({ length: 50 }, (_, i) => ({ id: 1000 + i, sourceId: 2 }))];
     const ids = sampleChunks(rows, 100);
@@ -257,7 +256,7 @@ describe('Korrekturrunde 1: Auswahl, Normalisierung, Zitate, Bewertung', () => {
     expect(gradeClosed(q('cloze', 'Entropie'), '  entropie ')).toBe(1);
     expect(gradeClosed(q('cloze', '9,81'), '9.81')).toBe(1);
     expect(gradeClosed(q('cloze', 'Wärme'), 'WÄRME')).toBe(1);
-    expect(gradeClosed(q('mc', 'Option A'), 'option a')).toBe(1);
+    expect(gradeClosed(q('mc', 'Option A'), 'Option A')).toBe(1);
     expect(gradeClosed(q('mc', 'Option A'), '')).toBe(0);
     expect(gradeClosed(q('tf', 'true'), 'false')).toBe(0);
     expect(fingerprint('Die Entropie nimmt ab')).not.toBe(fingerprint('Die Entropie nimmt nicht ab'));
@@ -267,7 +266,6 @@ describe('Korrekturrunde 1: Auswahl, Normalisierung, Zitate, Bewertung', () => {
 
   it('K8: kurze/numerische Antworten werden nicht als unplausibel verworfen (wörtlich im Quelltext)', () => {
     const src = 'Der pH-Wert von Wasser ist 7. Die Fallbeschleunigung beträgt 9,81 m/s².';
-    expect(support('pH', src)).toBe(1);
     expect(support('9,81 m/s²', src)).toBe(1);
     expect(support('12,5 m/s²', src)).toBeLessThan(0.5);
     const g = [chunk(1, src)];
@@ -302,6 +300,78 @@ describe('Korrekturrunde 1: Auswahl, Normalisierung, Zitate, Bewertung', () => {
     release();
     (await embed)();
     expect(s.snapshot().holder).toBeNull();
+  });
+});
+
+describe('Korrekturrunde 2: Normalisierung, Zitate, Auswahl', () => {
+  const q = (type: QuestionRow['type'], answer: string) => ({ type, answer }) as QuestionRow;
+
+  it('K1: Auswahl exakt (nur Leerraum/Unicode-Form egal), Lückentext mit bedeutungstragenden Zeichen', () => {
+    expect(gradeClosed(q('mc', 'Option A'), 'option a')).toBe(0);
+    expect(gradeClosed(q('mc', 'Option A'), '  Option A ')).toBe(1);
+    expect(gradeClosed(q('mc', 'Wärme'.normalize('NFC')), 'Wärme'.normalize('NFD'))).toBe(1);
+    expect(gradeClosed(q('mc', 'a + b'), 'a - b')).toBe(0);
+    const cloze = (expected: string, given: string) => gradeClosed(q('cloze', expected), given);
+    expect(cloze('a-b', 'a+b')).toBe(0);
+    expect(cloze('x<y', 'x>y')).toBe(0);
+    expect(cloze('x ≤ 5', 'x < 5')).toBe(0);
+    expect(cloze('x ≤ 5', 'x <= 5')).toBe(1);
+    expect(cloze('a ≠ b', 'a = b')).toBe(0);
+    expect(cloze('m/s', 'm s')).toBe(0);
+    expect(cloze('−5', '-5')).toBe(1); // Unicode-Minus
+    expect(cloze('–5', '-5')).toBe(1);
+    expect(cloze('x²', 'x2')).toBe(0);
+    expect(cloze('x²', 'x^2')).toBe(1);
+    expect(cloze('10⁻³', '10^-3')).toBe(1);
+    expect(cloze('die Entropie', 'Entropie')).toBe(1);
+    expect(cloze('Entropie', 'eine Entropie')).toBe(1);
+    expect(cloze('1.000', '1000')).toBe(1);
+    expect(cloze('1.000.000', '1000000')).toBe(1);
+    expect(cloze('1.000,5', '1000.5')).toBe(1);
+    expect(cloze('9,81', '9.81')).toBe(1);
+    expect(cloze('1,5', '15')).toBe(0);
+    expect(cloze('1.5', '15')).toBe(0);
+    expect(cloze('Carnot-Prozess', 'Carnot Prozess')).toBe(1);
+    expect(cloze('Wärme', 'Waerme')).toBe(0); // T4: nicht gleichgesetzt, die Lösung wird angezeigt
+    // gleiche Regeln im Fingerabdruck
+    expect(fingerprint('Was ist x² + 1?')).not.toBe(fingerprint('Was ist x2 + 1?'));
+    expect(fingerprint('Gilt a - b?')).not.toBe(fingerprint('Gilt a + b?'));
+    expect(fingerprint('Gilt x < y?')).not.toBe(fingerprint('Gilt x > y?'));
+    expect(fingerprint('Die Entropie nimmt zu.')).toBe(fingerprint('Entropie nimmt zu'));
+  });
+
+  it('K11: wörtliche Plausibilität erst ab Mindestlänge oder als Zahl mit Einheit', () => {
+    expect(support('1', 'Seite 1 von 3')).toBe(0);
+    expect(support('Ja', 'Ja, das stimmt.')).toBe(0);
+    expect(support('5V', 'Die Spannung beträgt 5V.')).toBe(1);
+    expect(support('5 V', 'Die Spannung beträgt 5 V.')).toBe(1);
+    expect(support('pH', 'Der pH-Wert ist 7.')).toBe(0);
+    expect(support('pH', 'Der pH-Wert ist 7.', 2)).toBe(1); // Konzeptnamen dürfen zweibuchstabig sein
+    // Lückentext mit kurzem Lückenwort: belegt nur, wenn der ganze Satz im Abschnitt steht
+    const g = [chunk(1, 'Der Wirkungsgrad hängt nur von den Temperaturen ab. Es gibt 1 Hauptsatz pro Kapitel.')];
+    const r = parseCards(JSON.stringify({ cards: [{ type: 'cloze', front: 'Die Carnot-Maschine hat {{1}} Kolben.', back: '', source: 1 }] }), g, 5)!;
+    expect([r.cards.length, r.rejected]).toEqual([0, 1]);
+  });
+
+  it('K2: Klammern nur umschreiben, wenn alle Nummern gültige Quellen sind (keine 0, keine Dezimalzahl)', () => {
+    expect(normalizeCites('im Intervall [0, 1]')).toBe('im Intervall [0, 1]');
+    expect(parseNotes('- Werte im Intervall [0, 1] liegen [2]', 5)).toBe('- Werte im Intervall [0, 1] liegen [2]');
+    expect(parseNotes('- Bereich [2, 50] laut [1–3]', 5)).toBe('- Bereich [2, 50] laut [1][2][3]');
+    expect(parseNotes('- p in [1.5, 2] [1]', 5)).toBe('- p in [1.5, 2] [1]');
+    expect(parseNotes('- A [1, 3]', new Set([1]))).toBe('- A [1, 3]');
+    expect(parseNotes('- A [1, 3]', new Set([1, 3]))).toBe('- A [1][3]');
+  });
+
+  it('K8: gleichmäßige Auswahl je Abschnitt mittig', () => {
+    expect(evenPick(10, 3)).toEqual([1, 5, 8]);
+    expect(evenPick(4, 1)).toEqual([2]);
+    expect(evenPick(100, 2)).toEqual([25, 75]);
+  });
+
+  it('K3: Spracherkennung für die Deckel-Ausnahme bei Antworten in anderer Sprache', () => {
+    expect(guessLang('In an isolated container, the disorder can only grow.')).toBe('en');
+    expect(guessLang('Die Entropie eines abgeschlossenen Systems nimmt niemals ab.')).toBe('de');
+    expect(guessLang('Entropie')).toBeNull();
   });
 });
 

@@ -55,7 +55,7 @@ export interface LearnJobDTO {
   total: number | null;
   detail: string | null;
   result: Record<string, number> | null;
-  note: 'waiting_ollama' | 'waiting_chat' | null;
+  note: 'waiting_ollama' | 'waiting_chat' | 'waiting_media' | null;
   etaSec: number | null;
   createdAt: number;
   updatedAt: number;
@@ -112,6 +112,10 @@ export const predictFor = (base: number, numCtx: number) => Math.min(base, Math.
 const MAX_TIMEOUTS = 3;
 /** Map-Ausgabe gilt als schwach belegt, wenn weniger als dieser Anteil ihrer Inhaltswörter im Abschnitt steht */
 const WEAK_SUPPORT = 0.4;
+/** so viele Konzepte ohne Vektor werden je Graph-Lauf nachträglich eingebettet */
+const VEC_BACKFILL = 500;
+/** Abfrageintervall, solange Medien-Jobs Vorrang haben */
+const MEDIA_POLL_MS = 1000;
 
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
@@ -146,6 +150,8 @@ export interface LearnDeps {
   failBeforeCommit?: (kind: LearnKind) => void;
   /** Zeitlimit je Modellaufruf (Standard 10 min; Tests kürzer) */
   callTimeoutMs?: number;
+  /** Medien-Jobs mit Vision-Aufrufen warten/laufen: dann keinen langen Lernaufruf beginnen (würde gleich wieder verdrängt) */
+  mediaBusy?: () => boolean;
 }
 
 /**
@@ -402,6 +408,11 @@ export class LearnService {
     let httpFailures = 0;
     let timeouts = 0;
     for (;;) {
+      // Slot-Übergabe an Medien: zwischen zwei Vision-Aufrufen ist der Slot kurz frei – nicht hineinstarten
+      while (this.deps.mediaBusy?.()) {
+        this.setNote(a, 'waiting_media');
+        await sleep(MEDIA_POLL_MS, a.ctrl.signal);
+      }
       if (scheduler.chatActive) this.setNote(a, 'waiting_chat');
       const release = await scheduler.acquire('learn', a.ctrl.signal).catch(() => {
         throw codedError('abgebrochen', 'learn_cancelled');
@@ -436,18 +447,17 @@ export class LearnService {
   /**
    * Eine Textgruppe verarbeiten. Liefert das Modell auch nach 3 Versuchen keine gültige Ausgabe, wird die Gruppe einmal
    * halbiert (kürzere Eingabe/Ausgabe) und sonst übersprungen – eine kaputte Gruppe kippt nicht den ganzen Job.
+   * `stats.failed` zählt nur Gruppen, von denen gar nichts verwertbar war (vergleichbar mit der Gruppenzahl).
    */
   private async tryGroup<T>(g: LChunk[], run: (g: LChunk[]) => Promise<T>, stats: { failed: number }, depth = 0): Promise<{ g: LChunk[]; r: T }[]> {
     try {
       return [{ g, r: await run(g) }];
     } catch (err) {
       if ((err as { code?: string }).code !== 'learn_invalid_output') throw err;
-      if (depth === 0 && g.length > 1) {
-        const mid = Math.ceil(g.length / 2);
-        return [...(await this.tryGroup(g.slice(0, mid), run, stats, 1)), ...(await this.tryGroup(g.slice(mid), run, stats, 1))];
-      }
-      stats.failed++;
-      return [];
+      const mid = Math.ceil(g.length / 2);
+      const parts = depth === 0 && g.length > 1 ? [...(await this.tryGroup(g.slice(0, mid), run, stats, 1)), ...(await this.tryGroup(g.slice(mid), run, stats, 1))] : [];
+      if (depth === 0 && !parts.length) stats.failed++;
+      return parts;
     }
   }
 
@@ -752,6 +762,16 @@ export class LearnService {
       tx(db, () => {
         db.exec('UPDATE concepts SET vec = NULL');
         setMeta(db, 'concept_vec_model', embedModel);
+      });
+    }
+    // Konzepte ohne Vektor (nach Modellwechsel oder Embedding damals nicht verfügbar) mit dem aktuellen Modell nachtragen
+    // ponytail: höchstens VEC_BACKFILL je Lauf, der Rest folgt bei den nächsten Läufen
+    const missing = db.prepare('SELECT id, name FROM concepts WHERE vec IS NULL ORDER BY id LIMIT ?').all(VEC_BACKFILL) as { id: number; name: string }[];
+    const filled = await this.embed(a, missing.map((m) => m.name));
+    if (filled?.length) {
+      tx(db, () => {
+        const up = db.prepare('UPDATE concepts SET vec = ? WHERE id = ?');
+        missing.forEach((m, i) => up.run(new Uint8Array(filled[i]!.buffer, filled[i]!.byteOffset, filled[i]!.byteLength), m.id));
       });
     }
     const stats = { failed: 0 };

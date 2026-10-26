@@ -18,6 +18,8 @@ export interface MockOllama {
   setEmbedDelay(ms: number): void;
   /** künstliche Verzögerung für Lern-Aufrufe (Tests: Chat unterbricht die Generierung) */
   setLearnDelay(ms: number): void;
+  /** Lern-Aufrufe antworten mit diesem HTTP-Status (0 = normal; Tests: Bewertung scheitert an Ollama-Fehler) */
+  setLearnStatus(status: number): void;
 }
 
 const MODELS: { name: string; size: number; family: string; params: string; caps: string[] }[] = [
@@ -232,6 +234,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
   let down = false;
   let embedDelay = 0;
   let learnDelay = 0;
+  let learnStatus = 0;
   let lastChatModel = 'gemma3:4b';
 
   const server = http.createServer(async (req, res) => {
@@ -308,6 +311,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
               });
             });
           if (res.destroyed) return;
+          if (learnStatus) return json(learnStatus, { error: `mock learn failure ${learnStatus}` });
           return json(200, { model, message: { role: 'assistant', content: learnAnswer(task, messages.map((x) => x.content).join('\n')) }, done: true });
         }
         const answer = buildAnswer(messages);
@@ -360,6 +364,7 @@ export async function startMockOllama(opts: { port?: number; tokenDelayMs?: numb
     setDown: (d) => (down = d),
     setEmbedDelay: (ms) => (embedDelay = ms),
     setLearnDelay: (ms) => (learnDelay = ms),
+    setLearnStatus: (status) => (learnStatus = status),
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

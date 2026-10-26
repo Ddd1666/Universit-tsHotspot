@@ -182,7 +182,19 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     scheduler,
   });
   chat.recoverInterrupted();
-  const learn = new LearnService({ db, client, settings, scheduler, bus, library, vectors, log, failBeforeCommit: config.learnFailBeforeCommit, callTimeoutMs: config.learnCallTimeoutMs });
+  const learn = new LearnService({
+    db,
+    client,
+    settings,
+    scheduler,
+    bus,
+    library,
+    vectors,
+    log,
+    failBeforeCommit: config.learnFailBeforeCommit,
+    callTimeoutMs: config.learnCallTimeoutMs,
+    mediaBusy: () => media.visionBusy(),
+  });
 
   settings.onChange((_s, changed) => {
     if (changed.includes('ollamaUrl')) void monitor.refresh();

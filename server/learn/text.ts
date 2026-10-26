@@ -140,10 +140,10 @@ export function loadScope(db: DB, scope: LearnScope, max: number): { chunks: LCh
   return { chunks: rows, truncated: all.length > max, total: all.length, title, subjectId };
 }
 
-/** k von n Indizes gleichmäßig verteilt (Anfang, Mitte, Ende). */
+/** k von n Indizes gleichmäßig verteilt, je Abschnitt mittig (nicht immer der Anfang des ersten). */
 export function evenPick(n: number, k: number): number[] {
   if (k >= n) return Array.from({ length: n }, (_, i) => i);
-  return Array.from({ length: Math.max(0, k) }, (_, j) => Math.floor((j * n) / k));
+  return Array.from({ length: Math.max(0, k) }, (_, j) => Math.floor(((j + 0.5) * n) / k));
 }
 
 /**
@@ -226,18 +226,57 @@ const STOP = new Set(
   'der die das den dem des ein eine einer eines einem einen und oder aber ist sind war wird werden mit von zu im in am an auf aus bei für fur als auch wie was wer the a an and or of to in on for is are was be with by as at from that this it its'.split(' '),
 );
 
-/** Text vergleichbar machen: Kleinschrift, ohne Diakritika, Dezimalkomma -> Punkt, Satzzeichen -> Leerzeichen. */
+const SUPERSCRIPT = '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ';
+const SUPERSCRIPT_PLAIN = '0123456789+-=()ni';
+
+/** Zahl vereinheitlichen: eindeutige Tausendertrennung (1.000 / 1.000.000 / 1.000,5 / 1,000,000 / 1,000.5) weg, Dezimalkomma -> Punkt. */
+function canonicalNumber(m: string): string {
+  let t = m;
+  if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) t = t.replace(/\./g, '');
+  else if (/^\d{1,3}(,\d{3})+\.\d+$/.test(t) || /^\d{1,3}(,\d{3}){2,}$/.test(t)) t = t.replace(/,/g, '');
+  return t.replace(/,/g, '.').replace(/\./g, ''); // Dezimalpunkt schützen (Privatbereich), sonst wäre er Satzzeichen
+}
+
+/**
+ * Text vergleichbar machen (Lückentext-Bewertung, Fingerabdruck, wörtliche Plausibilität): Kleinschrift, ohne Diakritika,
+ * Satzzeichen -> Leerzeichen, führender Artikel weg. Bedeutungstragend bleiben Zahlen (1.000 = 1000, 9,81 = 9.81) und
+ * Operatoren - + < > = ≤ ≥ ≠ / ^ (Unicode-Minus = "-", x² = x^2 ≠ x2). Bindestrich zwischen Wörtern ist kein Minus.
+ */
 export function normalizeText(s: string): string {
-  return s
+  const t = s
+    // vor NFKD: das machte aus ² eine 2 und aus ≠ ein =
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ]+/g, (m) => '^' + [...m].map((c) => SUPERSCRIPT_PLAIN[SUPERSCRIPT.indexOf(c)]).join(''))
+    .replace(/≠/g, '')
+    .replace(/≤/g, '<=')
+    .replace(/≥/g, '>=')
     .normalize('NFKD')
     .replace(/\p{M}/gu, '')
     .toLowerCase()
-    .replace(/(\d),(\d)/g, '$1.$2')
-    .replace(/(\d)\.(\d)/g, '$1$2') // Dezimalpunkt kurz schützen (Zeichen aus dem Privatbereich)
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/[‐-–−﹣－]/g, '-')
+    .replace(/⁄/g, '/')
+    .replace(/\d[\d.,]*\d/g, canonicalNumber)
+    .replace(/(\p{L}{2})-(?=\p{L}{2})/gu, '$1 ')
+    .replace(/[-+<>=/^]/g, ' $& ')
+    .replace(/[^\p{L}\p{N}+<>=/^-]+/gu, ' ')
     .replace(//g, '.')
+    .replace(//g, '≠')
     .replace(/\s+/g, ' ')
     .trim();
+  return t.replace(/^(?:der|die|das|den|dem|des|ein|eine|einer|eines|einem|einen|the|a|an) (?=\p{L})/u, '');
+}
+
+const DE_WORDS = new Set('der die das und ist nicht ein eine mit von zu den im auf für sich dem des wird werden sind auch als bei oder wenn'.split(' '));
+const EN_WORDS = new Set('the and is are not of to with that for it this be by on as or from which when an'.split(' '));
+
+/** Grobe Spracherkennung über Funktionswörter (de/en); unentschieden -> null. */
+export function guessLang(s: string): 'de' | 'en' | null {
+  let de = 0;
+  let en = 0;
+  for (const w of s.slice(0, 20_000).toLowerCase().match(/\p{L}+/gu) ?? []) {
+    if (DE_WORDS.has(w)) de++;
+    if (EN_WORDS.has(w)) en++;
+  }
+  return de === en ? null : de > en ? 'de' : 'en';
 }
 
 /** Inhaltswörter (≥ 3 Zeichen, ohne Stoppwörter), gestemmt, ohne Diakritika. */
@@ -270,10 +309,12 @@ export function normalizeName(name: string): string {
  * Plausibilität gegen die Quelle: Anteil der Inhaltswörter von `claim`, die im Quelltext vorkommen.
  * Kleine Modelle erfinden gern – Karten/Fragen/Konzepte unter der Schwelle werden verworfen.
  */
-export function support(claim: string, sourceText: string): number {
-  // kurze/numerische Antworten ("pH", "9,81 m/s²") haben kaum Inhaltswörter -> wörtlich im Quelltext enthalten zählt voll
+export function support(claim: string, sourceText: string, minLiteral = 3): number {
+  // kurze/numerische Antworten ("9,81 m/s²", "5V") haben kaum Inhaltswörter -> wörtlich im Quelltext enthalten zählt voll,
+  // aber erst ab einer Mindestlänge oder als Zahl mit Einheit ("1", "Ja" stehen fast überall)
   const n = normalizeText(claim);
-  if (n && ` ${normalizeText(sourceText)} `.includes(` ${n} `)) return 1;
+  const literal = n.replace(/ /g, '').length >= minLiteral || (/\d/.test(n) && /\p{L}/u.test(n));
+  if (literal && ` ${normalizeText(sourceText)} `.includes(` ${n} `)) return 1;
   const c = [...new Set(contentTokens(claim))];
   if (!c.length) return 0;
   const src = new Set(contentTokens(sourceText));

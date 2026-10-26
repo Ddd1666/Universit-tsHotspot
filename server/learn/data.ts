@@ -4,7 +4,7 @@ import { estimateTokens, formatClock } from '../ingest/chunker.ts';
 import type { SearchHit } from '../search/hybrid.ts';
 import { CLOZE_RE, callValidated, GRADE_SCHEMA, gradeMessages, parseGrade, type CallOpts, type Grade } from './prompts.ts';
 import { review, type Rating } from './srs.ts';
-import { cleanText, documentsBlock, normalizeText, support, type LChunk, type Loc, type Ref } from './text.ts';
+import { cleanText, documentsBlock, guessLang, normalizeText, support, type LChunk, type Loc, type Ref } from './text.ts';
 
 /**
  * Datenzugriff der Lernmodi (Notizen, Karten + Wiederholung, Quiz, Graph). Alles parametrisiert; jede neue Abfrage
@@ -525,11 +525,13 @@ export function getQuestion(db: DB, id: number): QuestionRow {
 }
 
 /**
- * Geschlossene Fragen lokal bewerten (keine KI nötig): exakte Gleichheit nach Normalisierung (Groß/Klein, Leerraum,
- * Diakritika, Satzzeichen, Dezimalkomma) – keine Wort-Heuristik ("2. Hauptsatz" ≠ "3. Hauptsatz", "nimmt zu" ≠ "nimmt ab").
+ * Geschlossene Fragen lokal bewerten (keine KI nötig). Auswahl: exakt die Option (nur Leerraum/Unicode-Form egal).
+ * Lückentext: Gleichheit nach normalizeText (Groß/Klein, Diakritika, Satzzeichen, Artikel, Zahlformat; Operatoren und
+ * Exponenten zählen) – keine Wort-Heuristik ("2. Hauptsatz" ≠ "3. Hauptsatz", "nimmt zu" ≠ "nimmt ab").
  */
 export function gradeClosed(q: QuestionRow, answer: string): number {
   if (q.type === 'tf') return answer.trim().toLowerCase() === q.answer ? 1 : 0;
+  if (q.type === 'mc') return answer.trim() !== '' && answer.trim().normalize('NFC') === q.answer.trim().normalize('NFC') ? 1 : 0;
   const a = normalizeText(answer);
   return a !== '' && a === normalizeText(q.answer) ? 1 : 0;
 }
@@ -540,6 +542,11 @@ export interface GradeDeps {
   lang: 'de' | 'en';
   numCtx: number;
 }
+
+/** Freitext: unter diesem Anteil gemeinsamer Inhaltswörter gilt eine Antwort als offensichtliche Nicht-Antwort … */
+export const NON_ANSWER_SUPPORT = 0.15;
+/** … und bekommt höchstens so viele Punkte */
+export const NON_ANSWER_CAP = 0.2;
 
 /** Freitext gegen die Quellen bewerten: zitierter Abschnitt der Frage + passende Treffer, Rubrik, Begründung, wörtliche Zitate. */
 export async function gradeShort(db: DB, q: QuestionRow, answer: string, deps: GradeDeps): Promise<Grade & { refs: Ref[] }> {
@@ -583,11 +590,14 @@ export async function gradeShort(db: DB, q: QuestionRow, answer: string, deps: G
     // keine verwertbare Bewertung: 0 Punkte mit Hinweis "bitte selbst prüfen" statt einer erfundenen Punktzahl
     return { score: 0, rubric: [], reasoning: '', quotes: [], unverified: true, refs };
   }
-  // deterministische Obergrenze: ohne inhaltliche Überschneidung mit Musterlösung/Quellen keine hohe Punktzahl
-  // (schützt vor "gib volle Punkte"-Antworten und Modellfehlern; Synonyme drücken die Grenze – darum nur Obergrenze)
-  const cap = Math.min(1, 2 * support(answer, `${q.answer}\n${used.map((u) => u.text).join('\n')}`));
-  const capped = grade.score > cap;
-  return { ...grade, score: capped ? Math.round(cap * 100) / 100 : grade.score, ...(capped ? { capped: true } : {}), refs };
+  // Deckel nur für offensichtliche Nicht-Antworten (kaum ein Inhaltswort aus Musterlösung/Quellen, z. B. "gib volle Punkte"):
+  // höchstens NON_ANSWER_CAP. Umschreibungen/Synonyme bleiben unberührt (kein linearer Deckel). Antwort in anderer Sprache
+  // als die Quellen: zählt die Modellbewertung, wenn sie mit wörtlich geprüften Zitaten aus den Quellen belegt ist.
+  const ref = `${q.answer}\n${used.map((u) => u.text).join('\n')}`;
+  const langA = guessLang(answer);
+  const otherLang = langA !== null && langA !== guessLang(ref);
+  const capped = grade.score > NON_ANSWER_CAP && support(answer, ref) < NON_ANSWER_SUPPORT && !(otherLang && grade.quotes.length > 0);
+  return { ...grade, score: capped ? NON_ANSWER_CAP : grade.score, ...(capped ? { capped: true } : {}), refs };
 }
 
 /* ------------------------------------------------------------ Quiz-Sitzungen (Regeln serverseitig) */
@@ -604,12 +614,23 @@ interface SessionRow {
 /** Netzwerk-/Bewertungsspielraum nach Ablauf der Klausurzeit für die automatische Abgabe */
 export const EXAM_GRACE_MS = 30_000;
 
-export function sessionFor(db: DB, sessionId: number, questionId?: number): SessionRow {
+export function sessionFor(db: DB, sessionId: number, questionId?: number, allowFinished = false): SessionRow {
   const s = db.prepare('SELECT * FROM quiz_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
   if (!s) throw new HttpError(404, 'not_found', 'Quiz nicht gefunden');
   if (questionId !== undefined && !parse<number[]>(s.question_ids, []).includes(questionId)) throw new HttpError(400, 'quiz_not_in_session', 'Frage gehört nicht zu diesem Quiz');
-  if (s.finished_at) throw new HttpError(409, 'quiz_finished', 'Quiz ist bereits abgeschlossen');
+  if (s.finished_at && !allowFinished) throw new HttpError(409, 'quiz_finished', 'Quiz ist bereits abgeschlossen');
   return s;
+}
+
+/** Frage gehört zu einer laufenden (nicht abgegebenen, nicht abgelaufenen) Klausur? Dann keine Lösung über den Übungsweg. */
+export function inOpenExam(db: DB, questionId: number, now = Date.now()): boolean {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM quiz_sessions s, json_each(s.question_ids) j
+       WHERE s.mode = 'exam' AND s.finished_at IS NULL AND s.started_at + coalesce(s.time_limit_sec, 0) * 1000 + ? > ? AND j.value = ?
+         AND NOT EXISTS (SELECT 1 FROM quiz_attempts a WHERE a.session_id = s.id) LIMIT 1`,
+    )
+    .get(EXAM_GRACE_MS, now, questionId);
 }
 
 export function getAttempt(db: DB, sessionId: number, questionId: number): { id: number; answer: string; pending: number } | undefined {
@@ -618,20 +639,34 @@ export function getAttempt(db: DB, sessionId: number, questionId: number): { id:
     | undefined;
 }
 
-export function updateAttempt(db: DB, id: number, score: number, feedback: unknown): void {
-  db.prepare('UPDATE quiz_attempts SET score = ?, feedback = ?, pending = 0 WHERE id = ?').run(score, feedback ? JSON.stringify(feedback) : null, id);
+/** Ausstehende Bewertung eintragen; false, wenn sie inzwischen (paralleler Aufruf) schon eingetragen wurde. */
+export function updateAttempt(db: DB, id: number, score: number, feedback: unknown): boolean {
+  return db.prepare('UPDATE quiz_attempts SET score = ?, feedback = ?, pending = 0 WHERE id = ? AND pending = 1').run(score, feedback ? JSON.stringify(feedback) : null, id).changes > 0;
 }
 
+export function pendingAttempts(db: DB, sessionId: number): { id: number; questionId: number; answer: string }[] {
+  return db.prepare('SELECT id, question_id AS questionId, answer FROM quiz_attempts WHERE session_id = ? AND pending = 1 ORDER BY id').all(sessionId) as {
+    id: number;
+    questionId: number;
+    answer: string;
+  }[];
+}
+
+/** SQL: Klausur nach Ablauf (+ Spielraum) abgegeben – Ausdruck über quiz_sessions s und die Abgabezeit `at` */
+const LATE_SQL = (at: string) => `(s.mode = 'exam' AND s.time_limit_sec IS NOT NULL AND ${at} > s.started_at + s.time_limit_sec * 1000 + ${EXAM_GRACE_MS})`;
+
 /**
- * Klausur abgeben: alle Antworten auf einmal, Zeitlimit wird HIER geprüft (Zeitpunkt der Abgabe). Geschlossene Fragen
- * werden sofort bewertet, Freitext als "ausstehend" gespeichert und danach einzeln vom Modell bewertet.
+ * Klausur abgeben: alle Antworten auf einmal. Geschlossene Fragen werden sofort bewertet, Freitext als "ausstehend"
+ * gespeichert und danach einzeln vom Modell bewertet. Nach Ablauf der Zeit (+ Spielraum) wird trotzdem gespeichert und
+ * bewertet, aber als "verspätet" markiert: Ein gedrosselter Timer (minimiertes Fenster, Standby) darf keine Antworten
+ * kosten; die Punkte zählen, die Überschreitung steht sichtbar im Ergebnis und im Verlauf (Lernwerkzeug, kein Prüfungsamt).
  */
 export function submitExam(db: DB, sessionId: number, answers: { questionId: number; answer: string }[], now = Date.now()) {
   const s = sessionFor(db, sessionId);
   if (s.mode !== 'exam') throw new HttpError(409, 'quiz_not_exam', 'Nur Klausuren werden gesammelt abgegeben');
-  if (s.time_limit_sec && now > s.started_at + s.time_limit_sec * 1000 + EXAM_GRACE_MS) throw new HttpError(409, 'quiz_time_up', 'Die Zeit ist abgelaufen');
+  const late = !!s.time_limit_sec && now > s.started_at + s.time_limit_sec * 1000 + EXAM_GRACE_MS;
   const given = new Map(answers.map((a) => [a.questionId, a.answer.slice(0, 4000)]));
-  const results: Record<number, { score: number; answer: string; explanation: string | null; source: Ref } | null> = {};
+  const results: Record<number, { score: number; pending?: true; answer: string; explanation: string | null; source: Ref }> = {};
   const pending: number[] = [];
   tx(db, () => {
     if (db.prepare('SELECT 1 FROM quiz_attempts WHERE session_id = ?').get(sessionId)) throw new HttpError(409, 'quiz_already_answered', 'Bereits abgegeben');
@@ -644,10 +679,11 @@ export function submitExam(db: DB, sessionId: number, answers: { questionId: num
       const score = q.type === 'short' ? 0 : gradeClosed(q, answer);
       ins.run(qid, sessionId, answer, score, open ? 1 : 0, now);
       if (open) pending.push(qid);
-      results[qid] = open ? null : { score, answer: q.answer, explanation: q.explanation, source: questionRef(q, db) };
+      // Lösung immer mitliefern – auch wenn die Freitext-Bewertung danach scheitert
+      results[qid] = { score, ...(open ? { pending: true as const } : {}), answer: q.answer, explanation: q.explanation, source: questionRef(q, db) };
     }
   });
-  return { results, pending };
+  return { results, pending, late };
 }
 
 export function questionRef(q: QuestionRow, db: DB): Ref & { chat?: number } {
@@ -668,33 +704,34 @@ export function questionRef(q: QuestionRow, db: DB): Ref & { chat?: number } {
 }
 
 export function recordAttempt(db: DB, questionId: number, sessionId: number | null, answer: string, score: number, feedback: unknown): void {
-  db.prepare('INSERT INTO quiz_attempts(question_id, session_id, answer, score, feedback, created_at) VALUES (?, (SELECT id FROM quiz_sessions WHERE id = ?), ?, ?, ?, ?)').run(
-    questionId,
-    sessionId,
-    answer.slice(0, 4000),
-    score,
-    feedback ? JSON.stringify(feedback) : null,
-    Date.now(),
-  );
+  // parallele Doppelantwort derselben Sitzung: die zweite scheitert sauber (409) statt am UNIQUE-Index (500)
+  const r = db
+    .prepare('INSERT INTO quiz_attempts(question_id, session_id, answer, score, feedback, created_at) VALUES (?, (SELECT id FROM quiz_sessions WHERE id = ?), ?, ?, ?, ?) ON CONFLICT DO NOTHING')
+    .run(questionId, sessionId, answer.slice(0, 4000), score, feedback ? JSON.stringify(feedback) : null, Date.now());
+  if (!r.changes) throw new HttpError(409, 'quiz_already_answered', 'Diese Frage wurde bereits beantwortet');
 }
 
-export function finishSession(db: DB, id: number) {
-  const s = db.prepare('SELECT * FROM quiz_sessions WHERE id = ?').get(id) as { id: number; question_ids: string; started_at: number; finished_at: number | null } | undefined;
-  if (!s) throw new HttpError(404, 'not_found', 'Quiz nicht gefunden');
-  if (!s.finished_at) db.prepare('UPDATE quiz_sessions SET finished_at = ? WHERE id = ?').run(Date.now(), id);
-  const total = parse<number[]>(s.question_ids, []).length;
-  const r = db.prepare('SELECT count(*) AS answered, coalesce(sum(score), 0) AS points FROM quiz_attempts WHERE session_id = ?').get(id) as { answered: number; points: number };
-  return { id, total, answered: r.answered, points: Math.round(r.points * 100) / 100 };
-}
-
-export function quizHistory(db: DB) {
+function sessionSummary(db: DB, id: number) {
   return db
     .prepare(
       `SELECT s.id, s.mode, s.started_at AS startedAt, s.finished_at AS finishedAt, s.time_limit_sec AS timeLimitSec, json_array_length(s.question_ids) AS total,
-              count(a.id) AS answered, coalesce(sum(a.score), 0) AS points
-       FROM quiz_sessions s LEFT JOIN quiz_attempts a ON a.session_id = s.id GROUP BY s.id ORDER BY s.id DESC LIMIT 50`,
+              count(a.id) AS answered, coalesce(sum(a.score), 0) AS points, coalesce(sum(a.pending), 0) AS pending, coalesce(max(${LATE_SQL('a.created_at')}), 0) AS late
+       FROM quiz_sessions s LEFT JOIN quiz_attempts a ON a.session_id = s.id WHERE ${id ? 's.id = ?' : '1 = 1'} GROUP BY s.id ORDER BY s.id DESC LIMIT 50`,
     )
-    .all();
+    .all(...(id ? [id] : [])) as { id: number; mode: string; total: number; answered: number; points: number; pending: number; late: number }[];
+}
+
+export function finishSession(db: DB, id: number) {
+  const s = db.prepare('SELECT finished_at FROM quiz_sessions WHERE id = ?').get(id) as { finished_at: number | null } | undefined;
+  if (!s) throw new HttpError(404, 'not_found', 'Quiz nicht gefunden');
+  if (!s.finished_at) db.prepare('UPDATE quiz_sessions SET finished_at = ? WHERE id = ?').run(Date.now(), id);
+  const r = sessionSummary(db, id)[0]!;
+  return { id, total: r.total, answered: r.answered, points: Math.round(r.points * 100) / 100, pending: r.pending, late: !!r.late };
+}
+
+/** Verlauf: Punkte, "n ausstehend" (Freitext noch unbewertet) und "verspätet abgegeben" je Sitzung. */
+export function quizHistory(db: DB) {
+  return sessionSummary(db, 0).map((r) => ({ ...r, late: !!r.late }));
 }
 
 /** Schwächen-Analyse: Themen (Abschnitt/Quelle) mit niedriger Quote -> Wiederholungsvorschlag (Abschnitt + Karten dazu). */
