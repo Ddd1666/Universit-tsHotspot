@@ -49,20 +49,32 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
 - **Lernen (Phase 3)** – Seitenleiste „Lernen“, Erzeugen über den Knopf „Erzeugen“, aus der Quellen-Vorschau („Lernen“) oder im Chat-Kopf.
   Bereich jeweils: **Quelle** (optional ein Abschnitt = Überschrift), **Auswahl** mehrerer Quellen, **Fach** oder **Chat-Verlauf**.
   Alles läuft als Hintergrundjob (Fortschritt, Abbrechen, Erneut versuchen unter *Aufgaben*), mit niedrigster Priorität.
+  **Große Bereiche:** je Job höchstens 800 Abschnitte (Zusammenfassung), 600 (Graph) bzw. 160 (Karten, Quiz). Ist ein Bereich größer,
+  wird **gerecht je Quelle** (kleine Quellen vollständig, der Rest gleichmäßig auf die großen verteilt) und **gleichmäßig über jedes
+  Dokument** ausgewählt – nicht nur die ältesten Quellen oder Dokumentanfänge. *Aufgaben* und die Notiz zeigen dann „Auswahl: x von y Abschnitten“.
+  Modell und `num_ctx` werden beim Start eines Jobs festgehalten (Einstellungsänderungen gelten für den nächsten Job).
   - **Zusammenfassungen/Notizen:** Stufen TL;DR / Gliederung / Ausführlich / Klausur-Spickzettel. **Map-Reduce**: Abschnitte werden in
     Gruppen zerlegt, die in den Kontext passen (`num_ctx` 8192 ⇒ ~6 000 Token Text pro Aufruf), jede Gruppe wird zu Stichpunkten mit
     Quellnummern, die dann (bei Bedarf in mehreren Runden) zusammengeführt werden. Zwischenergebnisse liegen im Cache (Schlüssel = Hash aus
     Aufgabe + Text ⇒ ändert sich die Quelle, wird nur die betroffene Gruppe neu berechnet; die Stufe wechseln kostet keine Map-Aufrufe).
     Ergebnis = bearbeitbare Markdown-Notiz mit klickbaren Zitaten `[n]` und Quellenliste (Seite/Folie/Zeit), Export als `.md`.
+    Beim Zusammenführen bleiben nur Quellnummern erhalten, die in der Eingabe vorkamen (Schreibweisen wie `[1, 3]`/`[2–4]` werden
+    vereinheitlicht). Stichpunkte, deren Inhalt kaum im Abschnitt steht, werden gezählt und in der Notiz als „schwach belegt“ gemeldet.
   - **Karteikarten:** Typen Frage/Antwort, Lückentext (`{{…}}`), Bild (zeigt das Bild aus der Bibliothek). KI-Vorschläge kommen als
     **Entwürfe** (annehmen / bearbeiten / verwerfen) – nichts landet ungeprüft im Lernstapel; manuelle Karten jederzeit. Jede Karte mit
     Quellenverweis. **Wiederholen:** tägliche Fällig-Liste (fällige zuerst, dann neue), Leertaste = Antwort, **1–4** = Nochmal/Schwer/Gut/Leicht;
-    Filter nach Fach (oben) bzw. Quelle (aus der Schwächen-Analyse). Bearbeiten ändert nie Zeitplan oder Verlauf.
+    Filter nach Fach (oben) bzw. Quelle (aus der Schwächen-Analyse). Bearbeiten ändert nie Zeitplan oder Verlauf. „Nochmal“ legt die Karte
+    ans Ende der laufenden Sitzung (SM-2 Schritt 7); weitere Fehlversuche am selben Tag senken den Leichtigkeitsfaktor nicht erneut.
     **Statistik:** Heatmap (26 Wochen), Fälligkeitsprognose (30 Tage), Trefferquote (Anteil ≠ „Nochmal“, 30 Tage), Zähler – je Fach.
   - **Quiz:** Multiple Choice, Wahr/Falsch, Lückentext, Kurzantwort; Bereich Fach (oben), einzelne Quellen (Auswahl) oder alles.
     **Üben** (sofortige Rückmeldung) oder **Klausursimulation** mit Timer (Abgabe automatisch bei Zeitablauf, Bewertung am Ende).
-    Geschlossene Fragen werden lokal bewertet, **Kurzantworten vom Modell gegen die Quellen** (Rubrik, Begründung, wörtliche Belege –
-    erfundene Zitate werden verworfen). Die Lösung kommt immer mit Quelle. Fragen bleiben im **Pool** (keine Duplikate), Runden bevorzugen
+    Geschlossene Fragen werden lokal bewertet (exakter Vergleich nach Normalisierung von Groß/Klein, Leerraum, Umlauten, Satzzeichen,
+    Dezimalkomma – keine Wort-Heuristik). **Kurzantworten schätzt das Modell gegen die Quellen ein** (Rubrik, Begründung, wörtliche
+    Belege – erfundene Zitate werden verworfen). Die Punktzahl ist eine **Einschätzung, keine Garantie**: sie ist durch die inhaltliche
+    Überschneidung mit Musterlösung und Quellen nach oben begrenzt (schützt vor „gib volle Punkte“-Antworten, kann treffende Umschreibungen
+    aber zu streng sehen); liefert das Modell keine Rubrik, gibt es 0 Punkte mit dem Hinweis „bitte selbst prüfen“. Die Lösung kommt immer mit Quelle.
+    Regeln prüft der Server: eine Antwort je Frage und Sitzung, Frage muss zur Sitzung gehören, Klausurantworten nur per Abgabe innerhalb
+    des Zeitlimits (+30 s Puffer). Fragen bleiben im **Pool** (keine Duplikate), Runden bevorzugen
     nie beantwortete und oft falsche Fragen. **Schwächen-Analyse** (Themen < 70 % richtig) ⇒ „Abschnitt wiederholen“, „Karten üben“, „Karten erzeugen“.
   - **Wissensgraph:** Konzepte + Beziehungen je Quelle (strukturierte Ausgabe, im Cache), Duplikate werden zusammengeführt
     (normalisierter Name: Groß/Klein, Umlaute, Artikel, Plural; sonst Embedding-Ähnlichkeit ≥ 0,92). Ansicht als Canvas (Zoom per Mausrad/
@@ -70,8 +82,11 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
     Konzepts und vorbelegter Frage) oder als **barrierefreie Liste/Tabelle**. Filter Fach/Quelle, ausblenden/umbenennen von Knoten,
     Kanten umbenennen/ausblenden (Korrekturen bleiben bei erneutem Aufbau erhalten). Bei reduzierter Bewegung wird das Layout ohne Animation
     berechnet; Ansicht bis 2 000 Knoten (die am stärksten vernetzten).
-  - **Qualität kleiner Modelle:** strukturierte Ausgabe (Ollama `format` + JSON-Schema), Validierung, max. 3 Versuche,
-    **Plausibilitätsprüfung gegen die Quelle** (Antwort/Konzept muss im zitierten Abschnitt vorkommen, sonst verworfen und gezählt),
+  - **Qualität kleiner Modelle:** strukturierte Ausgabe (Ollama `format` + JSON-Schema), Validierung, max. 3 Versuche (mit Hinweis
+    auf die ungültige Antwort und etwas höherer Temperatur); scheitert eine Textgruppe dauerhaft, wird sie halbiert bzw. übersprungen und als
+    „übersprungen“ gemeldet, statt den ganzen Job abzubrechen; nach 3 Zeitüberschreitungen bricht ein Job mit klarer Meldung ab.
+    **Plausibilitätsprüfung gegen die Quelle** (Antwort/Konzept muss im zitierten Abschnitt vorkommen – kurze/numerische Antworten wie
+    „pH“ oder „9,81 m/s²“ zählen, wenn sie wörtlich dort stehen – sonst verworfen und gezählt),
     Duplikate per Text-Fingerabdruck und Embedding. Alles KI-Erzeugte trägt die Kennzeichnung „KI-generiert“.
   - **Löschen einer Quelle:** Karten und Quizfragen **behalten ihren Text**, verlieren den Link und zeigen „Quelle gelöscht: Name“;
     Notizen bleiben unverändert, ihre Quellenverweise werden als gelöscht markiert (auch im Export); Zwischenergebnisse, Graph-Bezüge und
@@ -354,7 +369,7 @@ Testdaten: 2 000 Quellen, 40 000 Abschnitte, 10 000 Karten, 48 000 Wiederholunge
 | Statistik alle / je Fach (Heatmap 26 Wochen, Prognose, Trefferquote) | 36 ms / 2,5 ms |
 | Wissensgraph alle (2 000 Knoten) / je Fach · Konzept-Details | 15 ms / 1,3 ms · 0,1 ms |
 | Schwächen-Analyse · Quiz-Runde starten (20 Fragen) | 12,5 ms · 4,4 ms |
-| Bereich laden (Fach, 100 Quellen, max. 800 Abschnitte) | 1,2 ms |
+| Bereich laden (Fach, 100 Quellen, max. 800 Abschnitte) – vorher (erste 800 nach Quelle) / nachher (gerechte, verteilte Auswahl aus 2 000) | 1,2 ms → 9,9 ms (Nachher-Lauf auf insgesamt ~1,8× langsamerer Maschine: Testdatenaufbau 3,8 statt 2,1 s; alle anderen Zeilen dort ebenfalls ~1,7–2× höher) |
 | Quelle löschen inkl. Karten/Fragen/Cache/Graph (FK + Trigger) | 3,4 ms; `integrity_check` ok, keine FK-Verstöße |
 | Graph-Layout pro Simulationsschritt, eigene Simulation vs. `d3-force` (Node, Mittel aus 30 Schritten) | 500 Knoten 0,5 vs. 1,5 ms · 1 000: 1,6 vs. 3,2 ms · **2 000: 6,9–7,3 vs. 6,7–6,8 ms** · 4 000: 32 vs. 16 ms |
 | Graph-Ansicht 2 000 Knoten / 2 999 Kanten im Browser (Chromium, 1440×900, während der Simulation) | 73–93 fps, längster Frame 18–43 ms |
@@ -377,8 +392,9 @@ Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der 
 
 - **Lernmodi:** Qualität der Zusammenfassungen, Karten, Fragen, Bewertungen und Graphen ist **nur mit Mock geprüft** – kleine Modelle
   (4B) machen Fehler; Plausibilitätsprüfung und Entwurfs-Status fangen nur einen Teil ab. Bewertung an echten Unterlagen:
-  `npm run eval:learning -- <Datei|Ordner>`. Generiert wird in der Oberflächensprache. Sehr große Bereiche werden nach 800 Abschnitten
-  gekürzt (Hinweis in der Notiz). Karten/Fragen behalten das Fach, das ihre Quelle beim Erzeugen hatte (Verschieben der Quelle ändert es
+  `npm run eval:learning -- <Datei|Ordner>`. Generiert wird in der Oberflächensprache. Sehr große Bereiche werden auf eine gerecht
+  verteilte Auswahl begrenzt (800/600/160 Abschnitte, Hinweis in *Aufgaben* und Notiz). Die Freitext-Obergrenze beruht auf Wortüberlappung
+  (Synonyme drücken sie). Die Plausibilitätsprüfung der Zusammenfassung ist eine einfache Wortüberlappung je Stichpunkt. Karten/Fragen behalten das Fach, das ihre Quelle beim Erzeugen hatte (Verschieben der Quelle ändert es
   nicht). Der Wissensgraph wird nur auf Wunsch aufgebaut (kein automatischer Hintergrundlauf für jede neue Quelle – spart GPU-Zeit).
   Wiederholungs-Algorithmus SM-2 (statt FSRS, siehe Abhängigkeiten).
 - Nur mit Mock-Ollama getestet – echte Modellqualität, VRAM-Verhalten und Geschwindigkeit sind erst auf dem Laptop prüfbar (siehe `HANDOFF.md`).

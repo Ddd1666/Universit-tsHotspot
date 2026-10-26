@@ -122,6 +122,12 @@ describe('DB-Migration von einer echten Phase-1-Datenbank', () => {
     for (const t of ['learn_jobs', 'learn_cache', 'notes', 'cards', 'reviews', 'quiz_questions', 'quiz_sessions', 'quiz_attempts', 'concepts', 'concept_sources', 'concept_edges']) {
       expect(db.prepare(`SELECT count(*) AS n FROM ${t}`).get(), t).toEqual({ n: 0 });
     }
+    // Korrekturrunde 1: Kantenkorrektur (edited) und eine Antwort je Frage und Sitzung (UNIQUE) sind Teil von v4
+    expect((db.prepare('PRAGMA table_info(concept_edges)').all() as { name: string }[]).some((c) => c.name === 'edited')).toBe(true);
+    db.exec("INSERT INTO quiz_questions(type, question, answer, fingerprint, created_at) VALUES ('tf', 'F?', 'true', 'fp', 1)");
+    db.exec("INSERT INTO quiz_sessions(mode, scope, question_ids, started_at) VALUES ('practice', '{}', '[1]', 1)");
+    db.exec("INSERT INTO quiz_attempts(question_id, session_id, answer, score, created_at) VALUES (1, 1, 'true', 1, 1)");
+    expect(() => db.exec("INSERT INTO quiz_attempts(question_id, session_id, answer, score, created_at) VALUES (1, 1, 'false', 0, 2)")).toThrow(/UNIQUE/);
     // Löschverhalten greift auch in der migrierten DB (FK + Trigger)
     db.exec("INSERT INTO cards(type, front, back, status, source_id, source_name, created_at, updated_at) VALUES ('qa', 'F', 'B', 'active', 1, 'Skript.pdf', 1, 1)");
     db.exec("INSERT INTO concepts(name, norm, created_at) VALUES ('Entropie', 'entropi', 1)");
