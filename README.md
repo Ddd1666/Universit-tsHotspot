@@ -267,7 +267,7 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (271 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
+npm test            # vitest (287 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
@@ -372,7 +372,7 @@ Testdaten: 2 000 Quellen, 40 000 Abschnitte, 10 000 Karten, 48 000 Wiederholunge
 | Bereich laden (Fach, 100 Quellen, max. 800 Abschnitte) – vorher (erste 800 nach Quelle) / nachher (gerechte, verteilte Auswahl aus 2 000) | 1,2 ms → 9,9 ms (Nachher-Lauf auf insgesamt ~1,8× langsamerer Maschine: Testdatenaufbau 3,8 statt 2,1 s; alle anderen Zeilen dort ebenfalls ~1,7–2× höher) |
 | Quelle löschen inkl. Karten/Fragen/Cache/Graph (FK + Trigger) | 3,4 ms; `integrity_check` ok, keine FK-Verstöße |
 | Graph-Layout pro Simulationsschritt, eigene Simulation vs. `d3-force` (Node, Mittel aus 30 Schritten) | 500 Knoten 0,5 vs. 1,5 ms · 1 000: 1,6 vs. 3,2 ms · **2 000: 6,9–7,3 vs. 6,7–6,8 ms** · 4 000: 32 vs. 16 ms |
-| Graph-Ansicht 2 000 Knoten / 2 999 Kanten im Browser (Chromium, 1440×900, während der Simulation) | 73–93 fps, längster Frame 18–43 ms |
+| Graph-Ansicht 2 000 Knoten / 2 999 Kanten im Browser (Chromium, 1440×900, während der Simulation) | 73–93 fps, längster Frame 18–43 ms; in einem späteren Lauf auf ~1,8× langsamerer (belasteter) Maschine 39 fps, längster Frame 87 ms |
 | Map-Reduce: Text pro Aufruf bei `num_ctx` 8192 / 2048 | ~6 160 / ~980 Token (Rest: Antwortreserve 900 bzw. 512 + System-Prompt) |
 
 Mit echtem Ollama dauert jeder Generierungsschritt Sekunden (abhängig von Modell und GPU) – genau das misst die Laptop-Checkliste

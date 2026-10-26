@@ -7,7 +7,7 @@ Windows 11 entwickelt, aber ebenfalls **nur gegen Mock-Ollama und Fake-Werkzeuge
 233 Unit-/Integrationstests (30× hintereinander grün, Log: `docs/test-logs/phase2.txt`), Browser-E2E 25/25. **Echtes whisper.cpp, echtes ffmpeg, echte Vision-Qualität und
 VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop zählt der Test gegen **echtes** Ollama.
 **Phase 3** (Lernmodi: Zusammenfassungen, Karteikarten + Wiederholung, Quiz, Wissensgraph) ebenfalls unter Windows 11 entwickelt und
-**nur gegen Mock-Ollama** getestet: 271 Unit-/Integrationstests (30×-Log: `docs/test-logs/phase3.txt`), Browser-E2E 34/34.
+**nur gegen Mock-Ollama** getestet: 287 Unit-/Integrationstests (inkl. Korrekturrunde 1) (30×-Log: `docs/test-logs/phase3.txt`), Browser-E2E 34/34.
 Qualität der KI-Ausgaben, Dauer und VRAM mit echtem Modell sind unbekannt – das prüft Abschnitt 3b (inkl. `npm run eval:learning`).
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen
