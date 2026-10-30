@@ -8,7 +8,7 @@ import type { MediaTimeouts } from './media/audio.ts';
 
 /** Projektordner (enthält server/, web/, dist/ …). */
 export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION: string = (JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8')) as { version: string }).version;
 /** Optionale lokale Konfigurationsdatei im Projektordner (z. B. abweichender Datenordner). */
 export const LOCAL_CONFIG_FILE = path.join(PROJECT_ROOT, 'hotspot.config.json');
 

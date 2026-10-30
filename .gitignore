@@ -1,6 +1,8 @@
 # Abhängigkeiten & Build
 node_modules/
 dist/
+# Windows-Paket (scripts/package-win.mjs)
+out/
 *.tsbuildinfo
 
 # Nutzerdaten, Test-/Temp-Daten, Caches (bleiben im Projektordner)

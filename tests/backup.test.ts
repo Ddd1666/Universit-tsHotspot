@@ -355,7 +355,7 @@ describe('Aufbewahrung, Zielordner, Automatik', () => {
 describe('Neustart im selben Prozess (Browser-Modus, server/main.ts)', () => {
   it('Wiederherstellung über die API -> Server startet auf demselben Port mit wiederhergestellten Daten', async () => {
     const dir = tmpDir('bkproc');
-    const port = 4700 + (process.pid % 200);
+    const port = 5100 + (process.pid % 400);
     const token = 'r'.repeat(64);
     const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(PROJECT_ROOT, 'server', 'main.ts')], {
       env: { ...process.env, HOTSPOT_DATA_DIR: dir, HOTSPOT_PORT: String(port), HOTSPOT_MOCK_OLLAMA: '1', HOTSPOT_TOKEN: token },

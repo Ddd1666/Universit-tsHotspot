@@ -1,6 +1,6 @@
 {
   "name": "uni-hotspot",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Uni-Hotspot – lokaler Studien-Hub mit lokaler KI (Ollama): Import, Hybrid-Suche, RAG-Chat.",
   "license": "UNLICENSED",
@@ -23,7 +23,9 @@
     "bench:media": "node --disable-warning=ExperimentalWarning scripts/bench-media.ts",
     "setup-media": "node scripts/setup-media.mjs",
     "bench:learn": "node --disable-warning=ExperimentalWarning scripts/bench-learn.ts",
-    "eval:learning": "node --disable-warning=ExperimentalWarning scripts/eval-learning.ts"
+    "eval:learning": "node --disable-warning=ExperimentalWarning scripts/eval-learning.ts",
+    "bench:phase4": "node --disable-warning=ExperimentalWarning --expose-gc scripts/bench-phase4.ts",
+    "package:win": "node scripts/package-win.mjs"
   },
   "dependencies": {
     "fastify": "^5.12.5",

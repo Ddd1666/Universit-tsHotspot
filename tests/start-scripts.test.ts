@@ -94,6 +94,35 @@ describe('Update ohne Internet (ensure-deps vor npm ci)', () => {
   });
 });
 
+describe('Windows-Paket (Phase 4)', () => {
+  it('package-win --check: App-Dateien vollständig, nur Laufzeit-Abhängigkeiten, Kurzanleitung', () => {
+    if (!fs.existsSync(path.join(PROJECT_ROOT, 'dist', 'web', 'index.html'))) return; // ohne gebaute Oberfläche nicht prüfbar
+    const out = tmpDir('pkg');
+    const r = spawnSync(process.execPath, [script('package-win.mjs'), '--check', '--out', out], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    const app = path.join(out, fs.readdirSync(out)[0]!);
+    for (const f of ['electron/main.ts', 'server/app.ts', 'server/backup.ts', 'dist/web/index.html', 'scripts/media-manifest.json', 'package.json', 'LIESMICH.txt']) expect(fs.existsSync(path.join(app, f)), f).toBe(true);
+    const pkg = JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8'));
+    expect(pkg).toMatchObject({ type: 'module', main: 'electron/main.ts' });
+    expect(pkg.devDependencies).toBeUndefined();
+    for (const dep of ['fastify', 'unpdf', 'yauzl']) expect(fs.existsSync(path.join(app, 'node_modules', dep, 'package.json')), dep).toBe(true);
+    for (const dev of ['electron', 'vite', 'typescript', 'vitest', 'react', 'eslint']) expect(fs.existsSync(path.join(app, 'node_modules', dev)), dev).toBe(false);
+    // keine Nutzerdaten/Werkzeuge/Tests im Paket
+    for (const no of ['tests', 'tools', '.tmp', 'hotspot.config.json', 'data']) expect(fs.existsSync(path.join(app, no)), no).toBe(false);
+    expect(fs.readFileSync(path.join(app, 'LIESMICH.txt'), 'utf8')).toMatch(/SmartScreen[\s\S]*Datenordner bleibt unberührt/);
+  }, 60_000);
+
+  it('Workflow baut auf windows-latest, lädt das Artefakt hoch und enthält einen Rauchtest', () => {
+    const wf = fs.readFileSync(path.join(PROJECT_ROOT, '.github', 'workflows', 'windows-package.yml'), 'utf8');
+    expect(wf).toMatch(/runs-on: windows-latest/);
+    expect(wf).toMatch(/node scripts\/package-win\.mjs/);
+    expect(wf).toMatch(/HOTSPOT_SMOKE_TEST/);
+    expect(wf).toMatch(/actions\/upload-artifact@v4/);
+    expect(wf).not.toMatch(/ollama pull|setup-media/); // Modelle/Werkzeuge nie im Paket
+    expect(wf).not.toMatch(/\t/); // YAML: keine Tabs
+  });
+});
+
 describe('Sauberes Beenden über das Start-Skript', () => {
   it.skipIf(process.platform === 'win32')('Strg+C (SIGINT an die Prozessgruppe) beendet den Server geordnet (Sperrdatei entfernt)', async () => {
     const dataDir = tmpDir('shutdown');
