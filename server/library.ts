@@ -155,7 +155,7 @@ export class Library {
     return (this.db.prepare(`SELECT ${SOURCE_COLUMNS} FROM sources s WHERE s.sha256 = ?`).get(sha256) as SourceDTO | undefined) ?? null;
   }
 
-  listSources(filter: { subjectId?: number | 'none'; parentId?: number; q?: string; status?: string; limit?: number } = {}): { items: SourceDTO[]; total: number } {
+  listSources(filter: { subjectId?: number | 'none'; parentId?: number; q?: string; status?: string; limit?: number; offset?: number } = {}): { items: SourceDTO[]; total: number } {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (filter.parentId !== undefined) {
@@ -177,10 +177,14 @@ export class Library {
     }
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const limit = Math.min(filter.limit ?? SOURCE_LIST_LIMIT, 5000);
+    const offset = Math.max(0, filter.offset ?? 0);
     const items = this.db
-      .prepare(`SELECT ${BASE_COLUMNS} FROM sources s ${whereSql} ORDER BY s.imported_at DESC, s.id DESC LIMIT ?`)
-      .all(...params, limit) as unknown as SourceDTO[];
-    const total = items.length < limit ? items.length : (this.db.prepare(`SELECT count(*) AS n FROM sources s ${whereSql}`).get(...params) as { n: number }).n;
+      .prepare(`SELECT ${BASE_COLUMNS} FROM sources s ${whereSql} ORDER BY s.imported_at DESC, s.id DESC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as unknown as SourceDTO[];
+    const total =
+      items.length < limit && (items.length > 0 || offset === 0)
+        ? offset + items.length
+        : (this.db.prepare(`SELECT count(*) AS n FROM sources s ${whereSql}`).get(...params) as { n: number }).n;
     // Zähler gruppiert für die angezeigten Quellen (eine Abfrage statt einer pro Zeile)
     const ids = jsonList(items.map((i) => i.id));
     const embedded = new Map(

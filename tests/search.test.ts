@@ -54,7 +54,25 @@ describe('Vektorspeicher', () => {
     expect(q8.memoryBytes()).toBeLessThan(f32.memoryBytes() / 3);
     // Filter auf erlaubte Quellen
     expect(q8.search(items[0]!.vector, 5, new Set([2]))).toHaveLength(0);
-    db.close();
+
+    // Phase 4: Laden im Hintergrund in Paketen liefert denselben Cache; Änderung während des Ladens bricht ab
+    const bg = new SqliteVectorStore(db, { quantize: true });
+    const ticks: number[] = [];
+    const p = bg.warmupAsync(500);
+    setImmediate(() => ticks.push(1)); // Event-Loop kommt zwischendurch dran
+    return p.then(async () => {
+      expect(ticks.length).toBeGreaterThan(0);
+      expect(bg.memoryBytes()).toBe(q8.memoryBytes());
+      const query = Float32Array.from({ length: dim }, rnd);
+      expect(bg.search(query, 10, null)).toEqual(q8.search(query, 10, null));
+      const aborted = new SqliteVectorStore(db, { quantize: true });
+      const p2 = aborted.warmupAsync(500);
+      aborted.invalidate();
+      await p2;
+      expect(aborted.memoryBytes()).toBe(0); // abgebrochen, nichts Halbes übernommen
+      expect(aborted.search(query, 10, null)).toEqual(q8.search(query, 10, null)); // Suche lädt synchron nach
+      db.close();
+    });
   });
 });
 

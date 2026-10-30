@@ -129,6 +129,21 @@ describe('Bibliotheksliste skaliert linear', () => {
       'EXPLAIN QUERY PLAN SELECT count(*) FROM chunks c INDEXED BY chunks_source_state WHERE c.source_id = ? AND c.embed_state = 1',
     ).all(1) as { detail: string }[]).map((p) => p.detail).join(' ');
     expect(plan).toContain('chunks_source_state');
+    // Phase 4: seitenweise statt Kappung – lückenlos, ohne Doppelte, Gesamtzahl auf jeder Seite
+    const seen = new Set<string>();
+    let offset = 0;
+    for (;;) {
+      const page = (await app.api<{ items: { name: string; embeddedCount: number }[]; total: number; offset: number }>('GET', `/api/sources?limit=700&offset=${offset}`)).data;
+      expect(page.total).toBe(r.data.total);
+      expect(page.offset).toBe(offset);
+      for (const it of page.items) seen.add(it.name);
+      if (page.items.length < 700) break;
+      offset += 700;
+    }
+    expect(seen.size).toBe(r.data.total);
+    expect((await app.api<{ items: unknown[]; total: number }>('GET', '/api/sources?limit=10&offset=99999')).data).toEqual({ items: [], total: r.data.total, limit: 10, offset: 99999 });
+    expect((await app.api('GET', '/api/sources?limit=0')).status).toBe(400);
+    expect((await app.api('GET', '/api/sources?limit=5000')).status).toBe(400);
     db.exec("DELETE FROM chunks WHERE text LIKE 'Massentext%'");
     db.exec("DELETE FROM sources WHERE name LIKE 'masse-%'");
   });

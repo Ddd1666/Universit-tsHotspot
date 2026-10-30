@@ -261,7 +261,7 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
       if (media.requeueIfToolsReady()) ingest.wakeUp();
       maintenanceTimer = setTimeout(() => {
         if (closed) return;
-        vectors.warmup();
+        void vectors.warmupAsync().catch(() => {});
         void library
           .gcOrphanBlobs()
           .then((n) => n && log(`${n} verwaiste Datei(en) entfernt`))

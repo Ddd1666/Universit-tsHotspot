@@ -182,15 +182,20 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
             parent: { type: 'integer', minimum: 1 },
             q: { type: 'string', maxLength: 200 },
             status: { type: 'string', maxLength: 20 },
+            // Seitenweise laden (Bibliothek lädt beim Scrollen nach)
+            limit: { type: 'integer', minimum: 1, maximum: SOURCE_LIST_LIMIT },
+            offset: { type: 'integer', minimum: 0, maximum: 10_000_000 },
           },
         },
       },
     },
     async (req) => {
-      const q = req.query as { subject?: string; parent?: number; q?: string; status?: string };
+      const q = req.query as { subject?: string; parent?: number; q?: string; status?: string; limit?: number; offset?: number };
       const subjectId = q.subject === 'none' ? 'none' : q.subject && q.subject !== 'all' ? Number(q.subject) : undefined;
-      const { items, total } = s.library.listSources({ subjectId, parentId: q.parent, q: q.q, status: q.status });
-      return { items, total, limit: SOURCE_LIST_LIMIT };
+      const limit = q.limit ?? SOURCE_LIST_LIMIT;
+      const offset = q.offset ?? 0;
+      const { items, total } = s.library.listSources({ subjectId, parentId: q.parent, q: q.q, status: q.status, limit, offset });
+      return { items, total, limit, offset };
     },
   );
 

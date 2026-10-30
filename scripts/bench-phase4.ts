@@ -154,6 +154,18 @@ async function coldStart(dir: string, port: number): Promise<{ readyMs: number; 
   const a = performance.now();
   vectors.warmup();
   const tLoad = performance.now() - a;
+  // Hintergrund-Laden in Paketen (nur auf neuerem Stand vorhanden): längste Blockade messen
+  let asyncInfo = '';
+  const bg = vectors as unknown as { warmupAsync?: () => Promise<void> };
+  if (bg.warmupAsync) {
+    vectors.invalidate();
+    const eld = monitorEventLoopDelay({ resolution: 5 });
+    eld.enable();
+    const b0 = performance.now();
+    await bg.warmupAsync();
+    eld.disable();
+    asyncInfo = `; im Hintergrund in Paketen ${ms(performance.now() - b0)}, längste Blockade ${ms(eld.max / 1e6)}`;
+  }
   const vecLat = queries.map((q) => {
     const v = Float32Array.from(fakeEmbedding(q, DIM));
     const b = performance.now();
@@ -170,7 +182,7 @@ async function coldStart(dir: string, port: number): Promise<{ readyMs: number; 
   for (const q of queries.slice(0, 30)) hyb.push((await hybridSearch({ db, vectors, client }, q, { limit: 10 })).tookMs);
   report.push(
     '',
-    `Suche bei ${N_SEARCH.toLocaleString('de-DE')} Abschnitten (${DIM}-dim.; Aufbau ${(tBuild / 1000).toFixed(1)} s, Vektor-Cache laden ${ms(tLoad)}, ${mb(vectors.memoryBytes())}):`,
+    `Suche bei ${N_SEARCH.toLocaleString('de-DE')} Abschnitten (${DIM}-dim.; Aufbau ${(tBuild / 1000).toFixed(1)} s, Vektor-Cache synchron laden ${ms(tLoad)} = Blockade am Stück${asyncInfo}; ${mb(vectors.memoryBytes())}):`,
     `  FTS5/BM25 p50 ${ms(pct(ftsLat, 0.5))}, p95 ${ms(pct(ftsLat, 0.95))}`,
     `  Vektor int8 (Brute-Force) p50 ${ms(pct(vecLat, 0.5))}, p95 ${ms(pct(vecLat, 0.95))}`,
     `  Hybrid gesamt (Query-Embedding via Mock-HTTP + FTS + Vektor + RRF) p50 ${ms(pct(hyb, 0.5))}, p95 ${ms(pct(hyb, 0.95))}  [Schwelle ANN: p50 > 150 ms]`,

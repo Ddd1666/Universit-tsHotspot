@@ -97,7 +97,7 @@ export class SqliteVectorStore implements VectorStore {
       setMeta(this.db, 'vector_model', model);
       setMeta(this.db, 'vector_dim', dim === null ? null : String(dim));
     });
-    this.cache = null;
+    this.invalidate();
   }
 
   upsert(items: { chunkId: number; sourceId: number; vector: Float32Array }[]): void {
@@ -111,6 +111,7 @@ export class SqliteVectorStore implements VectorStore {
     tx(this.db, () => {
       for (const it of normalized) ins.run(it.chunkId, it.sourceId, toBlob(it.vector));
     });
+    if (!this.cache) this.generation++; // laufendes Hintergrund-Laden könnte diese Vektoren verpassen -> abbrechen
     if (this.cache) {
       for (const it of normalized) {
         if (this.cache.rowOf.has(it.chunkId) || it.vector.length !== this.cache.dim) {
@@ -124,11 +125,12 @@ export class SqliteVectorStore implements VectorStore {
 
   invalidate(): void {
     this.cache = null;
+    this.generation++;
   }
 
   clear(): void {
     this.db.exec('DELETE FROM embeddings');
-    this.cache = null;
+    this.invalidate();
   }
 
   private ensureCapacity(c: Cache, needed: number): void {
@@ -146,8 +148,7 @@ export class SqliteVectorStore implements VectorStore {
     if (c.f32) c.f32 = grow(c.f32, cap * c.dim, Float32Array);
   }
 
-  private appendToCache(chunkId: number, sourceId: number, v: Float32Array): void {
-    const c = this.cache!;
+  private appendToCache(chunkId: number, sourceId: number, v: Float32Array, c: Cache = this.cache!): void {
     this.ensureCapacity(c, c.count + 1);
     const row = c.count;
     c.chunkIds[row] = chunkId;
@@ -188,14 +189,8 @@ export class SqliteVectorStore implements VectorStore {
     return bad.length;
   }
 
-  private ensureLoaded(): Cache | null {
-    if (this.cache) return this.cache;
-    if (this.repair() > 0) this.onRepaired?.();
-    const info = this.info();
-    // Dimension kommt aus den Index-Metadaten, nie aus einer zufälligen ersten Zeile
-    if (!info.count || !info.dim) return null;
-    const dim = info.dim;
-    this.cache = {
+  private emptyCache(dim: number, count: number): Cache {
+    const c: Cache = {
       dim,
       count: 0,
       chunkIds: new Int32Array(0),
@@ -205,17 +200,63 @@ export class SqliteVectorStore implements VectorStore {
       f32: this.quantize ? null : new Float32Array(0),
       rowOf: new Map(),
     };
-    this.ensureCapacity(this.cache, info.count);
-    for (const row of this.db.prepare('SELECT chunk_id, source_id, vec FROM embeddings').iterate() as Iterable<{ chunk_id: number; source_id: number; vec: Uint8Array }>) {
-      if (row.vec.byteLength !== dim * 4) continue;
-      this.appendToCache(row.chunk_id, row.source_id, fromBlob(row.vec));
-    }
-    return this.cache;
+    this.ensureCapacity(c, count);
+    return c;
   }
 
-  /** Lädt den Cache vorab (nach dem Start im Hintergrund). */
+  private ensureLoaded(): Cache | null {
+    if (this.cache) return this.cache;
+    if (this.repair() > 0) this.onRepaired?.();
+    const info = this.info();
+    // Dimension kommt aus den Index-Metadaten, nie aus einer zufälligen ersten Zeile
+    if (!info.count || !info.dim) return null;
+    const dim = info.dim;
+    const c = this.emptyCache(dim, info.count);
+    for (const row of this.db.prepare('SELECT chunk_id, source_id, vec FROM embeddings').iterate() as Iterable<{ chunk_id: number; source_id: number; vec: Uint8Array }>) {
+      if (row.vec.byteLength !== dim * 4) continue;
+      this.appendToCache(row.chunk_id, row.source_id, fromBlob(row.vec), c);
+    }
+    this.cache = c;
+    return c;
+  }
+
+  /** Lädt den Cache vorab, synchron (Tests/Bench). */
   warmup(): void {
     this.ensureLoaded();
+  }
+
+  /** Erhöht sich bei jeder Änderung, die einen laufenden Hintergrund-Ladevorgang ungültig macht. */
+  private generation = 0;
+  private loading = false;
+
+  /**
+   * Lädt den Cache nach dem Start im Hintergrund in Paketen (Event-Loop bleibt frei; bei 100k Vektoren blockierte das
+   * synchrone Laden den Server ~1,8 s am Stück). Ändert sich der Index währenddessen, wird abgebrochen – die nächste Suche
+   * lädt dann wie bisher synchron.
+   */
+  async warmupAsync(batch = 4000): Promise<void> {
+    if (this.cache || this.loading) return;
+    if (this.repair() > 0) this.onRepaired?.();
+    const info = this.info();
+    if (!info.count || !info.dim) return;
+    const gen = ++this.generation;
+    this.loading = true;
+    try {
+      const c = this.emptyCache(info.dim, info.count);
+      const stmt = this.db.prepare('SELECT chunk_id, source_id, vec FROM embeddings WHERE chunk_id > ? ORDER BY chunk_id LIMIT ?');
+      let last = 0;
+      for (;;) {
+        const rows = stmt.all(last, batch) as { chunk_id: number; source_id: number; vec: Uint8Array }[];
+        for (const row of rows) if (row.vec.byteLength === info.dim * 4) this.appendToCache(row.chunk_id, row.source_id, fromBlob(row.vec), c);
+        if (rows.length < batch) break;
+        last = rows[rows.length - 1]!.chunk_id;
+        await new Promise((r) => setImmediate(r));
+        if (gen !== this.generation || this.cache) return;
+      }
+      if (gen === this.generation && !this.cache) this.cache = c;
+    } finally {
+      this.loading = false;
+    }
   }
 
   search(query: Float32Array, k: number, allowedSources: Set<number> | null): VectorHit[] {

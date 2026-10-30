@@ -82,8 +82,9 @@ export function redactText(s: string): string {
   let out = s;
   if (home && home.length > 3) out = out.split(home).join('<HOME>').split(home.replace(/\\/g, '/')).join('<HOME>');
   return out
-    .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/\s"']+/gi, '$1<USER>')
-    .replace(/(\/home\/|\/Users\/)[^/\s"']+/g, '$1<USER>')
+    // Benutzernamen dürfen Leerzeichen enthalten -> bis zum nächsten Pfadtrenner
+    .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/"'\r\n]+/gi, '$1<USER>')
+    .replace(/(\/home\/|\/Users\/)[^/"'\r\n]+/g, '$1<USER>')
     .replace(/\b[0-9a-f]{64}\b/gi, '<HASH>')
     .replace(/([?&]t=)[^&\s"]+/g, '$1<TOKEN>');
 }
@@ -105,12 +106,16 @@ export function sanitizeLogLines(raw: string, maxLines = 2000): string[] {
     }
     const time = typeof j.time === 'number' ? new Date(j.time).toISOString() : '?';
     const level = typeof j.level === 'number' ? ({ 10: 'trace', 20: 'debug', 30: 'info', 40: 'warn', 50: 'error', 60: 'fatal' } as Record<number, string>)[j.level] ?? String(j.level) : '?';
-    const msg = redactText(String(j.msg ?? ''))
-      .replace(/"[^"]*"|„[^“]*“|'[^']*'/g, '"…"')
-      .slice(0, 200);
-    let row = `${time} ${level.padEnd(5)} ${msg}`;
     const err = j.err as { type?: unknown; code?: unknown; stack?: unknown } | undefined;
-    if (err && typeof err === 'object') {
+    const hasErr = !!err && typeof err === 'object';
+    // bei Fehlern ist msg = Fehlermeldung (pino) -> weglassen, nur Typ/Code/Stack
+    const msg = hasErr
+      ? ''
+      : redactText(String(j.msg ?? ''))
+          .replace(/"[^"]*"|„[^“]*“|'[^']*'/g, '"…"')
+          .slice(0, 200);
+    let row = `${time} ${level.padEnd(5)} ${msg}`;
+    if (err && hasErr) {
       const frames = typeof err.stack === 'string' ? err.stack.split('\n').filter((l) => /^\s+at /.test(l)).slice(0, 8).map((l) => redactText(l.trim())) : [];
       row += ` [${typeof err.type === 'string' ? err.type.slice(0, 40) : 'Error'}${typeof err.code === 'string' && /^[\w-]{1,40}$/.test(err.code) ? ` ${err.code}` : ''}]`;
       if (frames.length) row += '\n    ' + frames.join('\n    ');
