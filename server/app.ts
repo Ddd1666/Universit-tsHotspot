@@ -19,11 +19,14 @@ import { hybridSearch } from './search/hybrid.ts';
 import { registerSecurity } from './http/security.ts';
 import { registerRoutes } from './http/routes.ts';
 import { registerWeb } from './http/web.ts';
+import { registerMaintenanceRoutes } from './http/maintenance.ts';
 import { acquireLock, type InstanceLock } from './lock.ts';
 import { Scheduler } from './scheduler.ts';
 import { MediaService } from './media/media-service.ts';
 import { MediaSetup } from './media/setup.ts';
 import { LearnService } from './learn/jobs.ts';
+import { applyPendingRestore, BackupService, type PendingRestoreResult } from './backup.ts';
+import { RotatingLog } from './logs.ts';
 
 export interface Services {
   config: AppConfig;
@@ -42,7 +45,12 @@ export interface Services {
   media: MediaService;
   mediaSetup: MediaSetup;
   learn: LearnService;
-  queueStatus(): { ingest: IngestStats; embed: EmbedStatus; media: JobCounts; learn: JobCounts };
+  backup: BackupService;
+  /** Ergebnis einer beim Start ausgeführten Wiederherstellung (für die Oberfläche) */
+  lastRestore: PendingRestoreResult | null;
+  logFile: string;
+  startedAt: number;
+  queueStatus():{ ingest: IngestStats; embed: EmbedStatus; media: JobCounts; learn: JobCounts };
   notifyQueue(): void;
   /** Ollama-Client für Suche – null, wenn Ollama bekanntermaßen offline ist (dann reine Volltextsuche). */
   searchClient(): OllamaClient | null;
@@ -58,33 +66,26 @@ export interface Hotspot {
   close(): Promise<void>;
 }
 
-function rotateLog(file: string): void {
-  try {
-    if (fs.statSync(file).size > 10 * 1024 * 1024) fs.renameSync(file, file + '.1');
-  } catch {
-    /* existiert nicht */
-  }
-}
-
 /**
  * Erzeugt die App. Zuerst wird die Instanz-Sperre im Datenordner geholt – läuft dort schon eine Instanz,
  * wird mit AlreadyRunningError abgebrochen, BEVOR irgendetwas initialisiert (tmp geleert, Jobs zurückgesetzt) wird.
+ * Danach (noch vor dem Öffnen der DB) wird eine vorgemerkte Wiederherstellung ausgeführt.
  */
 export async function createHotspot(config: AppConfig): Promise<Hotspot> {
   const lock = await acquireLock(config.dataDir);
   try {
-    return await build(config, lock);
+    const restored = applyPendingRestore(config.dataDir);
+    return await build(config, lock, restored);
   } catch (err) {
     lock.release();
     throw err;
   }
 }
 
-async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
+async function build(config: AppConfig, lock: InstanceLock, lastRestore: PendingRestoreResult | null): Promise<Hotspot> {
   const logDir = path.join(config.dataDir, 'logs');
   fs.mkdirSync(logDir, { recursive: true });
   const logFile = path.join(logDir, 'server.log');
-  rotateLog(logFile);
 
   const db = openDb(path.join(config.dataDir, 'hotspot.sqlite'));
   const settings = new SettingsStore(db);
@@ -98,8 +99,8 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
   const library = new Library(db, blobs, vectors, bus);
   const pool = new ExtractionPool({ inWorker: config.extractInWorker });
 
-  // Normaler WriteStream statt pino-Datei-Ziel: kein "sonic boom is not ready yet" bei frühem Beenden
-  const logStream = config.logToFile ? fs.createWriteStream(logFile, { flags: 'a' }) : null;
+  // Eigenes, synchrones Ziel mit Rotation (statt pino-Datei-Ziel: kein "sonic boom is not ready yet" bei frühem Beenden)
+  const logStream = config.logToFile ? new RotatingLog(logFile, { maxBytes: config.logMaxBytes }) : null;
   const app = Fastify({
     logger: logStream ? { level: config.logLevel, stream: logStream } : false,
     bodyLimit: 1024 * 1024,
@@ -111,6 +112,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
   });
   const log = (msg: string, extra?: unknown) => app.log.info({ extra }, msg);
   if (tmpProblem) log(tmpProblem);
+  if (lastRestore) log(lastRestore.ok ? `Wiederherstellung ausgeführt: ${lastRestore.id}` : 'Wiederherstellung verworfen', { code: lastRestore.code });
 
   let queueTimer: NodeJS.Timeout | null = null;
   // Ab close(): keine neuen Queue-Timer mehr (Stop-Schritte melden noch Änderungen, die DB ist danach zu)
@@ -196,6 +198,8 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     mediaBusy: () => media.visionBusy(),
   });
 
+  const backup = new BackupService({ db, dataDir: config.dataDir, settings, log });
+
   settings.onChange((_s, changed) => {
     if (changed.includes('ollamaUrl')) void monitor.refresh();
     if (changed.includes('embeddingModel')) notifyQueue();
@@ -220,6 +224,10 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
     media,
     mediaSetup,
     learn,
+    backup,
+    lastRestore,
+    logFile,
+    startedAt: Date.now(),
     queueStatus: () => ({ ingest: ingest.stats(), embed: embed.status(), media: media.counts(), learn: learn.counts() }),
     notifyQueue,
     searchClient,
@@ -228,6 +236,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
   let port = config.port;
   registerSecurity(app, { token: config.token, getPort: () => port, devOrigins: config.devOrigins });
   registerRoutes(app, services);
+  registerMaintenanceRoutes(app, services);
   registerWeb(app, config.webDir, config.token);
 
   let closed = false;
@@ -247,6 +256,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       embed.start();
       media.start();
       learn.start();
+      backup.start();
       // Werkzeuge seit dem letzten Lauf manuell nach tools/ gelegt? Dann gespeicherte Audio/Videos jetzt verarbeiten
       if (media.requeueIfToolsReady()) ingest.wakeUp();
       maintenanceTimer = setTimeout(() => {
@@ -269,6 +279,7 @@ async function build(config: AppConfig, lock: InstanceLock): Promise<Hotspot> {
       // jeder Schritt einzeln abgesichert: Beenden darf nie mit Stacktrace scheitern
       const steps: (() => unknown)[] = [
         () => mediaSetup.cancel(),
+        () => backup.stop(),
         () => media.stop(),
         () => learn.stop(),
         () => ingest.stop(),

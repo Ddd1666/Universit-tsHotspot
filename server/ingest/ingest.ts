@@ -210,9 +210,10 @@ export class IngestService {
           this.requeueInterrupted(row);
         } else {
           const cancelled = err instanceof CancelledError;
-          if (!cancelled) this.deps.log(`Verarbeitung fehlgeschlagen: ${row.name}`, (err as Error).message);
           // Bekannte Fehler als Code speichern (Oberfläche übersetzt), sonst die Meldung
           const code = (err as { code?: unknown }).code;
+          // Log ohne Dateinamen/Fehlertext (könnten Inhalte enthalten) – Quelle per ID, Fehler per Code
+          if (!cancelled) this.deps.log(`Verarbeitung fehlgeschlagen: Quelle #${row.id}`, { code: typeof code === 'string' ? code : 'unknown' });
           const detail = typeof code === 'string' && /^[a-z_]+$/.test(code) ? code : (err as Error).message.slice(0, 500);
           this.setStatus(row.id, cancelled ? 'cancelled' : 'error', cancelled ? null : detail);
         }
@@ -233,7 +234,7 @@ export class IngestService {
         if (row.kind !== 'zip') this.deps.db.prepare('DELETE FROM chunks WHERE source_id = ?').run(row.id);
         this.deps.db.prepare("UPDATE sources SET status = 'queued', status_detail = NULL, chunk_count = 0 WHERE id = ? AND status = 'processing'").run(row.id);
       });
-      this.deps.log(`Beim Beenden unterbrochen, wird beim nächsten Start neu verarbeitet: ${row.name}`);
+      this.deps.log(`Beim Beenden unterbrochen, wird beim nächsten Start neu verarbeitet: Quelle #${row.id}`);
     } catch {
       /* DB evtl. schon geschlossen – start() reiht 'processing' ohnehin wieder ein */
     }

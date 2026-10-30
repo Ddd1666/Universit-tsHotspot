@@ -23,7 +23,7 @@ export const SECURITY_HEADERS: Record<string, string> = {
 };
 
 /** Endpunkte, die das Token auch als Query-Parameter akzeptieren (EventSource / <a href> können keine Header setzen). */
-const QUERY_TOKEN_ROUTES = [/^\/api\/events(\?|$)/, /^\/api\/sources\/\d+\/file(\?|$)/];
+const QUERY_TOKEN_ROUTES = [/^\/api\/events(\?|$)/, /^\/api\/sources\/\d+\/file(\?|$)/, /^\/api\/library\/export(\?|$)/];
 
 export interface SecurityOptions {
   token: string;

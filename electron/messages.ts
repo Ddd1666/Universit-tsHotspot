@@ -13,6 +13,10 @@ export const DIALOG_TEXT = {
     openInBrowser: 'Im Browser öffnen',
     close: 'Schließen',
     startErrorTitle: 'Uni-Hotspot – Startfehler',
+    crashed: 'Die Oberfläche ist unerwartet beendet worden. Deine Daten sind gespeichert.',
+    reload: 'Neu laden',
+    quit: 'Beenden',
+    restartFailed: 'Neustart nach der Wiederherstellung fehlgeschlagen. Bitte Uni-Hotspot neu starten.',
   },
   en: {
     notBuilt: 'The web interface has not been built. Please run “npm run build” or start start.bat again.',
@@ -22,6 +26,10 @@ export const DIALOG_TEXT = {
     openInBrowser: 'Open in browser',
     close: 'Close',
     startErrorTitle: 'Uni-Hotspot – startup error',
+    crashed: 'The interface stopped unexpectedly. Your data is saved.',
+    reload: 'Reload',
+    quit: 'Quit',
+    restartFailed: 'Restart after restoring failed. Please start Uni-Hotspot again.',
   },
 } satisfies Record<DialogLang, Record<string, unknown>>;
 

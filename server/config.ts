@@ -43,6 +43,12 @@ export interface AppConfig {
   learnFailBeforeCommit?: (kind: 'summary' | 'cards' | 'quiz' | 'graph') => void;
   /** Tests: Zeitlimit je Lern-Modellaufruf */
   learnCallTimeoutMs?: number;
+  /** Neustart des Servers im selben Prozess (Wiederherstellung); fehlt -> "bitte neu starten" */
+  requestRestart?: () => void;
+  /** Nur Desktop: Seite der eigenen Oberfläche (Pfad inkl. #/…) per Electron printToPDF als PDF rendern */
+  printToPdf?: (urlPath: string) => Promise<Buffer>;
+  /** Log-Rotation (Tests: klein) */
+  logMaxBytes?: number;
 }
 
 /** Fake-Werkzeuge per Umgebungsvariable – wird nur im Mock-Modus akzeptiert (klar getrennt vom echten Betrieb). */

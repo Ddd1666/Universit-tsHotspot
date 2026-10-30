@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { DB } from './db.ts';
 
 export interface Settings {
@@ -28,6 +29,14 @@ export interface Settings {
   mediaLanguage: 'auto' | 'de' | 'en';
   whisperModel: string;
   mediaMaxDurationMin: number;
+  /* Phase 4 – Sicherung, Erststart */
+  /** Zielordner der Sicherungen; '' = <Datenordner>/backups */
+  backupDir: string;
+  /** Aufbewahrung: so viele automatische Sicherungen bleiben */
+  backupKeep: number;
+  /** 0 = keine automatische Sicherung */
+  backupIntervalHours: number;
+  onboardingDone: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -60,6 +69,10 @@ export const DEFAULT_SETTINGS: Settings = {
   // Default bis zur Laptop-Messung (small vs. medium-q5_0): schnellere Variante
   whisperModel: 'small',
   mediaMaxDurationMin: 240,
+  backupDir: '',
+  backupKeep: 7,
+  backupIntervalHours: 24,
+  onboardingDone: false,
 };
 
 type Validator = (v: unknown) => unknown;
@@ -137,6 +150,14 @@ const VALIDATORS: Record<keyof Settings, Validator> = {
     return v;
   },
   mediaMaxDurationMin: int(1, 1440),
+  backupDir: (v) => {
+    // eslint-disable-next-line no-control-regex
+    if (typeof v !== 'string' || v.length > 400 || /[\u0000-\u001f]/.test(v) || (v !== '' && !path.isAbsolute(v.trim()))) throw new Error('absoluter Pfad oder leer');
+    return v.trim();
+  },
+  backupKeep: int(1, 100),
+  backupIntervalHours: int(0, 24 * 30),
+  onboardingDone: bool,
 };
 
 export class SettingsStore {

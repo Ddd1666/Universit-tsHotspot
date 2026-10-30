@@ -24,13 +24,32 @@ async function main(): Promise<void> {
   // Strg+C den Prozess hart, ohne DB zu schließen und die Sperrdatei zu entfernen.
   let hotspot: Hotspot | undefined;
   let stopping = false;
+  let restarting: Promise<void> | null = null;
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
     console.log('Beende …');
+    if (restarting) await restarting.catch(() => {});
     if (!hotspot) return; // Start läuft noch -> wird direkt danach geschlossen
     await hotspot.close();
     process.exit(0);
+  };
+  // Wiederherstellung: Server im selben Prozess neu starten (gleicher Port und Token -> die Oberfläche lädt nur neu)
+  config.requestRestart = () => {
+    if (stopping || restarting || !hotspot) return;
+    restarting = (async () => {
+      console.log('Neustart (Wiederherstellung) …');
+      await hotspot!.close();
+      hotspot = undefined;
+      hotspot = await createHotspot(config);
+      await hotspot.listen();
+      console.log('Neu gestartet.');
+    })()
+      .catch((err: Error) => {
+        console.error('Neustart fehlgeschlagen:', err.message);
+        process.exit(1);
+      })
+      .finally(() => (restarting = null));
   };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
@@ -66,6 +85,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`\n  Uni-Hotspot läuft:  ${url}\n  (Beenden mit Strg+C)\n`);
+  if (hotspot.services.lastRestore) console.log(hotspot.services.lastRestore.ok ? `  Wiederherstellung ausgeführt: ${hotspot.services.lastRestore.id}` : '  Vorgemerkte Wiederherstellung war ungültig und wurde verworfen.');
   const status = await hotspot.services.monitor.refresh();
   if (!status.reachable) {
     console.log('  Ollama nicht erreichbar – Volltextsuche & Import funktionieren, KI-Funktionen erst nach Start von Ollama.');

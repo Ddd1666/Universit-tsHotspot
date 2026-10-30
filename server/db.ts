@@ -10,7 +10,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 export type DB = DatabaseSync;
 export type Param = SQLInputValue;
 
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: readonly string[] = [
   // v1 – Grundschema Phase 1 (AUTOINCREMENT: gelöschte IDs werden nie wiederverwendet -> Zitate/Links bleiben eindeutig)
   `
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

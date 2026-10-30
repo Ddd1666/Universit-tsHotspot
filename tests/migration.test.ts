@@ -162,6 +162,37 @@ describe('DB-Migration von einer echten Phase-1-Datenbank', () => {
     }
   });
 
+  it('Phase-3-Datenbank (Schema v4, aktuell): kein Migrationsschritt, kein Backup, Lerndaten vollständig nutzbar', async () => {
+    const dir = tmpDir('mig3');
+    const file = path.join(dir, 'hotspot.sqlite');
+    fs.copyFileSync(path.join(PROJECT_ROOT, 'tests', 'fixtures', 'phase3.sqlite'), file);
+    const raw = new DatabaseSync(file, { readOnly: true });
+    expect(version(raw)).toBe(4);
+    raw.close();
+    const { startTestApp } = await import('./helpers.ts');
+    const app = await startTestApp({ dataDir: dir });
+    try {
+      const db = app.hotspot.services.db;
+      expect(version(db)).toBe(SCHEMA_VERSION);
+      expect((db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check).toBe('ok');
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(fs.existsSync(path.join(dir, 'backups'))).toBe(false);
+      const cards = (await app.api<{ items: { front: string; reviewCount: number }[] }>('GET', '/api/cards?status=active')).data.items;
+      expect(cards.map((c) => [c.front, c.reviewCount])).toEqual([['Was ist Entropie?', 2]]);
+      const notes = (await app.api<{ id: number; title: string }[]>('GET', '/api/notes')).data;
+      expect(notes.map((n) => n.title)).toEqual(['Thermo – Gliederung']);
+      const note = (await app.api<{ citations: { sourceName: string; deleted: boolean }[] }>('GET', `/api/notes/${notes[0]!.id}`)).data;
+      expect(note.citations.map((c) => [c.sourceName, c.deleted])).toEqual([
+        ['Skript.pdf', false],
+        ['Skript.pdf', false],
+      ]);
+      expect((await app.api<{ nodes: unknown[] }>('GET', '/api/graph')).data.nodes).toHaveLength(2);
+      expect((await app.api<{ title: string }[]>('GET', '/api/chats')).data.map((c) => c.title)).toEqual(['Thermo']);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('es bleiben höchstens 3 Backups', () => {
     const { dir, file } = phase1Copy();
     for (let i = 0; i < 5; i++) {

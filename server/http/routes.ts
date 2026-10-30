@@ -17,7 +17,7 @@ import { registerLearnRoutes } from '../learn/routes.ts';
 const idParam = { type: 'object', properties: { id: { type: 'integer', minimum: 1 } }, required: ['id'] } as const;
 
 /** Sichere Content-Disposition (RFC 6266/5987) – Dateiname aus der DB, nie aus der Anfrage. */
-function contentDisposition(kind: 'inline' | 'attachment', name: string): string {
+export function contentDisposition(kind: 'inline' | 'attachment', name: string): string {
   const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
@@ -64,6 +64,8 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
     queue: s.queueStatus(),
     stats: s.library.stats(),
     vectorStore: s.vectors.kind,
+    pdfExport: !!s.config.printToPdf,
+    restored: s.lastRestore,
   }));
 
   app.get('/api/events', async (_req, reply) => {

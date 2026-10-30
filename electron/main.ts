@@ -7,7 +7,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { app, BrowserWindow, dialog, Menu, session, shell, type WebContents } from 'electron';
-import { loadConfig, resolveDataDir } from '../server/config.ts';
+import { loadConfig, resolveDataDir, type AppConfig } from '../server/config.ts';
 import { createHotspot, type Hotspot } from '../server/app.ts';
 import { AlreadyRunningError } from '../server/lock.ts';
 import { DIALOG_TEXT, dialogLanguage } from './messages.ts';
@@ -48,11 +48,46 @@ function harden(contents: WebContents): void {
   contents.on('will-attach-webview', (e) => e.preventDefault());
 }
 
+/** Seite der eigenen Oberfläche unsichtbar laden und als PDF drucken (Notiz-Export). Wartet auf data-print-ready. */
+async function printToPdf(urlPath: string): Promise<Buffer> {
+  const w = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
+  try {
+    await w.loadURL(origin + urlPath);
+    for (let i = 0; i < 150; i++) {
+      if (await w.webContents.executeJavaScript("document.body.dataset.printReady === '1'")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return await w.webContents.printToPDF({ pageSize: 'A4', printBackground: false });
+  } finally {
+    w.destroy();
+  }
+}
+
+let restarting = false;
+/** Wiederherstellung: Server im selben Prozess neu starten (gleicher Port/Token, die Oberfläche lädt neu). */
+async function restartServer(config: AppConfig): Promise<void> {
+  if (restarting || !hotspot) return;
+  restarting = true;
+  try {
+    await hotspot.close();
+    hotspot = null;
+    hotspot = await createHotspot(config);
+    await hotspot.listen();
+  } catch (err) {
+    dialog.showErrorBox(texts().startErrorTitle, `${texts().restartFailed}\n\n${(err as Error).message}`);
+    app.quit();
+  } finally {
+    restarting = false;
+  }
+}
+
 async function boot(): Promise<void> {
   // Keine Wörterbuch-Downloads aus dem Internet (Chromium lädt sonst Rechtschreib-Wörterbücher nach)
   session.defaultSession.setSpellCheckerEnabled(false);
   session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/');
   const config = loadConfig({ port: 0, token: crypto.randomBytes(32).toString('hex') });
+  config.printToPdf = printToPdf;
+  config.requestRestart = () => void restartServer(config);
   if (!config.webDir) {
     dialog.showErrorBox('Uni-Hotspot', texts().notBuilt);
     app.quit();
@@ -60,7 +95,9 @@ async function boot(): Promise<void> {
   }
   try {
     hotspot = await createHotspot(config);
-    origin = (await hotspot.listen()).url;
+    const l = await hotspot.listen();
+    origin = l.url;
+    config.port = l.port; // Neustart nach Wiederherstellung auf demselben Port (Fenster-URL bleibt gültig)
   } catch (err) {
     if (err instanceof AlreadyRunningError) {
       // z. B. Browser-Modus läuft schon mit demselben Datenordner: nichts anfassen, nur hinweisen
@@ -112,9 +149,27 @@ async function boot(): Promise<void> {
       navigateOnDragDrop: false,
     },
   });
-  win.once('ready-to-show', () => win?.show());
+  const smoke = process.env.HOTSPOT_SMOKE_TEST === '1';
+  if (!smoke) win.once('ready-to-show', () => win?.show());
   win.on('closed', () => (win = null));
+  // Absturz des Renderers: Hinweis statt weißem Fenster, Daten liegen im Server-Prozess sicher
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit') return;
+    const tx = texts();
+    void dialog.showMessageBox({ type: 'error', title: 'Uni-Hotspot', message: tx.crashed, detail: details.reason, buttons: [tx.reload, tx.quit] }).then((r) => {
+      if (r.response === 0) win?.webContents.reload();
+      else app.quit();
+    });
+  });
   await win.loadURL(origin + '/');
+  if (smoke) {
+    // CI-Rauchtest des Pakets: Server + Oberfläche geladen -> Erfolg melden und beenden
+    const ok = await win.webContents.executeJavaScript("new Promise(r => { let n = 0; const t = setInterval(() => { if (document.querySelector('.app, .boot-card') || ++n > 100) { clearInterval(t); r(!!document.querySelector('.app')); } }, 100); })");
+    console.log(ok ? `SMOKE OK ${origin}` : 'SMOKE FAIL');
+    await hotspot?.close();
+    hotspot = null;
+    app.exit(ok ? 0 : 1);
+  }
 }
 
 if (!app.requestSingleInstanceLock()) {
