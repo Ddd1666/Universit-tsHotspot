@@ -15,7 +15,12 @@ export type Route =
   | { view: 'search'; q: string }
   | { view: 'settings' }
   | { view: 'queue' }
+  | { view: 'backup' }
+  | { view: 'diagnostics' }
   | { view: 'learn'; tab: LearnTab; subject: number | null; source: number | null; note: number | null };
+
+/** Druckansicht (PDF-Export einer Notiz): ohne Assistent/Overlays */
+export const isPrintMode = () => /[?&]print=1\b/.test(location.hash);
 
 export function parseRoute(hash: string): Route {
   const [pathPart, query = ''] = hash.replace(/^#/, '').split('?');
@@ -33,6 +38,10 @@ export function parseRoute(hash: string): Route {
       return { view: 'settings' };
     case 'queue':
       return { view: 'queue' };
+    case 'backup':
+      return { view: 'backup' };
+    case 'diagnostics':
+      return { view: 'diagnostics' };
     case 'learn': {
       const num = (k: string) => Number(params.get(k)) || null;
       return { view: 'learn', tab: LEARN_TABS.includes(parts[1] as LearnTab) ? (parts[1] as LearnTab) : 'review', subject: num('subject'), source: num('source'), note: num('note') };
@@ -98,6 +107,9 @@ interface AppState {
   connected: boolean;
   gen: GenRequest | null;
   openGenerate(req?: GenRequest | null): void;
+  /** Erststart-Assistent (jederzeit wieder aufrufbar) */
+  wizardOpen: boolean;
+  setWizardOpen(v: boolean): void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -152,6 +164,7 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
   const [connected, setConnected] = useState(true);
   const [gen, setGen] = useState<GenRequest | null>(null);
   const openGenerate = useCallback((req: GenRequest | null = {}) => setGen(req), []);
+  const [wizardOpen, setWizardOpen] = useState(() => !boot.settings.onboardingDone && !isPrintMode());
   const importer = useMemo(() => new ImportManager(), []);
   const toastId = useRef(1);
 
@@ -167,6 +180,14 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
   }, []);
   const toastError = useCallback((err: unknown) => toast(apiErrorText(t, err), 'error'), [toast, t]);
   const dismissToast = useCallback((id: number) => setToasts((ts) => ts.filter((x) => x.id !== id)), []);
+  // nach einer Wiederherstellung (Neustart) einmal Bescheid geben
+  const restored = boot.restored;
+  const restoredShown = useRef(false);
+  useEffect(() => {
+    if (!restored || restoredShown.current) return;
+    restoredShown.current = true;
+    toast(t(restored.ok ? 'backup.restoredToast' : 'backup.restoreDropped'), restored.ok ? 'success' : 'error');
+  }, [restored, toast, t]);
 
   const reloadSubjects = useCallback(() => {
     void get<Subject[]>('/api/subjects').then(setSubjects).catch(() => {});
@@ -305,6 +326,8 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
     connected,
     gen,
     openGenerate,
+    wizardOpen,
+    setWizardOpen,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

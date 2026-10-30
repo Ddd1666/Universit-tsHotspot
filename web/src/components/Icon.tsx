@@ -45,6 +45,9 @@ const PATHS: Record<string, string> = {
   move: 'M5 12h14M13 6l6 6-6 6',
   layers: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',
   cpu: 'M7 7h10v10H7zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3',
+  shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM9 12l2 2 4-4',
+  pulse: 'M3 12h4l3-7 4 14 3-7h4',
+  printer: 'M6 9V3h12v6M6 17H4v-7h16v7h-2M8 14h8v7H8z',
 };
 
 export function Icon({ name, size = 18, className }: { name: string; size?: number; className?: string }) {

@@ -27,6 +27,56 @@ export interface Settings {
   mediaLanguage: 'auto' | 'de' | 'en';
   whisperModel: string;
   mediaMaxDurationMin: number;
+  backupDir: string;
+  backupKeep: number;
+  backupIntervalHours: number;
+  onboardingDone: boolean;
+}
+
+/* ------------------------------------------------------------------ Phase 4: Sicherung, Diagnose */
+
+export interface Snapshot {
+  id: string;
+  reason: 'auto' | 'manual' | 'pre-restore';
+  createdAt: number;
+  appVersion: string | null;
+  schemaVersion: number | null;
+  files: number;
+  bytes: number;
+  dbBytes: number;
+  missing: number;
+}
+
+export interface BackupState {
+  dir: string;
+  defaultDir: string;
+  busy: boolean;
+  items: Snapshot[];
+  keep: number;
+  intervalHours: number;
+  backupDir: string;
+  canRestart: boolean;
+}
+
+export interface ImportReport {
+  subjects: { created: number; merged: number };
+  sources: { added: number; duplicate: number; skipped: number; requeued: number };
+  files: { added: number; existing: number; invalid: number };
+  chunks: number;
+  notes: { added: number; duplicate: number };
+  cards: { added: number; duplicate: number };
+  questions: { added: number; duplicate: number };
+  skippedRecords: number;
+}
+
+export interface Diagnostics {
+  app: { version: string; schema: number; mock: boolean; platform: string; node: string; electron: string | null; chrome: string | null; sqlite: string; uptimeSec: number; rssBytes: number; vectorCacheBytes: number; pdfExport: boolean };
+  ollama: { reachable: boolean; url: string; version: string | null; models: number; running: { name: string; gpuPercent: number }[]; required: { role: 'chat' | 'embedding' | 'vision'; model: string; installed: boolean | null }[]; error: string | null };
+  tools: { ffmpeg: boolean; whisper: boolean; whisperModels: string[] };
+  dataDir: { path: string; writable: boolean; freeBytes: number | null; synced: boolean; sizes: { db: number; files: number; backups: number | null; logs: number }; fileCount: number };
+  counts: Stats;
+  queue: QueueStatus;
+  backups: { dir: string; count: number; last: number | null; intervalHours: number; keep: number };
 }
 
 export interface Subject {
@@ -163,6 +213,10 @@ export interface Bootstrap {
   queue: QueueStatus;
   stats: Stats;
   vectorStore: string;
+  /** Desktop-App: Notizen per printToPDF exportierbar */
+  pdfExport: boolean;
+  /** Wiederherstellung beim letzten Start */
+  restored: { ok: boolean; id: string | null; code?: string } | null;
 }
 
 export type Scope = { mode: 'all' } | { mode: 'subjects'; ids: number[] } | { mode: 'sources'; ids: number[] } | { mode: 'none' };

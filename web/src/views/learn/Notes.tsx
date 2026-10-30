@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { del, get, patch, post } from '../../api';
+import { del, downloadFile, get, patch, post } from '../../api';
 import { Icon } from '../../components/Icon';
 import { AiTag, RefLink } from '../../components/LearnBits';
 import { Markdown } from '../../components/Markdown';
 import { formatDate } from '../../lib/format';
-import { useApp, useHubEvent } from '../../store';
+import { isPrintMode, useApp, useHubEvent } from '../../store';
 import type { Note, NoteSummary } from '../../types';
 
 /** Notizen: Liste + Ansicht (Markdown über DOMPurify, Zitate [n] springen zur Quellenliste), bearbeiten, Export. */
 export function NotesTab({ subject, noteId, onOpen }: { subject: number | null; noteId: number | null; onOpen(id: number | null): void }) {
-  const { t, lang, ask, toastError } = useApp();
+  const { t, lang, ask, toastError, boot } = useApp();
   const [list, setList] = useState<NoteSummary[] | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [edit, setEdit] = useState<{ title: string; body: string } | null>(null);
@@ -69,6 +69,27 @@ export function NotesTab({ subject, noteId, onOpen }: { subject: number | null; 
       toastError(err);
     }
   };
+  // Druckansicht (PDF-Export der Desktop-App): melden, sobald die Notiz gerendert ist
+  useEffect(() => {
+    if (!note || !isPrintMode()) return;
+    const id = setTimeout(() => (document.body.dataset.printReady = '1'), 400);
+    return () => clearTimeout(id);
+  }, [note]);
+
+  /** PDF: Desktop -> Electron printToPDF (Server), Browser -> Druckdialog („Als PDF speichern“) mit Druck-CSS */
+  const exportPdf = async () => {
+    if (!note) return;
+    if (!boot.pdfExport) {
+      window.print();
+      return;
+    }
+    try {
+      await downloadFile(`/api/notes/${note.id}/pdf`, 'note.pdf');
+    } catch (err) {
+      toastError(err);
+    }
+  };
+
   const exportMd = async () => {
     if (!note) return;
     try {
@@ -149,6 +170,9 @@ export function NotesTab({ subject, noteId, onOpen }: { subject: number | null; 
                 </button>
                 <button className="btn small ghost" onClick={() => void exportMd()}>
                   <Icon name="download" size={14} /> {t('notes.export')}
+                </button>
+                <button className="btn small ghost" onClick={() => void exportPdf()} title={boot.pdfExport ? undefined : t('notes.pdfBrowserHint')}>
+                  <Icon name="printer" size={14} /> {t('notes.exportPdf')}
                 </button>
                 <button className="icon-btn small danger" onClick={() => void remove()} aria-label={t('notes.delete')} title={t('notes.delete')}>
                   <Icon name="trash" size={14} />

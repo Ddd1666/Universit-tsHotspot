@@ -109,6 +109,8 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
     // Browser-Tab) oder halb gesendete Uploads -> Strg+C hing, Sperrdatei blieb liegen (Regressionstest in shutdown.test.ts)
     forceCloseConnections: true,
     logController: new LogController({ disableRequestLogging: config.logLevel !== 'debug' }),
+    // Keine Antwort-Schemas -> fast-json-stringify (+ eigenes ajv) wird nie gebraucht; nicht laden spart ~0,25 s Kaltstart
+    schemaController: { compilersFactory: { buildSerializer: () => () => (data: unknown) => JSON.stringify(data) } },
   });
   const log = (msg: string, extra?: unknown) => app.log.info({ extra }, msg);
   if (tmpProblem) log(tmpProblem);

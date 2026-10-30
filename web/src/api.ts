@@ -73,6 +73,68 @@ export function fileUrl(sourceId: number, download = false): string {
   return `/api/sources/${sourceId}/file?t=${encodeURIComponent(TOKEN)}${download ? '&download=1' : ''}`;
 }
 
+/** Export-Download (kann GB groß sein: direkter Link statt Blob im Speicher). */
+export function exportUrl(subject: number | 'all'): string {
+  return `/api/library/export?subject=${subject}&t=${encodeURIComponent(TOKEN)}`;
+}
+
+/** Kleine Dateien (CSV, PDF, Diagnose) mit Token-Header laden und als Download anbieten. */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const res = await fetch(path, { headers: { 'x-hotspot-token': TOKEN } });
+  if (!res.ok) {
+    const d = (await res.json().catch(() => ({}))) as { error?: string; message?: string; detail?: string };
+    throw new ApiError(res.status, d.error ?? 'error', d.message ?? `HTTP ${res.status}`, d.detail);
+  }
+  const cd = res.headers.get('content-disposition') ?? '';
+  const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
+  const name = m ? decodeURIComponent(m[1]!) : fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/** Datei roh hochladen (Fortschritt per XHR), JSON-Antwort. */
+export function uploadRaw<T>(path: string, file: File, onProgress: (fraction: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path);
+    xhr.setRequestHeader('x-hotspot-token', TOKEN);
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let data: { error?: string; message?: string; detail?: string } = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        /* ignore */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else reject(new ApiError(xhr.status, data.error ?? 'error', data.message ?? `HTTP ${xhr.status}`, data.detail));
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'network', 'Upload fehlgeschlagen'));
+    xhr.send(file);
+  });
+}
+
+/** Nach einem Neustart des Servers (Wiederherstellung) warten, bis er wieder antwortet. */
+export async function waitForServer(timeoutMs = 120_000): Promise<boolean> {
+  const end = Date.now() + timeoutMs;
+  await new Promise((r) => setTimeout(r, 1200));
+  while (Date.now() < end) {
+    try {
+      const r = await fetch('/api/health', { headers: { 'x-hotspot-token': TOKEN } });
+      if (r.ok) return true;
+    } catch {
+      /* noch nicht erreichbar */
+    }
+    await new Promise((r) => setTimeout(r, 600));
+  }
+  return false;
+}
+
 /* ------------------------------------------------------------------ Server-Events (SSE) */
 
 type Listener = (e: HubEvent) => void;

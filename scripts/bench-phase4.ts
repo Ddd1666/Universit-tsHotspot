@@ -77,12 +77,13 @@ async function startMeasured(dir: string): Promise<{ hs: Hotspot; ms: number }> 
 }
 
 /** Kaltstart wie im Browser-Modus: eigener Prozess `node server/main.ts`, Zeit bis /api/health antwortet, RSS danach. */
-async function coldStart(dir: string, port: number): Promise<{ readyMs: number; rssReady: number; rssLater: number }> {
+async function coldStart(dir: string, port: number, compileCache = false): Promise<{ readyMs: number; rssReady: number; rssLater: number }> {
   const a = performance.now();
-  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(PROJECT_ROOT, 'server', 'main.ts')], {
-    env: { ...process.env, HOTSPOT_DATA_DIR: path.join(root, dir), HOTSPOT_PORT: String(port), HOTSPOT_MOCK_OLLAMA: '1' },
-    stdio: 'ignore',
-  });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOTSPOT_DATA_DIR: path.join(root, dir), HOTSPOT_PORT: String(port), HOTSPOT_MOCK_OLLAMA: '1' };
+  delete env.NODE_COMPILE_CACHE;
+  // start.bat/start.mjs setzen NODE_COMPILE_CACHE (Projektordner/.cache) -> ab dem zweiten Start schneller
+  if (compileCache) env.NODE_COMPILE_CACHE = path.join(root, 'compile-cache');
+  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(PROJECT_ROOT, 'server', 'main.ts')], { env, stdio: 'ignore' });
   let readyMs = 0;
   for (let i = 0; i < 400 && !readyMs; i++) {
     try {
@@ -109,13 +110,14 @@ async function coldStart(dir: string, port: number): Promise<{ readyMs: number; 
   await prep.services.embed.stop();
   fill(prep, 2000, 20, true);
   await prep.close();
-  type Run = { empty: Awaited<ReturnType<typeof coldStart>>; big: Awaited<ReturnType<typeof coldStart>> };
+  type Run = { empty: Awaited<ReturnType<typeof coldStart>>; big: Awaited<ReturnType<typeof coldStart>>; cached: Awaited<ReturnType<typeof coldStart>> };
   const runs: Run[] = [];
-  for (let i = 0; i < 3; i++) runs.push({ empty: await coldStart(`empty${i}`, 4600 + i), big: await coldStart('big', 4610 + i) });
+  await coldStart('warm', 4620, true); // füllt den Compile-Cache
+  for (let i = 0; i < 3; i++) runs.push({ empty: await coldStart(`empty${i}`, 4600 + i), big: await coldStart('big', 4610 + i), cached: await coldStart(`cached${i}`, 4630 + i, true) });
   const med = (f: (r: Run) => number) => pct(runs.map(f), 0.5);
   report.push(
     `Kaltstart Browser-Modus (eigener Prozess node server/main.ts bis /api/health antwortet; Median aus 3; Mock-Ollama im Prozess):`,
-    `  leerer Datenordner: ${ms(med((r) => r.empty.readyMs))}; RSS bereit ${mb(med((r) => r.empty.rssReady))}, nach 3 s ${mb(med((r) => r.empty.rssLater))}`,
+    `  leerer Datenordner: ${ms(med((r) => r.empty.readyMs))}; mit Compile-Cache (wie start.bat) ${ms(med((r) => r.cached.readyMs))}; RSS bereit ${mb(med((r) => r.empty.rssReady))}, nach 3 s ${mb(med((r) => r.empty.rssLater))}`,
     `  2000 Quellen / 40 000 Abschnitte + Vektoren: ${ms(med((r) => r.big.readyMs))}; RSS bereit ${mb(med((r) => r.big.rssReady))}, nach 3 s (Vektor-Cache geladen) ${mb(med((r) => r.big.rssLater))}`,
   );
   const big = await startMeasured('big');

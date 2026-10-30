@@ -25,7 +25,7 @@ function score(label: string, q: string): number {
 
 /** Strg+K: Navigation, Aktionen, Chats, Fächer, Suche. */
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, t, navigate, chats, subjects, settings, updateSettings, sidebarOpen, setSidebarOpen } = useApp();
+  const { paletteOpen, setPaletteOpen, t, navigate, chats, subjects, settings, updateSettings, sidebarOpen, setSidebarOpen, setWizardOpen } = useApp();
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -62,6 +62,9 @@ export function CommandPalette() {
       { id: 'learn', group: t('cmd.actions'), label: t('nav.learn'), icon: 'brain', run: () => navigate('#/learn/review') },
       { id: 'settings', group: t('cmd.actions'), label: t('nav.settings'), icon: 'settings', run: () => navigate('#/settings') },
       { id: 'import', group: t('cmd.actions'), label: t('cmd.import'), icon: 'upload', run: () => navigate('#/library?import=1') },
+      { id: 'backup', group: t('cmd.actions'), label: t('backup.title'), icon: 'shield', run: () => navigate('#/backup') },
+      { id: 'diag', group: t('cmd.actions'), label: t('diag.title'), icon: 'pulse', run: () => navigate('#/diagnostics') },
+      { id: 'wizard', group: t('cmd.actions'), label: t('wiz.open'), icon: 'spark', run: () => setWizardOpen(true) },
       {
         id: 'theme',
         group: t('cmd.actions'),
@@ -89,7 +92,7 @@ export function CommandPalette() {
       else ranked.unshift(searchItem);
     }
     return ranked;
-  }, [q, t, chats, subjects, settings, navigate, updateSettings, sidebarOpen, setSidebarOpen]);
+  }, [q, t, chats, subjects, settings, navigate, updateSettings, sidebarOpen, setSidebarOpen, setWizardOpen]);
 
   useEffect(() => setActive(0), [q]);
   useEffect(() => {
@@ -122,7 +125,7 @@ export function CommandPalette() {
   const showHeaders = !q.trim();
   return (
     <div className="overlay palette-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="palette glass" role="dialog" aria-modal="true" aria-label="Command Palette" onKeyDown={onKey}>
+      <div className="palette glass" role="dialog" aria-modal="true" aria-label={t('cmd.label')} onKeyDown={onKey}>
         <div className="palette-input">
           <Icon name="command" />
           <input

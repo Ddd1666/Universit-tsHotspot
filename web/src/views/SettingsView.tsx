@@ -3,6 +3,7 @@ import { get, post, put } from '../api';
 import { Icon } from '../components/Icon';
 import { ViewHeader } from '../components/ViewHeader';
 import { MediaSettings } from '../components/MediaSettings';
+import { CopyCmd } from '../components/CopyCmd';
 import { formatBytes } from '../lib/format';
 import { embeddingChoices } from '../lib/status';
 import { useApp } from '../store';
@@ -19,27 +20,6 @@ function Section({ title, icon, children }: { title: string; icon: string; child
       </h2>
       {children}
     </section>
-  );
-}
-
-function CopyCmd({ cmd }: { cmd: string }) {
-  const { t } = useApp();
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="copy-cmd">
-      <code>{cmd}</code>
-      <button
-        className="btn small"
-        onClick={() =>
-          void navigator.clipboard?.writeText(cmd).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          })
-        }
-      >
-        <Icon name={copied ? 'check' : 'copy'} size={14} /> {copied ? t('set.copied') : t('set.copy')}
-      </button>
-    </div>
   );
 }
 
@@ -67,7 +47,7 @@ function NumberField({ label, value, min, max, onCommit }: { label: string; valu
 }
 
 export function SettingsView() {
-  const { t, lang, settings, updateSettings, ollama, setOllama, queue, boot, stats, toast, toastError, ask } = useApp();
+  const { t, lang, settings, updateSettings, ollama, setOllama, queue, boot, stats, toast, toastError, ask, navigate, setWizardOpen } = useApp();
   const [url, setUrl] = useState(settings.ollamaUrl);
   const [dataDir, setDataDir] = useState('');
   const [checking, setChecking] = useState(false);
@@ -341,6 +321,17 @@ export function SettingsView() {
         </Section>
 
         <Section title={t('set.data')} icon="folder">
+          <div className="row gap wrap">
+            <button className="btn small primary" onClick={() => navigate('#/backup')}>
+              <Icon name="shield" size={14} /> {t('backup.open')}
+            </button>
+            <button className="btn small" onClick={() => navigate('#/diagnostics')}>
+              <Icon name="pulse" size={14} /> {t('diag.title')}
+            </button>
+            <button className="btn small ghost" onClick={() => setWizardOpen(true)}>
+              <Icon name="spark" size={14} /> {t('wiz.open')}
+            </button>
+          </div>
           <label className="field">
             <span>{t('set.dataDir')}</span>
             <CopyCmd cmd={info?.dataDir ?? boot.dataDir} />

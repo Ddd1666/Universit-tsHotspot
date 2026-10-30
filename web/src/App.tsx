@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { CommandPalette } from './components/CommandPalette';
 import { Dialog } from './components/Dialog';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Icon } from './components/Icon';
 import { Sidebar } from './components/Sidebar';
 import { Toasts } from './components/Toasts';
@@ -8,13 +9,31 @@ import { collectDropped } from './lib/importer';
 import { useApp } from './store';
 import { ChatView } from './views/ChatView';
 import { LibraryView } from './views/LibraryView';
-import { SearchView } from './views/SearchView';
-import { SettingsView } from './views/SettingsView';
-import { QueueView } from './views/QueueView';
-import { GenerateDialog, LearnView } from './views/LearnView';
+
+// Seltener genutzte Ansichten erst bei Bedarf laden (kleineres Startpaket -> schnellerer Start)
+const SearchView = lazy(() => import('./views/SearchView').then((m) => ({ default: m.SearchView })));
+const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ default: m.SettingsView })));
+const QueueView = lazy(() => import('./views/QueueView').then((m) => ({ default: m.QueueView })));
+const LearnView = lazy(() => import('./views/LearnView').then((m) => ({ default: m.LearnView })));
+const GenerateDialog = lazy(() => import('./views/LearnView').then((m) => ({ default: m.GenerateDialog })));
+const BackupView = lazy(() => import('./views/BackupView').then((m) => ({ default: m.BackupView })));
+const DiagnosticsView = lazy(() => import('./views/DiagnosticsView').then((m) => ({ default: m.DiagnosticsView })));
+const Wizard = lazy(() => import('./components/Wizard').then((m) => ({ default: m.Wizard })));
+
+function ViewFallback() {
+  return (
+    <div className="view">
+      <div className="skeleton-list pad" aria-hidden="true">
+        <div />
+        <div />
+        <div />
+      </div>
+    </div>
+  );
+}
 
 export function App() {
-  const { route, sidebarOpen, importer, importTarget, subjects, t, toast, gen } = useApp();
+  const { route, sidebarOpen, importer, importTarget, subjects, t, toast, gen, wizardOpen } = useApp();
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
 
@@ -69,19 +88,28 @@ export function App() {
     <div className={`app ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
       <div className="bg-fx" aria-hidden="true" />
       <a href="#main" className="skip-link" onClick={(e) => (e.preventDefault(), document.getElementById('main')?.focus())}>
-        Skip to content
+        {t('a11y.skip')}
       </a>
       <Sidebar />
       <main id="main" className="main" tabIndex={-1}>
-        {route.view === 'chat' && <ChatView chatId={route.chatId} />}
-        {route.view === 'library' && <LibraryView subject={route.subject} sourceId={route.sourceId} />}
-        {route.view === 'search' && <SearchView initialQuery={route.q} />}
-        {route.view === 'settings' && <SettingsView />}
-        {route.view === 'queue' && <QueueView />}
-        {route.view === 'learn' && <LearnView tab={route.tab} subject={route.subject} source={route.source} note={route.note} />}
+        <ErrorBoundary key={route.view} t={t}>
+          <Suspense fallback={<ViewFallback />}>
+            {route.view === 'chat' && <ChatView chatId={route.chatId} />}
+            {route.view === 'library' && <LibraryView subject={route.subject} sourceId={route.sourceId} />}
+            {route.view === 'search' && <SearchView initialQuery={route.q} />}
+            {route.view === 'settings' && <SettingsView />}
+            {route.view === 'queue' && <QueueView />}
+            {route.view === 'backup' && <BackupView />}
+            {route.view === 'diagnostics' && <DiagnosticsView />}
+            {route.view === 'learn' && <LearnView tab={route.tab} subject={route.subject} source={route.source} note={route.note} />}
+          </Suspense>
+        </ErrorBoundary>
       </main>
       <CommandPalette />
-      {gen && <GenerateDialog req={gen} />}
+      <Suspense fallback={null}>
+        {gen && <GenerateDialog req={gen} />}
+        {wizardOpen && <Wizard />}
+      </Suspense>
       <Dialog />
       <Toasts />
       {dragging && (

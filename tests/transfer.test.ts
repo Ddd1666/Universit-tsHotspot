@@ -145,6 +145,7 @@ describe('Export/Import einer Bibliothek bzw. eines Fachs', () => {
   it('komplette Bibliothek exportieren enthält alle Fächer; Import in dieselbe Bibliothek ändert nichts', async () => {
     const a = await app();
     await seed(a);
+    await waitForEmbeddings(a); // sonst zählt die Vektor-Spalte zwischen den Messungen weiter
     const before = a.hotspot.services.library.stats();
     const zip = await exportFile(a, 'all');
     const r = await importFile(a, zip);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { del, get, patch, post } from '../../api';
+import { del, downloadFile, get, patch, post } from '../../api';
 import { Icon } from '../../components/Icon';
 import { AiTag, CardFace, cardRef, RefLink } from '../../components/LearnBits';
 import { formatDate } from '../../lib/format';
@@ -275,6 +275,9 @@ export function CardsTab({ subject }: { subject: number | null }) {
         )}
         <button className="btn small" onClick={() => setEditing('new')}>
           <Icon name="plus" size={14} /> {t('cards.new')}
+        </button>
+        <button className="btn small ghost" onClick={() => void downloadFile(`/api/cards/export.csv${subject ? `?subject=${subject}` : ''}`, 'cards.csv').catch(toastError)} title={t('transfer.csvHint')}>
+          <Icon name="sheet" size={14} /> {t('transfer.csv')}
         </button>
       </div>
       {status === 'draft' && items.length > 0 && (

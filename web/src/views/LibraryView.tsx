@@ -9,6 +9,8 @@ import { collectDropped, fromInput } from '../lib/importer';
 import { useApp, useHubEvent } from '../store';
 import type { Source, Subject } from '../types';
 
+const PAGE = 200;
+
 function SubjectForm({ initial, onSave, onCancel }: { initial?: Subject; onSave(name: string, color: string): void; onCancel(): void }) {
   const { t } = useApp();
   const [name, setName] = useState(initial?.name ?? '');
@@ -160,21 +162,66 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
     return () => setImportTarget(null);
   }, [targetSubject, setImportTarget]);
 
+  const shownRef = useRef(0);
+  const filterKey = `${subject}|${q.trim()}|${status}`;
+  const keyRef = useRef(filterKey);
+  const params = useCallback(
+    (offset: number, limit: number) => {
+      const p = new URLSearchParams({ subject: String(subject), offset: String(offset), limit: String(limit) });
+      if (q.trim()) p.set('q', q.trim());
+      if (status) p.set('status', status);
+      return p;
+    },
+    [subject, q, status],
+  );
+  /** Erste Seite bzw. alles bisher Geladene neu holen (bei Filterwechsel: zurück auf eine Seite). */
   const load = useCallback(() => {
-    const params = new URLSearchParams({ subject: String(subject) });
-    if (q.trim()) params.set('q', q.trim());
-    if (status) params.set('status', status);
-    get<{ items: Source[]; total: number }>(`/api/sources?${params}`)
+    const same = keyRef.current === filterKey;
+    keyRef.current = filterKey;
+    const limit = same ? Math.min(2000, Math.max(PAGE, shownRef.current)) : PAGE;
+    get<{ items: Source[]; total: number }>(`/api/sources?${params(0, limit)}`)
       .then((r) => {
+        if (keyRef.current !== filterKey) return;
         setSources(r.items);
         setTotal(r.total);
       })
       .catch((e: unknown) => toastError(e));
-  }, [subject, q, status, toastError]);
+  }, [filterKey, params, toastError]);
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
+  useEffect(() => {
+    shownRef.current = sources?.length ?? 0;
+  }, [sources]);
+
+  // Beim Scrollen nachladen (statt fester Kappung); Zeilen außerhalb des Sichtbereichs rendert der Browser nicht (content-visibility)
+  const sentinel = useRef<HTMLLIElement>(null);
+  const loadingMore = useRef(false);
+  const loadMore = useCallback(() => {
+    const have = shownRef.current;
+    if (loadingMore.current || have >= total) return;
+    loadingMore.current = true;
+    const key = filterKey;
+    get<{ items: Source[]; total: number }>(`/api/sources?${params(have, PAGE)}`)
+      .then((r) => {
+        if (keyRef.current !== key) return;
+        setSources((list) => {
+          const known = new Set((list ?? []).map((s) => s.id));
+          return [...(list ?? []), ...r.items.filter((s) => !known.has(s.id))];
+        });
+        setTotal(r.total);
+      })
+      .catch((e: unknown) => toastError(e))
+      .finally(() => (loadingMore.current = false));
+  }, [total, filterKey, params, toastError]);
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && loadMore(), { rootMargin: '600px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore, sources]);
 
   /** Entprellt neu laden: erst nach einer Ruhephase, bei Dauer-Ereignissen spätestens alle 5 s. */
   const scheduleReload = useCallback((delay: number) => {
@@ -207,6 +254,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
       if (sources?.some((s) => s.id === e.source.id)) setSources((list) => list?.map((s) => (s.id === e.source.id ? e.source : s)) ?? list);
       else scheduleReload(800);
     } else if (e.type === 'source-deleted') {
+      if (sources?.some((s) => s.id === e.id)) setTotal((n) => Math.max(0, n - 1));
       setSources((list) => list?.filter((s) => s.id !== e.id) ?? list);
       setPreview((p) => (p?.id === e.id ? null : p));
     } else if (e.type === 'queue') {
@@ -322,8 +370,8 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
               {subj && <span className="dot-color" style={{ background: subj.color }} />}
               {title}
             </h2>
-            <span className={`muted small ${sources && total > sources.length ? 'warn' : ''}`}>
-              {sources ? (total > sources.length ? t('lib.countOf', { shown: sources.length, total }) : t('lib.count', { n: sources.length })) : ''}
+            <span className="muted small" aria-live="polite">
+              {sources ? t('lib.count', { n: total }) : ''}
             </span>
             <span className="spacer" />
             <div className="input-icon">
@@ -396,8 +444,16 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
                   </li>
                 );
               })}
+              {sources.length < total && (
+                <li ref={sentinel} className="source-more">
+                  <button className="btn small ghost" onClick={loadMore}>
+                    {t('lib.loadMore', { shown: sources.length, total })}
+                  </button>
+                </li>
+              )}
             </ul>
           )}
+          {sources !== null && sources.length === 0 && (q || status) && <p className="muted pad">{t('lib.noMatch')}</p>}
         </section>
       </div>
 
