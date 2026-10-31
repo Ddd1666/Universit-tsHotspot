@@ -234,7 +234,7 @@ export class SqliteVectorStore implements VectorStore {
    * synchrone Laden den Server ~1,8 s am Stück). Ändert sich der Index währenddessen, wird abgebrochen – die nächste Suche
    * lädt dann wie bisher synchron.
    */
-  async warmupAsync(batch = 4000): Promise<void> {
+  async warmupAsync(batch = 1000): Promise<void> {
     if (this.cache || this.loading) return;
     if (this.repair() > 0) this.onRepaired?.();
     const info = this.info();
@@ -272,9 +272,21 @@ export class SqliteVectorStore implements VectorStore {
       let dot = 0;
       const off = row * dim;
       if (c.q8) {
+        // 4-fach entrollt mit getrennten Summen: −27 % Rechenzeit bei 100k × 768 (gemessen, scripts/bench-phase4.ts)
         const v = c.q8;
-        for (let i = 0; i < dim; i++) dot += v[off + i]! * q[i]!;
-        dot *= c.scales![row]!;
+        let a = 0;
+        let b = 0;
+        let s2 = 0;
+        let d = 0;
+        let i = 0;
+        for (let o = off; i + 3 < dim; i += 4, o += 4) {
+          a += v[o]! * q[i]!;
+          b += v[o + 1]! * q[i + 1]!;
+          s2 += v[o + 2]! * q[i + 2]!;
+          d += v[o + 3]! * q[i + 3]!;
+        }
+        for (; i < dim; i++) a += v[off + i]! * q[i]!;
+        dot = (a + b + s2 + d) * c.scales![row]!;
       } else {
         const v = c.f32!;
         for (let i = 0; i < dim; i++) dot += v[off + i]! * q[i]!;

@@ -76,6 +76,28 @@ describe('Vektorspeicher', () => {
   });
 });
 
+describe('Vektorspeicher: entrollte int8-Schleife', () => {
+  it('Dimension nicht durch 4 teilbar: gleiche Reihenfolge wie float32 (Rest-Schleife)', () => {
+    const dir = tmpDir('vec7');
+    const db = openDb(path.join(dir, 'v.sqlite'));
+    db.prepare("INSERT INTO sources(id, sha256, name, size, mime, kind, status, imported_at) VALUES (1, 'y', 'y', 1, 'text/plain', 'text', 'ready', 0)").run();
+    const ins = db.prepare("INSERT INTO chunks(id, source_id, ord, text, token_est) VALUES (?, 1, ?, 't', 1)");
+    // 7 Dimensionen, Vektoren unterscheiden sich nur in der letzten (Rest-)Komponente
+    const items = [1, 2, 3].map((i) => {
+      ins.run(i, i);
+      return { chunkId: i, sourceId: 1, vector: Float32Array.from([1, 0, 0, 0, 0, 0, i - 2]) };
+    });
+    const q8 = new SqliteVectorStore(db, { quantize: true });
+    q8.setIndex('t7', 7);
+    q8.upsert(items);
+    const f32 = new SqliteVectorStore(db, { quantize: false });
+    const query = Float32Array.from([1, 0, 0, 0, 0, 0, 1]);
+    expect(q8.search(query, 3, null).map((h) => h.chunkId)).toEqual([3, 2, 1]);
+    expect(q8.search(query, 3, null).map((h) => h.chunkId)).toEqual(f32.search(query, 3, null).map((h) => h.chunkId));
+    db.close();
+  });
+});
+
 describe('Hybrid-Suche (End-to-End)', () => {
   let app: TestApp;
   let mathe: number;

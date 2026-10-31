@@ -10,7 +10,8 @@ VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop 
 **nur gegen Mock-Ollama** getestet: 299 Unit-/Integrationstests (inkl. Korrekturrunden 1 und 2) (30×-Log: `docs/test-logs/phase3.txt`), Browser-E2E 34/34.
 Qualität der KI-Ausgaben, Dauer und VRAM mit echtem Modell sind unbekannt – das prüft Abschnitt 3b (inkl. `npm run eval:learning`).
 **Phase 4** (Version 0.4.0: portables Windows-Paket, Sicherung/Wiederherstellung, Export/Import, Erststart-Assistent, Diagnose, Politur)
-ebenfalls unter Windows 11 entwickelt und **nur gegen Mock-Ollama** getestet (Testzahlen/Log: `docs/test-logs/phase4.txt`). **Das
+ebenfalls unter Windows 11 entwickelt und **nur gegen Mock-Ollama** getestet: 340 Unit-/Integrationstests (30×-Log:
+`docs/test-logs/phase4.txt`), Browser-E2E 40/40 (inkl. Wiederherstellen mit Server-Neustart im Browser-Modus). **Das
 Windows-Paket (Electron) wurde nie gebaut oder gestartet** – der GitHub-Actions-Workflow ist geschrieben und YAML-geprüft, aber nicht
 ausgeführt; geprüft ist nur die Zusammenstellung der App-Dateien. Das prüft Abschnitt 3c zusammen mit Sicherung/Wiederherstellung an
 den echten Daten.

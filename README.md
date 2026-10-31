@@ -33,7 +33,7 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
 
 ## Schnellstart
 
-**Weg A – portables Paket (empfohlen, kein Node.js nötig):**
+**Weg A – portables Paket (kein Node.js nötig; bisher nie auf Windows gebaut/gestartet – Prüfung: `HANDOFF.md` 3c):**
 1. Paket besorgen: im GitHub-Repo *Actions → „Windows-Paket“ → Run workflow*, danach das Artefakt **Uni-Hotspot-win-x64**
    herunterladen (ZIP). Oder selbst bauen, siehe „Windows-Paket“.
 2. ZIP **vollständig entpacken** (Rechtsklick → „Alle extrahieren“) nach z. B. `%USERPROFILE%\Uni-Hotspot` – nicht in OneDrive/Downloads.
@@ -403,7 +403,7 @@ Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` 
 npm run dev         # Backend (--watch) + Vite-HMR -> http://127.0.0.1:5173
 npm start           # Browser-Modus -> http://127.0.0.1:4317 (baut UI bei Bedarf)
 npm run desktop     # Electron
-npm test            # vitest (299 Tests, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
+npm test            # vitest (340 Tests + 2 nur unter Linux, Temp-Daten nur unter .tmp/tests, pro Testdatei isoliert)
 npm run lint        # ESLint
 npm run typecheck   # tsc (Server + Web)
 npm run build       # UI bauen (dist/web)
@@ -414,7 +414,7 @@ npm run eval:learning -- <Datei|Ordner>  # Lernmodi an echten Unterlagen mit ech
 npm run bench:phase4 # Phase-4-Messungen (Kaltstart/RAM, Suche bei 100k Abschnitten, Liste 20k, Sicherung/Wiederherstellung)
 npm run package:win  # Windows-Paket nach out\ (auf Windows, nach build + Electron-Download; --check = nur App-Dateien)
 npm run setup-media # Medien-Werkzeuge laden (fragt vorher nach)
-npm run e2e         # Browser-Durchlauf mit Screenshots (benötigt eine Playwright-Installation)
+npm run e2e         # Browser-Durchlauf mit Screenshots, 40 Schritte inkl. Barrierefreiheits-Prüfung (PLAYWRIGHT_MODULE = Pfad zu playwright(-core)/index.mjs)
 ```
 
 **Mock-Modus (nur Test/Demo, KEIN echtes Modell):** `HOTSPOT_MOCK_OLLAMA=1` startet einen eingebauten Fake-Ollama

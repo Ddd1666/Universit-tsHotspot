@@ -121,6 +121,7 @@ async function coldStart(dir: string, port: number, compileCache = false): Promi
     `  2000 Quellen / 40 000 Abschnitte + Vektoren: ${ms(med((r) => r.big.readyMs))}; RSS bereit ${mb(med((r) => r.big.rssReady))}, nach 3 s (Vektor-Cache geladen) ${mb(med((r) => r.big.rssLater))}`,
   );
   const big = await startMeasured('big');
+  await sleep(3000); // Vektor-Cache lädt nach 1,5 s im Hintergrund – Sicherung danach messen (automatische Sicherung startet erst nach 2 min)
   // Sicherung/Wiederherstellung derselben DB (nur wenn die Funktion existiert – Vorher-Messung auf älterem Stand)
   const backup = (big.hs.services as unknown as { backup?: { create(reason: string): Promise<{ id: string; files: number }> } }).backup;
   if (backup) {
