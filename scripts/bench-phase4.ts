@@ -4,6 +4,7 @@
 //  3) Bibliotheksliste bei 20 000 Quellen (erste Seite)
 //  4) Sicherung (Snapshot) und Wiederherstellung der 40k-DB, Event-Loop-Blockade dabei
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
@@ -17,7 +18,22 @@ const arg = (name: string, def: number) => {
   const i = process.argv.indexOf(name);
   return i > 0 ? Number(process.argv[i + 1]) : def;
 };
+const strArg = (name: string) => {
+  const i = process.argv.indexOf(name);
+  return i > 0 ? process.argv[i + 1]! : null;
+};
 const N_SEARCH = arg('--chunks', 100_000);
+// --only search: nur Teil 2; --rounds N: Suchläufe (Median); --db <ordner>: 100k-Datenordner wiederverwenden/behalten (A/B
+// zweier Code-Stände auf derselben DB, gleiche Suchbegriffe)
+const ONLY = strArg('--only');
+const ROUNDS = arg('--rounds', 5);
+const DB_DIR = strArg('--db');
+const run = (part: string) => !ONLY || ONLY === part;
+/** Rechnerlast in % (Windows: Win32_Processor.LoadPercentage, sonst loadavg je Kern) */
+function cpuLoad(): string {
+  if (process.platform !== 'win32') return `${((os.loadavg()[0]! / os.cpus().length) * 100).toFixed(0)} %`;
+  return `${execFileSync('powershell.exe', ['-NoProfile', '-Command', '(Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average'], { encoding: 'utf8' }).trim()} %`;
+}
 const DIM = 768;
 let seed = 7;
 const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
@@ -43,11 +59,12 @@ const root = path.join(PROJECT_ROOT, '.tmp', 'bench4');
 fs.rmSync(root, { recursive: true, force: true });
 fs.mkdirSync(root, { recursive: true });
 const report: string[] = [];
-const cfg = (dir: string) => loadConfig({ dataDir: path.join(root, dir), port: 0, token: crypto.randomBytes(32).toString('hex'), mockOllama: true, webDir: null, logToFile: false, toolsDir: path.join(root, 'tools') });
+const cfg = (dir: string) => loadConfig({ dataDir: path.isAbsolute(dir) ? dir : path.join(root, dir), port: 0, token: crypto.randomBytes(32).toString('hex'), mockOllama: true, webDir: null, logToFile: false, toolsDir: path.join(root, 'tools') });
 
 /** Quellen + Abschnitte (+ Vektoren) direkt in die DB schreiben. */
-function fill(hs: Hotspot, sources: number, perSource: number, vectors: boolean): void {
+function fill(hs: Hotspot, sources: number, perSource: number, vectors: boolean, blobs = false): void {
   const { db } = hs.services;
+  const filesDir = path.join(hs.services.config.dataDir, 'files');
   // Index ZUERST festlegen: setIndex mit neuem Modell verwirft vorhandene Vektoren
   if (vectors) hs.services.vectors.setIndex('nomic-embed-text', DIM);
   db.exec('BEGIN');
@@ -55,7 +72,13 @@ function fill(hs: Hotspot, sources: number, perSource: number, vectors: boolean)
   const insChunk = db.prepare('INSERT INTO chunks(source_id, ord, text, token_est, embed_state) VALUES (?, ?, ?, 150, ?)');
   const insVec = db.prepare('INSERT INTO embeddings(chunk_id, source_id, vec) VALUES (?, ?, ?)');
   for (let s = 0; s < sources; s++) {
-    const sid = Number(insSrc.run(crypto.randomBytes(32).toString('hex'), `quelle-${s}.pdf`, s, perSource).lastInsertRowid);
+    const sha = crypto.randomBytes(32).toString('hex');
+    const sid = Number(insSrc.run(sha, `quelle-${s}.pdf`, s, perSource).lastInsertRowid);
+    if (blobs) {
+      // Originaldatei-Attrappe: der Datei-GC beim Start liest alle Hash-Namen ein
+      fs.mkdirSync(path.join(filesDir, sha.slice(0, 2)), { recursive: true });
+      fs.writeFileSync(path.join(filesDir, sha.slice(0, 2), sha), '');
+    }
     for (let c = 0; c < perSource; c++) {
       const text = Array.from({ length: 5 }, sentence).join(' ');
       const id = Number(insChunk.run(sid, c, text, vectors ? 1 : 0).lastInsertRowid);
@@ -103,8 +126,10 @@ async function coldStart(dir: string, port: number, compileCache = false): Promi
   return { readyMs, rssReady, rssLater };
 }
 
+report.push(`Rechnerlast vor dem Lauf: ${cpuLoad()} (${os.cpus().length} logische Kerne, ${os.cpus()[0]?.model.trim()})`, '');
+
 /* ------------------------------------------------------------ 1) Start + RAM */
-{
+if (run('start')) {
   const prep = await createHotspot(cfg('big'));
   await prep.listen();
   await prep.services.embed.stop();
@@ -144,57 +169,78 @@ async function coldStart(dir: string, port: number, compileCache = false): Promi
   } else await big.hs.close();
 }
 
-/* ------------------------------------------------------------ 2) Hybrid-Suche bei 100k Abschnitten */
-{
-  const prep = await createHotspot(cfg('search'));
-  await prep.listen();
-  await prep.services.embed.stop();
-  const t0 = performance.now();
-  fill(prep, N_SEARCH / 100, 100, true);
-  const tBuild = performance.now() - t0;
-  const { db, vectors, client } = prep.services;
-  const queries = Array.from({ length: 40 }, () => `${queryWord()} ${queryWord()}`);
-  const a = performance.now();
-  vectors.warmup();
-  const tLoad = performance.now() - a;
-  // Hintergrund-Laden in Paketen (nur auf neuerem Stand vorhanden): längste Blockade messen
-  let asyncInfo = '';
-  const bg = vectors as unknown as { warmupAsync?: () => Promise<void> };
-  if (bg.warmupAsync) {
-    vectors.invalidate();
-    const eld = monitorEventLoopDelay({ resolution: 5 });
-    eld.enable();
-    const b0 = performance.now();
-    await bg.warmupAsync();
-    eld.disable();
-    asyncInfo = `; im Hintergrund in Paketen ${ms(performance.now() - b0)}, längste Blockade ${ms(eld.max / 1e6)}`;
+/* ------------------------------------------------------------ 2) Start-Blockade + Hybrid-Suche bei 100k Abschnitten */
+if (run('search')) {
+  const dir = DB_DIR ? path.resolve(DB_DIR) : path.join(root, 'search');
+  let built = '';
+  if (!fs.existsSync(path.join(dir, 'hotspot.sqlite'))) {
+    const prep = await createHotspot(cfg(dir));
+    await prep.listen();
+    await prep.services.embed.stop();
+    const t0 = performance.now();
+    fill(prep, N_SEARCH / 100, 100, true, true);
+    built = `Aufbau ${((performance.now() - t0) / 1000).toFixed(1)} s; `;
+    await prep.close();
   }
-  const vecLat = queries.map((q) => {
-    const v = Float32Array.from(fakeEmbedding(q, DIM));
-    const b = performance.now();
-    vectors.search(v, 40, null);
-    return performance.now() - b;
-  });
-  const ftsStmt = db.prepare('SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 40');
-  const ftsLat = queries.map((q) => {
-    const b = performance.now();
-    ftsStmt.all(q.toLowerCase().split(' ').map((w) => `"${w}"`).join(' OR '));
-    return performance.now() - b;
-  });
-  const hyb: number[] = [];
-  for (const q of queries.slice(0, 30)) hyb.push((await hybridSearch({ db, vectors, client }, q, { limit: 10 })).tookMs);
+  // Start auf der vorhandenen DB: ab listen() Event-Loop-Verzögerung + Health-Latenz, bis Vektor-Cache (Hintergrund)
+  // und Datei-GC nach 1,5 s durch sind – das ist die Zeit, in der die Oberfläche schon Anfragen schickt
+  const s0 = performance.now();
+  const hs = await createHotspot(cfg(dir));
+  const { url } = await hs.listen();
+  const tListen = performance.now() - s0;
+  const { db, vectors, client } = hs.services;
+  const h = { 'x-hotspot-token': hs.services.config.token };
+  await fetch(url + '/api/health', { headers: h }); // erster fetch lädt undici (~50 ms, Messclient im selben Prozess)
+  const eld = monitorEventLoopDelay({ resolution: 5 });
+  eld.enable();
+  const l0 = performance.now();
+  let tLoaded = 0;
+  // Anfragen wie von der Oberfläche; deren Latenz ist hier kein Maß (Client im selben Prozess startet erst nach einer Blockade)
+  while (performance.now() - l0 < 60_000) {
+    await fetch(url + '/api/health', { headers: h });
+    if (!tLoaded && vectors.memoryBytes() > 0) tLoaded = performance.now() - l0;
+    if (tLoaded && performance.now() - l0 > tLoaded + 1000) break; // GC läuft parallel und ist dann sicher durch
+    await sleep(20);
+  }
+  eld.disable();
   report.push(
-    '',
-    `Suche bei ${N_SEARCH.toLocaleString('de-DE')} Abschnitten (${DIM}-dim.; Aufbau ${(tBuild / 1000).toFixed(1)} s, Vektor-Cache synchron laden ${ms(tLoad)} = Blockade am Stück${asyncInfo}; ${mb(vectors.memoryBytes())}):`,
-    `  FTS5/BM25 p50 ${ms(pct(ftsLat, 0.5))}, p95 ${ms(pct(ftsLat, 0.95))}`,
-    `  Vektor int8 (Brute-Force) p50 ${ms(pct(vecLat, 0.5))}, p95 ${ms(pct(vecLat, 0.95))}`,
-    `  Hybrid gesamt (Query-Embedding via Mock-HTTP + FTS + Vektor + RRF) p50 ${ms(pct(hyb, 0.5))}, p95 ${ms(pct(hyb, 0.95))}  [Schwelle ANN: p50 > 150 ms]`,
+    `Start auf ${N_SEARCH.toLocaleString('de-DE')} Abschnitten (${DIM}-dim., ${built}DB ${mb(fs.statSync(path.join(dir, 'hotspot.sqlite')).size)}): createHotspot+listen ${ms(tListen)} (vor dem ersten Request; v. a. Modul-Laden),`,
+    `  danach bis Vektor-Cache geladen (${(tLoaded / 1000).toFixed(1)} s nach listen, ${mb(vectors.memoryBytes())}) + 1 s: längste Event-Loop-Blockade ${ms(eld.max / 1e6)}, p99 ${ms(eld.percentile(99) / 1e6)}`,
   );
-  await prep.close();
+  // Suche: ROUNDS Läufe à 30 Anfragen (gleiche Begriffe bei jedem Aufruf des Skripts); synchron = Blockade je Suche
+  seed = 99;
+  const ftsStmt = db.prepare('SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 40');
+  const rounds: { fts: number; vec: number; hyb: number; hyb95: number }[] = [];
+  for (let r = 0; r < ROUNDS; r++) {
+    const queries = Array.from({ length: 30 }, () => `${queryWord()} ${queryWord()}`);
+    const vec = queries.map((q) => {
+      const v = Float32Array.from(fakeEmbedding(q, DIM));
+      const b = performance.now();
+      vectors.search(v, 40, null);
+      return performance.now() - b;
+    });
+    const fts = queries.map((q) => {
+      const b = performance.now();
+      ftsStmt.all(q.toLowerCase().split(' ').map((w) => `"${w}"`).join(' OR '));
+      return performance.now() - b;
+    });
+    const hyb: number[] = [];
+    for (const q of queries) hyb.push((await hybridSearch({ db, vectors, client }, q, { limit: 10 })).tookMs);
+    rounds.push({ fts: pct(fts, 0.5), vec: pct(vec, 0.5), hyb: pct(hyb, 0.5), hyb95: pct(hyb, 0.95) });
+  }
+  const med = (f: (x: (typeof rounds)[number]) => number) => pct(rounds.map(f), 0.5);
+  report.push(
+    `Suche, ${ROUNDS} Läufe à 30 Anfragen, Median der Lauf-p50 (einzelne Läufe):`,
+    `  FTS5/BM25 ${ms(med((x) => x.fts))}  (${rounds.map((x) => x.fts.toFixed(0)).join(' / ')})`,
+    `  Vektor int8 (Brute-Force) ${ms(med((x) => x.vec))}  (${rounds.map((x) => x.vec.toFixed(0)).join(' / ')})`,
+    `  Hybrid gesamt (Query-Embedding via Mock-HTTP + FTS + Vektor + RRF) ${ms(med((x) => x.hyb))}, p95 ${ms(med((x) => x.hyb95))}  (${rounds.map((x) => x.hyb.toFixed(0)).join(' / ')})  [Schwelle ANN: p50 > 150 ms]`,
+    `  Rechnerlast nach den Läufen: ${cpuLoad()}`,
+  );
+  await hs.close();
 }
 
 /* ------------------------------------------------------------ 3) Bibliotheksliste bei 20 000 Quellen */
-{
+if (run('list')) {
   const prep = await createHotspot(cfg('list'));
   const { url } = await prep.listen();
   await prep.services.embed.stop();

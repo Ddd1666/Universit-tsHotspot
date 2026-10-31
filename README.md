@@ -58,12 +58,15 @@ Kopie unter `backups\` an. **Vor dem ersten Start einer neuen Version empfohlen:
   Notizen, Karteikarten mit Lernverlauf, Quizfragen. Import führt zusammen (gleiche Quelle = gleicher Inhalt wird übersprungen,
   gleichnamige Fächer werden zusammengeführt, doppelte Karten/Notizen/Fragen übersprungen) und meldet das Ergebnis. Format: „Export-Format“.
 - **Notiz als PDF** (Desktop: Electron `printToPDF`, Browser: Druckdialog „Als PDF speichern“ mit eigener Druckansicht) und
-  **Karteikarten als CSV** (Excel/LibreOffice, Anki über *Datei → Importieren*: Spalte 1 = Vorderseite, 2 = Rückseite).
+  **Karteikarten als CSV** (Excel/LibreOffice, Anki über *Datei → Importieren*: Spalte 1 = Vorderseite, 2 = Rückseite; UTF-8 mit BOM,
+  Trennzeichen bei deutscher Oberfläche `;` und Dezimalkomma – deutsches Excel öffnet die Datei per Doppelklick spaltenrichtig –, sonst `,`).
 - **Erststart-Assistent:** Ollama + benötigte Modelle (kopierbare Befehle), Datenordner (beschreibbar, freier Platz, Warnung bei
   OneDrive), Medien-Werkzeuge (optional), erstes Fach, Kurzanleitung. Überspringbar, jederzeit über *Einstellungen → Daten* oder `Strg+K`.
 - **Diagnose:** Versionen (App, Schema, Node, Electron, SQLite), Ollama-Status und Modelle, Werkzeuge, Datenordner-Größen und freier
   Platz, Sicherungen; **Bericht herunterladen** = Diagnose + bereinigtes Log **ohne Dokumentinhalte, Dateinamen, Chat-Texte**
-  (Benutzerpfade anonymisiert) – zum Weitergeben bei Problemen.
+  (Benutzerpfade und der Windows-Benutzername auch außerhalb von Pfaden anonymisiert; Log-Meldungen nur bis zum ersten „:“) – zum
+  Weitergeben bei Problemen. Größen kommen aus der DB bzw. den Sicherungs-Manifesten (kein Durchlaufen aller Dateien, auch nicht bei
+  einem langsamen USB-Zielordner); ein fehlschlagender Teil (z. B. Zielordner nicht lesbar) wird als Fehler gelistet, der Rest erscheint.
 - **Import „alles aufnehmen“:** Drag & Drop (auch Ordner), Datei-/Ordnerdialog, Fortschritt pro Datei, abbrechbar, Fehler pro Datei
   ohne Gesamtabbruch; Ordner-Import überspringt Systemordner (`.git`, `node_modules`, `__pycache__`, `.venv` …) und Office-Sperrdateien (`~$…`).
   Jede Datei wird gespeichert (SHA-256, Dedupe). Text wird extrahiert aus PDF (mit Seitenzahlen), DOCX, PPTX
@@ -142,7 +145,9 @@ Kopie unter `backups\` an. **Vor dem ersten Start einer neuen Version empfohlen:
   Wissensbereich (alle Quellen / Fächer / einzelne Quellen / freier Chat) und Modell. Streaming mit Stopp/Neu-generieren,
   Zitate `[1]` klickbar → Quellen-Panel (Datei öffnen/herunterladen, in Bibliothek zeigen), Denk-Blöcke (qwen3) einklappbar.
 - **Bibliothek:** Fächer mit Farbe (anlegen/umbenennen/löschen), Quellen mit Status, Vorschau des extrahierten Texts, verschieben, löschen (konsistent: Datei + Chunks + Index + Vektoren).
-  Lange Listen werden seitenweise beim Scrollen nachgeladen (je 200; früher fest „2000 von N“), Zeilen außerhalb des Sichtbereichs rendert der Browser nicht (`content-visibility`).
+  Lange Listen werden seitenweise beim Scrollen nachgeladen (je 200; früher fest „2000 von N“) und nur der sichtbare Ausschnitt
+  (+ 15 Zeilen Puffer) wird gerendert; die Fach-Auswahl je Zeile baut ihre Optionen erst beim Öffnen. Bei 5 200 Quellen in 3 Fächern
+  (Chromium, alle geladen): DOM-Knoten 114 575 → 1 075, Laden aller Seiten 23,5 s → 4,6 s, Scrollen 8 → 29 fps (längster Frame 217 → 50 ms).
   Chunks überschreiten nie Seiten-/Folien-/Blattgrenzen; „In Bibliothek zeigen“ springt zur zitierten Stelle.
 - **Einstellungen → Medien:** Werkzeug-Status, Download erst nach Bestätigung (Größen + Zielordner), Schalter je Typ, Sprache (auto/de/en),
   Whisper-Modell, Vision-Modell, max. Aufnahmedauer.
@@ -258,6 +263,12 @@ Uni-Hotspot-Daten/
 - **Zielordner auf einem anderen Laufwerk/USB-Stick** schützt auch vor Laufwerksausfall; dann werden Dateien kopiert (ab dem zweiten
   Snapshot nur neue, der Rest wird vom vorigen Snapshot im Zielordner verlinkt; auf FAT/exFAT-Sticks ohne Hardlinks immer kopiert).
   Im Datenordner selbst schützt die Sicherung vor Bedienfehlern und DB-Schäden, nicht vor einem defekten Laufwerk.
+  **Zielordner-Regeln** (beim Speichern geprüft, `backup_dir_invalid`): absoluter Pfad, kein UNC-/Netzwerkpfad (`\\server\…`),
+  höchstens 240 Zeichen, keine reservierten Windows-Namen (`CON`, `NUL`, `COM1` …), nicht in `<Datenordner>\files` oder `\tmp`.
+  Ist der Ordner später nicht lesbar (USB-Stick abgezogen), zeigt die Seite einen Hinweis statt einer leeren Liste.
+- Fehler beim Sichern (gesperrte Datei, voller Stick, Virenscanner) beenden nie den Server: der Lauf wird abgebrochen, der
+  `.partial`-Rest geloggt entfernt, die Meldung erscheint auf der Seite. Zusätzlich fangen Prozess-Wächter unerwartete
+  Dateisystem-/Netzfehler (`EPERM`, `EBUSY`, `ECONNRESET` …) ab und loggen sie; alles andere beendet den Prozess geordnet mit Meldung.
 - **Wiederherstellen** (gefährlicher Pfad, daher streng): nur Snapshots aus dem Zielordner (ID = Ordnername, keine Pfade aus der Anfrage,
   keine Symlinks/Junctions), DB-Kopf „SQLite format 3“, Schema-Version nicht neuer als die App (sonst `restore_too_new`), `quick_check`,
   **Schema muss exakt dem entsprechen, das die eigenen Migrationen für diese Version erzeugen** (zusätzliche Trigger/Views/Spalten ⇒
@@ -266,7 +277,10 @@ Uni-Hotspot-Daten/
   gleicher Port/Token, die Oberfläche lädt neu). Beim Start – unter der Instanz-Sperre, vor dem Öffnen der DB – wird die DB ausgetauscht:
   Kopie nach `hotspot.sqlite.restore-tmp` → umbenennen → `-wal`/`-shm` der alten DB löschen → Vormerkung löschen. Bricht das an
   irgendeiner Stelle ab, wiederholt der nächste Start alles (die neue DB wird nie mit dem WAL der alten geöffnet). Ältere Snapshots
-  (Schema v2/v3) werden danach normal migriert (mit Auto-Backup).
+  (Schema v2/v3) werden danach normal migriert (mit Auto-Backup). Die **Sicherungs-Einstellungen** (Zielordner, Intervall,
+  Aufbewahrung) bleiben dabei die aktuellen – sonst würde ein alter Snapshot z. B. den Zielordner auf einen nicht mehr vorhandenen
+  Stick zurückstellen. Ab dem Vormerken bis zum Neustart beantwortet der Server schreibende Anfragen mit `503 restoring`
+  (Hintergrund-Jobs sind gestoppt); die Oberfläche wartet, bis `/api/health` ein neues `startedAt` meldet (statt fester Wartezeit).
 - **Manuell (Notfall, App beendet):** Datenordner umbenennen, neuen leeren Datenordner anlegen, `hotspot.sqlite` und `files\` aus einem
   Snapshot hineinkopieren. Alternativ weiterhin: **Ordner kopieren, während die App beendet ist.**
 
@@ -296,9 +310,14 @@ library.jsonl    eine JSON-Zeile je Datensatz, Verweise über Schlüssel der Exp
 Nicht enthalten: Chats, Vektoren (werden neu berechnet), Quiz-Verlauf, Wissensgraph, Einstellungen – eine 1:1-Kopie ist die Sicherung.
 **Import-Sicherheit:** Eintragsnamen werden nie als Pfade benutzt (nur exakt `manifest.json`, `library.jsonl`, `files/<sha256>`),
 Symlink- oder verschlüsselte Einträge ⇒ Abbruch, Zip-Slip/-Bomben-Schutz wie beim ZIP-Import (Kompressionsrate, Summe, gezählte
-entpackte Bytes), Datensatz höchstens 8 MB, Dateiinhalt muss zum SHA-256 passen, **Typ wird aus dem Inhalt neu erkannt** (passt er
-nicht zum Export, wird die Quelle neu verarbeitet statt fremde Abschnitte zu übernehmen), alle Felder validiert und gekürzt, keine
-IDs der Ursprungs-DB übernommen, SQL parametrisiert, Pakete à 300 Datensätze je Transaktion (Event-Loop bleibt frei).
+entpackte Bytes), Datensatz höchstens 8 MB, Dateiinhalt muss zum SHA-256 passen, **Typ wird wie beim normalen Import neu erkannt**
+(Dateiname/Endung + Magic Bytes, `detectKind`; Inhalt hat Vorrang bei PDF/ZIP/Medien, Text-Endungen nur bei textartigem Inhalt;
+passt der erkannte Typ nicht zum Export, wird die Quelle neu verarbeitet statt fremde Abschnitte zu übernehmen), alle Felder validiert
+und gekürzt, keine IDs der Ursprungs-DB übernommen, SQL parametrisiert, Pakete à 150 Datensätze je Transaktion mit `setImmediate`
+dazwischen (20 000 Karten: 2,8 s, längste Event-Loop-Blockade 49 ms).
+**Abbruch-/Absturzfest:** neue Quellen stehen bis zum Ende ihres Pakets auf „in Arbeit“ und werden bei einem Fehler/Abbruch auf
+„wartend“ gesetzt (die Verarbeitungs-Queue erzeugt die Abschnitte dann selbst); ein erneuter Import desselben Exports ergänzt nur
+Fehlendes. Dubletten-Prüfung für Karten/Notizen über einen Hash-Schlüssel (seitenweise geladen, kein Volltabellen-Scan je Datensatz).
 **Konflikte:** Quelle mit gleichem Inhalt existiert ⇒ vorhandene bleibt (inkl. Fach), Verweise zeigen auf sie; Fach mit gleichem Namen ⇒
 zusammengeführt; Karte (Typ+Vorder-+Rückseite), Notiz (Titel+Text), Frage (Fingerabdruck) schon vorhanden ⇒ übersprungen.
 
@@ -456,7 +475,8 @@ Für die Lernmodi erkennt der Mock die Aufgabe am `TASK: …` im System-Prompt u
   Sicherung“ und „Export-Format“): keine Pfade aus Anfragen, keine Symlinks/Junctions, Inhalte per SHA-256 geprüft, manipulierte oder
   zu neue Datenbanken verweigert, Limits gegen Zip-Bomben/Riesenzeilen, Typ aus dem Inhalt. Wiederherstellen braucht `{"confirm":true}`.
   Export-Download akzeptiert das Token per Query (nur `GET /api/library/export`, wie Datei-Downloads); alles andere wie bisher per
-  Header + Host/Origin-Prüfung. CSV-Export schützt gegen Formel-Injektion (`=`, `+`, `-`, `@` ⇒ `'`). Diagnose-Bericht: nur Zeit,
+  Header + Host/Origin-Prüfung. Request-Schemas mit `additionalProperties: false` lehnen unbekannte Felder mit 400 ab (Fastifys
+  Standard würde sie stillschweigend entfernen). CSV-Export schützt gegen Formel-Injektion (`=`, `+`, `-`, `@` ⇒ `'`). Diagnose-Bericht: nur Zeit,
   Stufe, gekürzte Meldung (Text in Anführungszeichen entfernt), bei Fehlern nur Typ/Code/Stack-Zeilen; Zusatzdaten verworfen,
   Benutzerpfade und Token anonymisiert; das Ingest-Log nennt Quellen nur noch per ID statt Dateiname.
 - Electron: `contextIsolation`, `sandbox`, kein `nodeIntegration`, keine fremde Navigation/Popups/Berechtigungen, Netzwerk nur zum lokalen Server.
@@ -526,7 +546,9 @@ Mit echtem Ollama dauert jeder Generierungsschritt Sekunden (abhängig von Model
 
 **Phase 4 – vorher (Tag `pre-phase4`) / nachher** (Windows 11, Node 24, Mock-Ollama; `npm run bench:phase4`, beide Stände
 direkt nacheinander mit demselben Skript). Der Rechner war bei diesen Läufen etwa **2× langsamer** als bei früheren Messungen
-(gleiche Messung tagsüber: Kaltstart 1 341 ms, Hybrid p50 110 ms) – die Zahlen sind nur innerhalb einer Zeile vergleichbar:
+(gleiche Messung tagsüber: Kaltstart 1 341 ms) – die Zahlen sind nur innerhalb einer Zeile vergleichbar. Die beiden 100k-Zeilen
+sind durch die Messung der Korrekturrunde (darunter) ersetzt; eine früher genannte „unbelastete“ Hybrid-p50 von 110 ms ließ sich
+auf ruhigem Rechner nicht reproduzieren und ist gestrichen.
 
 | Messung | vorher | nachher |
 |---|---|---|
@@ -534,20 +556,39 @@ direkt nacheinander mit demselben Skript). Der Rechner war bei diesen Läufen et
 | … mit `NODE_COMPILE_CACHE` (wie `start.bat`) | 3 082 ms | 2 524 ms (Compile-Cache bringt hier keinen Vorteil) |
 | RSS nach Start: leer / 2 000 Quellen + 40 000 Abschnitte inkl. Vektor-Cache | 104 / 137 MB | 104 / 136 MB |
 | Oberfläche: Start-JS / Zeit bis bedienbar (Chromium, kalter Cache, Median aus 7, unbelastet) | 516 kB (gzip 156) / 236 ms | 456 kB (gzip 146) / 242 ms (selten genutzte Ansichten per `lazy()`; Zeit unverändert im Rauschen) |
-| Vektor-Cache laden, 100 000 Abschnitte (768-dim., 74 MB) | 4 310 ms **am Stück** (Server blockiert; unbelastet 1 754 ms) | im Hintergrund in Paketen à 1 000: längste Blockade 32 ms |
-| Hybrid-Suche bei 100 000 Abschnitten p50 (FTS / Vektor) | 279 ms (73 / 173) | 221–265 ms (60 / 144–180) |
+| Vektor-Cache laden, 100 000 Abschnitte (768-dim., 74 MB) | 4 310 ms **am Stück** (Server blockiert) | im Hintergrund in Paketen à 1 000 – **aber** davor lief weiter ein `repair()`-Scan am Stück, siehe Korrekturrunde |
 | Bibliotheksliste 20 000 Quellen | 2 000 von 20 000 (Kappung) in 88 ms | seitenweise, beliebiger Versatz: 64–74 ms je Anfrage (Oberfläche lädt je 200 nach) |
 | Sicherung, DB 184 MB / 40 000 Abschnitte (Backup-API) | – (nur Ordner kopieren bei beendeter App) | 3,9 s, Event-Loop max 26 ms |
 | Wiederherstellen: vorbereiten (inkl. Sicherung des Ist-Zustands) / Neustart inkl. DB-Austausch | – | 5,6 s / 1,3 s |
 | Export der E2E-Bibliothek (11 Quellen) | – | 11,8 MB, Re-Import: 0 neu, 11 Duplikate |
 
-**Hybrid-Suche bei ≥ 100k Abschnitten – Entscheidung: Brute-Force bleibt.** Unbelastet liegt p50 bei 110 ms (< 150 ms Schwelle),
-auf dem belasteten Rechner bei 221–279 ms (> 150 ms). 100 000 Abschnitte entsprechen ~2 000 umfangreichen Quellen – deutlich mehr
-als eine Semesterbibliothek; die Suche nach Fach (Wissensbereich) durchsucht nur dessen Vektoren. Ein ANN-Index (HNSW o. Ä.)
-bräuchte eine neue Abhängigkeit oder eigenen Index mit Persistenz und Konsistenz bei jedem Löschen/Re-Index; LanceDB bleibt aus den
-Gründen oben verworfen. Geprüft und verworfen: 4-fach entrollte Schleife (Mikro-Bench −27 %, im A/B mit der echten `search()` aber
-nicht schneller). **Laptop-Messung entscheidet:** `npm run bench:phase4` auf dem Ryzen 5800H; erst bei p50 > 150 ms **mit realer
-Bibliotheksgröße** ein ANN-Backend hinter `VectorStore` ergänzen.
+**Korrekturrunde 1 – Start und Suche bei 100 000 Abschnitten, A/B auf ruhigem Rechner.** Ryzen 7 5800H (16 logische Kerne),
+Netzbetrieb, Energiesparplan „Balance“ (Hersteller), Rechnerlast vor den Läufen 2–9 % (danach 3–18 %). Dieselbe 100k-DB (460 MB,
+1 000 Quellen mit Datei-Attrappen), dieselben Suchbegriffe; A = Stand vor der Runde (Tag `pre-phase4-k1`), B = jetzt, abwechselnd
+A/B/A/B… (4× A, 5× B); je Aufruf 5 Läufe à 30 Anfragen, angegeben ist der Median der Lauf-p50
+(`npm run bench:phase4 -- --only search --rounds 5 --db <ordner>`):
+
+| Messung | A (vorher) | B (nachher) |
+|---|---|---|
+| Längste Event-Loop-Blockade ab `listen` bis Vektor-Cache geladen (+1 s) | **865–877 ms** am Stück (`repair()` liest alle 100k BLOBs vor dem Laden; Datei-GC las alle Hash-Namen synchron) | **56–64 ms** (erster Wartungsschritt 1,5 s nach dem Start: Cache anlegen + erstes Paket); p99 beider Stände 25–29 ms |
+| Vektor-Cache geladen nach | 4,5–4,6 s | 3,7–3,8 s |
+| `createHotspot` + `listen` (vor dem ersten Request) | 1,05–1,07 s | 1,04–1,05 s (fast nur Modul-Laden, unabhängig von der DB-Größe) |
+| Hybrid gesamt p50 / p95 | 218–221 / 288–294 ms | 217–221 / 289–300 ms |
+| davon Vektor int8 (Brute-Force) / FTS5 p50 | 147–148 / 57–58 ms | 147–148 / 57–58 ms |
+
+Die Suche läuft **synchron**: jede Hybrid-Suche bei 100k Abschnitten hält den Server ~0,2 s an (andere Anfragen warten so lange).
+Bei Suche in einem Fach zählen nur dessen Vektoren.
+
+**Entscheidung ANN: nicht gebaut, Empfehlung für die Laptop-Messung.** Ruhig gemessen liegt die Hybrid-p50 bei 100k Abschnitten mit
+~219 ms **über** der Schwelle von 150 ms (Vektor-Teil allein 148 ms). 100 000 Abschnitte entsprechen ~2 000 umfangreichen Quellen –
+deutlich mehr als eine Semesterbibliothek (bei 10 000 Abschnitten: p50 ~27 ms). **Auf dem Laptop mit der echten Bibliothek messen**
+(`HANDOFF.md` 3c.3, Energiesparplan notieren); liegt die p50 dort ruhig > 150 ms, ist die empfohlene Reihenfolge:
+1. ohne neue Abhängigkeit: zweistufige Suche hinter `VectorStore` – 1-Bit-Vorzeichen-Vektoren (96 Byte je Abschnitt, Hamming-Abstand)
+   als Vorfilter, die besten ~1 000 mit dem vorhandenen int8-Cache nachbewerten; kein persistenter Index, entsteht beim Cache-Laden;
+   Trefferqualität (Recall@10 gegen Brute-Force) vorher messen;
+2. erst wenn das nicht reicht: echter ANN-Index (HNSW o. Ä.) – neue Abhängigkeit bzw. eigener Index mit Persistenz und Konsistenz bei
+   jedem Löschen/Re-Index; LanceDB bleibt aus den Gründen oben verworfen.
+Geprüft und verworfen: 4-fach entrollte Schleife (Mikro-Bench −27 %, im A/B mit der echten `search()` nicht schneller).
 
 Echte Werte (Sekunden pro Bild, Minuten Rechenzeit pro Audio-Minute, VRAM) misst die Laptop-Checkliste in `HANDOFF.md`.
 
@@ -590,7 +631,8 @@ Geprüft am 30.10.2026 im Browser-E2E (Chromium) und per Code-Durchsicht:
   Export/Import, Erststart-Assistent, Diagnose, Politur.
 - **Danach (nur mit ausdrücklichem Okay, nicht im Umfang):** Code-Signing (würde SmartScreen-Warnung beseitigen), Auto-Updater,
   per-user-Installer, FSRS statt SM-2 (sobald genug eigene Wiederholungen vorliegen), `bge-m3` als Standard (nach VRAM-Test),
-  ANN-Vektorindex erst ab gemessener Hybrid-p50 > 150 ms.
+  schnellere Vektorsuche (1-Bit-Vorfilter, danach ggf. ANN-Index), falls die Laptop-Messung mit der echten Bibliothek ruhig
+  Hybrid-p50 > 150 ms ergibt (synthetische 100k Abschnitte: ~219 ms, siehe „Messwerte“).
 
 ## Bekannte Grenzen
 
@@ -600,7 +642,8 @@ Geprüft am 30.10.2026 im Browser-E2E (Chromium) und per Code-Durchsicht:
   „fehlten“ gezählt). Export/Import übernimmt keine Chats, Vektoren, Quiz-Verläufe und keinen Graphen; Karten/Fragen verlieren beim
   Import den Bezug auf Chats. Wiederherstellen ersetzt immer den kompletten Stand (kein Teil-Restore einzelner Fächer – dafür Export/Import).
   PDF-Export im Browser-Modus über den Druckdialog. Startzeit wird im Entwicklungsordner (OneDrive, Virenscanner) vom Laden der Module
-  dominiert; auf dem Laptop außerhalb von OneDrive vermutlich schneller (Laptop-Messung).
+  dominiert; auf dem Laptop außerhalb von OneDrive vermutlich schneller (Laptop-Messung). Die Suche läuft synchron im Server-Prozess:
+  bei sehr großen Bibliotheken (100k Abschnitte) hält jede Suche den Server ~0,2 s an.
 
 - **Lernmodi:** Qualität der Zusammenfassungen, Karten, Fragen, Bewertungen und Graphen ist **nur mit Mock geprüft** – kleine Modelle
   (4B) machen Fehler; Plausibilitätsprüfung und Entwurfs-Status fangen nur einen Teil ab. Bewertung an echten Unterlagen:

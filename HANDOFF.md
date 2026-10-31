@@ -241,8 +241,11 @@ Copy-Item -Recurse "$env:USERPROFILE\Uni-Hotspot-Daten" "$env:USERPROFILE\Uni-Ho
 Ohne diese Kopie **nicht** weitermachen. Phase 4 ändert das DB-Schema nicht (bleibt v4); eine Phase-1/2-DB wird wie bisher migriert (Auto-Backup).
 
 **3c.1 Paket holen und entpacken (ohne Admin)**
+- [ ] Vor dem ersten Lauf (Nutzer, im Repo): die drei `uses: actions/…@v4` in `.github/workflows/windows-package.yml` auf den
+      Commit-SHA der aktuellen v4-Version pinnen (Kommentar im Kopf der Datei; SHA von der Release-Seite der Action, nicht raten).
 - [ ] Nutzer startet im GitHub-Repo *Actions → „Windows-Paket“ → Run workflow* (Branch `claude/nifty-goodall-j9oqls`) – erst nach dem
-      Push. Erwartung: alle Schritte grün inkl. „Rauchtest – Paket startet ohne Admin“. Schlägt ein Schritt fehl: Log des Schritts melden.
+      Push. Erwartung: alle Schritte grün (Typecheck, Lint, Tests, Bauen, Paket, „Rauchtest – Paket startet ohne Admin“). Schlägt ein
+      Schritt fehl: Log des Schritts melden.
 - [ ] Artefakt **Uni-Hotspot-win-x64** herunterladen (ZIP, ~120–150 MB), Rechtsklick → „Alle extrahieren“ nach `%USERPROFILE%\Uni-Hotspot-Paket`
       (nicht OneDrive/Downloads). Erwartung: Ordner `Uni-Hotspot-0.4.0-win-x64` mit `Uni-Hotspot.exe`, `LIESMICH.txt`, `resources\app\`.
 - [ ] `Uni-Hotspot.exe` doppelklicken → **SmartScreen**-Warnung „Der Computer wurde durch Windows geschützt“ → *Weitere Informationen →
@@ -260,6 +263,12 @@ Ohne diese Kopie **nicht** weitermachen. Phase 4 ändert das DB-Schema nicht (bl
 **3c.3 Bestehende Daten (Migration/Kompatibilität)**
 - [ ] Bibliothek, Chats, Karten (Wiederholen-Zähler), Notizen, Quiz-Verlauf, Graph wie vorher. `backups\` enthält ggf. `hotspot-v…sqlite` (nur bei Schema < 4).
 - [ ] Suche + Chat mit Zitat funktionieren im Paket genauso wie mit `start.bat`.
+- [ ] Bibliothek mit „Alle Quellen“: Scrollen bis ganz unten flüssig, Fach-Auswahl einer Zeile öffnet sich normal.
+- [ ] Messung für die Entscheidung über eine schnellere Vektorsuche (Projektordner, App beendet, Rechner ruhig, Netzbetrieb; ~3 min,
+      ~0,5 GB vorübergehend in `.tmp\bench4`, wird danach gelöscht): `npm run bench:phase4 -- --only search --rounds 5` → alle Zeilen
+      melden (inkl. „Rechnerlast“) plus Energiesparplan (`powercfg /getactivescheme`). Synthetisch, 100k Abschnitte, hier gemessen:
+      Hybrid ~219 ms. Zusätzlich die **echte** Bibliothek: *Suche* mit 3–4 Begriffen, gefühlt flüssig? Erst bei ruhig > 150 ms mit
+      realer Bibliotheksgröße die Empfehlung in README „Messwerte“ (1-Bit-Vorfilter) umsetzen – nicht vorher.
 
 **3c.4 Sicherung & Wiederherstellung real** (*Einstellungen → Daten → Sicherung & Export*)
 - [ ] „Jetzt sichern“ → Eintrag „manuell“ mit Dateizahl/Größe; Dauer notieren. Im Explorer: `Uni-Hotspot-Daten\backups\snapshot-…-manual\`
@@ -268,7 +277,10 @@ Ohne diese Kopie **nicht** weitermachen. Phase 4 ändert das DB-Schema nicht (bl
       „Wird wiederhergestellt …“, App lädt neu, Toast „Wiederherstellung abgeschlossen“; Testfach/Testquelle sind weg, alles andere da;
       neuer Eintrag „vor Wiederherstellung“. Desktop-App und Browser-Modus je einmal.
 - [ ] Optional Zielordner auf USB-Stick/zweitem Laufwerk setzen → „Jetzt sichern“ → Dateien werden kopiert (dauert länger) → zweite Sicherung
-      deutlich schneller (nur neue Dateien). Danach Zielordner wieder leeren (= Standard).
+      deutlich schneller (nur neue Dateien). Stick abziehen → Seite zeigt „Zielordner nicht lesbar“, App läuft weiter; „Jetzt sichern“
+      meldet einen Fehler statt abzustürzen. Danach Zielordner wieder leeren (= Standard).
+- [ ] Zielordner `\\irgendwas\freigabe` oder `C:\x\CON` eintragen → wird abgelehnt (Meldung), nichts gespeichert.
+- [ ] Nach einer Wiederherstellung stehen Zielordner/Intervall/Aufbewahrung noch auf den Werten von vorher (nicht auf denen der Sicherung).
 - [ ] Automatik: Intervall „alle 6 Stunden“ einstellen, App > 2 min laufen lassen → Eintrag „automatisch“ erscheint; danach wieder 24 h.
 
 **3c.5 Export/Import, PDF, CSV**
