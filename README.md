@@ -524,6 +524,31 @@ Testdaten: 2 000 Quellen, 40 000 Abschnitte, 10 000 Karten, 48 000 Wiederholunge
 Mit echtem Ollama dauert jeder Generierungsschritt Sekunden (abhängig von Modell und GPU) – genau das misst die Laptop-Checkliste
 (`HANDOFF.md`, Abschnitt 3b) bzw. `npm run eval:learning`.
 
+**Phase 4 – vorher (Tag `pre-phase4`) / nachher** (Windows 11, Node 24, Mock-Ollama; `npm run bench:phase4`, beide Stände
+direkt nacheinander mit demselben Skript). Der Rechner war bei diesen Läufen etwa **2× langsamer** als bei früheren Messungen
+(gleiche Messung tagsüber: Kaltstart 1 341 ms, Hybrid p50 110 ms) – die Zahlen sind nur innerhalb einer Zeile vergleichbar:
+
+| Messung | vorher | nachher |
+|---|---|---|
+| Kaltstart Browser-Modus (`node server/main.ts` bis `/api/health`, Median aus 3) | 2 841 ms | 2 417 ms (−15 %; Fastify lädt `fast-json-stringify` + eigenes ajv nicht mehr – unbelastet gemessen: Konstruktor 572 ms → 0, Start bis `listen` 1 264 → 1 055 ms) |
+| … mit `NODE_COMPILE_CACHE` (wie `start.bat`) | 3 082 ms | 2 524 ms (Compile-Cache bringt hier keinen Vorteil) |
+| RSS nach Start: leer / 2 000 Quellen + 40 000 Abschnitte inkl. Vektor-Cache | 104 / 137 MB | 104 / 136 MB |
+| Oberfläche: Start-JS / Zeit bis bedienbar (Chromium, kalter Cache, Median aus 7, unbelastet) | 516 kB (gzip 156) / 236 ms | 456 kB (gzip 146) / 242 ms (selten genutzte Ansichten per `lazy()`; Zeit unverändert im Rauschen) |
+| Vektor-Cache laden, 100 000 Abschnitte (768-dim., 74 MB) | 4 310 ms **am Stück** (Server blockiert; unbelastet 1 754 ms) | im Hintergrund in Paketen à 1 000: längste Blockade 32 ms |
+| Hybrid-Suche bei 100 000 Abschnitten p50 (FTS / Vektor) | 279 ms (73 / 173) | 221–265 ms (60 / 144–180) |
+| Bibliotheksliste 20 000 Quellen | 2 000 von 20 000 (Kappung) in 88 ms | seitenweise, beliebiger Versatz: 64–74 ms je Anfrage (Oberfläche lädt je 200 nach) |
+| Sicherung, DB 184 MB / 40 000 Abschnitte (Backup-API) | – (nur Ordner kopieren bei beendeter App) | 3,9 s, Event-Loop max 26 ms |
+| Wiederherstellen: vorbereiten (inkl. Sicherung des Ist-Zustands) / Neustart inkl. DB-Austausch | – | 5,6 s / 1,3 s |
+| Export der E2E-Bibliothek (11 Quellen) | – | 11,8 MB, Re-Import: 0 neu, 11 Duplikate |
+
+**Hybrid-Suche bei ≥ 100k Abschnitten – Entscheidung: Brute-Force bleibt.** Unbelastet liegt p50 bei 110 ms (< 150 ms Schwelle),
+auf dem belasteten Rechner bei 221–279 ms (> 150 ms). 100 000 Abschnitte entsprechen ~2 000 umfangreichen Quellen – deutlich mehr
+als eine Semesterbibliothek; die Suche nach Fach (Wissensbereich) durchsucht nur dessen Vektoren. Ein ANN-Index (HNSW o. Ä.)
+bräuchte eine neue Abhängigkeit oder eigenen Index mit Persistenz und Konsistenz bei jedem Löschen/Re-Index; LanceDB bleibt aus den
+Gründen oben verworfen. Geprüft und verworfen: 4-fach entrollte Schleife (Mikro-Bench −27 %, im A/B mit der echten `search()` aber
+nicht schneller). **Laptop-Messung entscheidet:** `npm run bench:phase4` auf dem Ryzen 5800H; erst bei p50 > 150 ms **mit realer
+Bibliotheksgröße** ein ANN-Backend hinter `VectorStore` ergänzen.
+
 Echte Werte (Sekunden pro Bild, Minuten Rechenzeit pro Audio-Minute, VRAM) misst die Laptop-Checkliste in `HANDOFF.md`.
 
 Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der RTX 3060 typ. wenige ms; Antwort-Streaming abhängig vom Modell).

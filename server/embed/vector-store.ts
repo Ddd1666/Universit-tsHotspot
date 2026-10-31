@@ -272,21 +272,10 @@ export class SqliteVectorStore implements VectorStore {
       let dot = 0;
       const off = row * dim;
       if (c.q8) {
-        // 4-fach entrollt mit getrennten Summen: −27 % Rechenzeit bei 100k × 768 (gemessen, scripts/bench-phase4.ts)
+        // Entrollen (4 Teilsummen) war im Mikro-Bench −27 %, im A/B mit echter search() aber langsamer -> bewusst schlicht
         const v = c.q8;
-        let a = 0;
-        let b = 0;
-        let s2 = 0;
-        let d = 0;
-        let i = 0;
-        for (let o = off; i + 3 < dim; i += 4, o += 4) {
-          a += v[o]! * q[i]!;
-          b += v[o + 1]! * q[i + 1]!;
-          s2 += v[o + 2]! * q[i + 2]!;
-          d += v[o + 3]! * q[i + 3]!;
-        }
-        for (; i < dim; i++) a += v[off + i]! * q[i]!;
-        dot = (a + b + s2 + d) * c.scales![row]!;
+        for (let i = 0; i < dim; i++) dot += v[off + i]! * q[i]!;
+        dot *= c.scales![row]!;
       } else {
         const v = c.f32!;
         for (let i = 0; i < dim; i++) dot += v[off + i]! * q[i]!;
