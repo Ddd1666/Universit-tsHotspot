@@ -14,7 +14,8 @@ afterEach(async () => {
   apps = [];
 });
 
-function runCli(env: Record<string, string>, timeoutMs = 15_000): Promise<{ code: number | null; out: string }> {
+// Kaltstart eines Kindprozesses: normal ~2,5 s, unter der 30x-Schleife (parallele Testdateien, Virenscanner) einmal > 15 s
+function runCli(env: Record<string, string>, timeoutMs = 40_000): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(PROJECT_ROOT, 'server', 'main.ts')], {
       env: { ...process.env, ...env },
@@ -78,12 +79,12 @@ describe('Instanz-Sperre (zweiter Start)', () => {
     const first = await startTestApp({ dataDir });
     apps.push(first);
     const r = await runCli({ HOTSPOT_DATA_DIR: dataDir, HOTSPOT_MOCK_OLLAMA: '1', HOTSPOT_PORT: '0' });
-    expect(r.code).toBe(0);
+    expect(r.code, r.out).toBe(0); // Ausgabe in der Meldung: ein seltener Fehlschlag soll diagnostizierbar sein
     expect(r.out).toContain('läuft bereits');
     expect(r.out).toContain(`127.0.0.1:${first.port}`);
     expect(r.out).toContain(path.join(dataDir, 'hotspot.lock')); // Hinweis, welche Datei man notfalls löscht
     expect((await first.api('GET', '/api/health')).status).toBe(200);
-  });
+  }, 60_000);
 
   it('CLI: belegter Port -> verständliche Meldung ohne Stacktrace', async () => {
     const blocker = net.createServer();
@@ -91,13 +92,13 @@ describe('Instanz-Sperre (zweiter Start)', () => {
     const port = (blocker.address() as net.AddressInfo).port;
     try {
       const r = await runCli({ HOTSPOT_DATA_DIR: tmpDir('port'), HOTSPOT_MOCK_OLLAMA: '1', HOTSPOT_PORT: String(port) });
-      expect(r.code).toBe(1);
+      expect(r.code, r.out).toBe(1);
       expect(r.out).toContain(`Port ${port} ist belegt`);
       expect(r.out).not.toMatch(/sonic boom|at .*\.ts:\d+|Error:/);
     } finally {
       blocker.close();
     }
-  });
+  }, 60_000);
 
   it('close() scheitert nicht, wenn listen() fehlschlug', async () => {
     const blocker = net.createServer();

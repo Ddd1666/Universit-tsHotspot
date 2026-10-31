@@ -10,8 +10,8 @@ VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop 
 **nur gegen Mock-Ollama** getestet: 299 Unit-/Integrationstests (inkl. Korrekturrunden 1 und 2) (30×-Log: `docs/test-logs/phase3.txt`), Browser-E2E 34/34.
 Qualität der KI-Ausgaben, Dauer und VRAM mit echtem Modell sind unbekannt – das prüft Abschnitt 3b (inkl. `npm run eval:learning`).
 **Phase 4** (Version 0.4.0: portables Windows-Paket, Sicherung/Wiederherstellung, Export/Import, Erststart-Assistent, Diagnose, Politur)
-ebenfalls unter Windows 11 entwickelt und **nur gegen Mock-Ollama** getestet: 341 Unit-/Integrationstests (30×-Log:
-`docs/test-logs/phase4.txt`), Browser-E2E 40/40 (inkl. Wiederherstellen mit Server-Neustart im Browser-Modus). **Das
+ebenfalls unter Windows 11 entwickelt und **nur gegen Mock-Ollama** getestet: 360 Unit-/Integrationstests inkl. Korrekturrunde 1 (30×-Logs:
+`docs/test-logs/phase4.txt`, `phase4-k1.txt`), Browser-E2E 43/43 (inkl. Wiederherstellen mit Server-Neustart im Browser-Modus). **Das
 Windows-Paket (Electron) wurde nie gebaut oder gestartet** – der GitHub-Actions-Workflow ist geschrieben und YAML-geprüft, aber nicht
 ausgeführt; geprüft ist nur die Zusammenstellung der App-Dateien. Das prüft Abschnitt 3c zusammen mit Sicherung/Wiederherstellung an
 den echten Daten.
@@ -61,7 +61,7 @@ $env:electron_config_cache = "$PWD\.cache\electron"   # Electron-Download im Pro
 $env:NODE_COMPILE_CACHE    = "$PWD\.cache\node-compile" # Vite/tsc-Compile-Cache nicht nach %TEMP%
 npm.cmd ci --no-audit --no-fund           # exakt nach package-lock.json; keine nativen Kompilierungen nötig
 node scripts\check-deps.mjs --write       # Marker setzen, damit start.bat nicht erneut installiert
-npm.cmd test                              # optional: alle Tests mit Mock-Ollama (Zahl: docs/test-logs/phase4.txt), schreibt nur nach .\.tmp\tests
+npm.cmd test                              # optional: alle Tests mit Mock-Ollama (Zahl: docs/test-logs/phase4-k1.txt), schreibt nur nach .\.tmp\tests
 npm.cmd run build                         # Web-Oberfläche bauen (dist\web)
 ```
 
