@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 /**
  * Log-Datei mit Rotation: ab `maxBytes` wird server.log -> server.log.1 -> … -> server.log.<keep> verschoben
@@ -8,6 +9,8 @@ import os from 'node:os';
 export class RotatingLog {
   private fd: number | null = null;
   private size = 0;
+  /** nächste Rotation ab dieser Größe (nach einem gescheiterten Versuch: erst nach weiteren maxBytes) */
+  private threshold: number;
   readonly file: string;
   private readonly maxBytes: number;
   private readonly keep: number;
@@ -15,13 +18,14 @@ export class RotatingLog {
   constructor(file: string, opts: { maxBytes?: number; keep?: number } = {}) {
     this.file = file;
     this.maxBytes = opts.maxBytes ?? 10 * 1024 * 1024;
+    this.threshold = this.maxBytes;
     this.keep = opts.keep ?? 3;
     try {
       this.size = fs.statSync(file).size;
     } catch {
       this.size = 0;
     }
-    if (this.size > this.maxBytes) this.rotate();
+    if (this.size > this.threshold) this.rotate();
     this.open();
   }
 
@@ -39,12 +43,22 @@ export class RotatingLog {
       fs.closeSync(this.fd);
       this.fd = null;
     }
+    // Erst die aktuelle Datei beiseite: klappt das nicht (gesperrt), wird nichts gelöscht oder verschoben – die Historie
+    // bleibt, es wird in dieselbe Datei weitergeschrieben und erst nach weiteren maxBytes erneut versucht (nicht je Zeile).
+    const aside = `${this.file}.rotating`;
+    try {
+      if (fs.existsSync(this.file)) fs.renameSync(this.file, aside);
+    } catch {
+      this.threshold = this.size + this.maxBytes;
+      return;
+    }
+    this.threshold = this.maxBytes;
     try {
       fs.rmSync(`${this.file}.${this.keep}`, { force: true });
       for (let i = this.keep - 1; i >= 1; i--) if (fs.existsSync(`${this.file}.${i}`)) fs.renameSync(`${this.file}.${i}`, `${this.file}.${i + 1}`);
-      if (fs.existsSync(this.file)) fs.renameSync(this.file, `${this.file}.1`);
+      if (fs.existsSync(aside)) fs.renameSync(aside, `${this.file}.1`);
     } catch {
-      /* gesperrt (Windows) -> weiter in dieselbe Datei schreiben, nächster Versuch beim nächsten Überlauf */
+      /* einzelne ältere Datei gesperrt -> Rest bleibt unter .rotating erhalten */
     }
     this.size = 0;
   }
@@ -53,7 +67,7 @@ export class RotatingLog {
     if (this.fd === null) return false;
     try {
       this.size += fs.writeSync(this.fd, chunk);
-      if (this.size > this.maxBytes) {
+      if (this.size > this.threshold) {
         this.rotate();
         this.open();
       }
@@ -77,16 +91,45 @@ export class RotatingLog {
 }
 
 /** Benutzerpfade (Benutzername) und Sitzungstoken unkenntlich machen. */
+/** Benutzername(n) des Rechners (Kontoname, Name des Profilordners) – ab 3 Zeichen, sonst wäre Ersetzen zu grob. */
+function userNames(): string[] {
+  const names = new Set<string>();
+  try {
+    names.add(os.userInfo().username);
+  } catch {
+    /* kein Konto ermittelbar */
+  }
+  names.add(path.basename(os.homedir()));
+  if (process.env.USERNAME) names.add(process.env.USERNAME);
+  return [...names].filter((n) => n && n.length >= 3).sort((a, b) => b.length - a.length);
+}
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export function redactText(s: string): string {
   const home = os.homedir();
   let out = s;
   if (home && home.length > 3) out = out.split(home).join('<HOME>').split(home.replace(/\\/g, '/')).join('<HOME>');
-  return out
+  out = out
     // Benutzernamen dürfen Leerzeichen enthalten -> bis zum nächsten Pfadtrenner
     .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/"'\r\n]+/gi, '$1<USER>')
     .replace(/(\/home\/|\/Users\/)[^/"'\r\n]+/g, '$1<USER>')
     .replace(/\b[0-9a-f]{64}\b/gi, '<HASH>')
     .replace(/([?&]t=)[^&\s"]+/g, '$1<TOKEN>');
+  // jeder weitere Treffer des Benutzernamens (z. B. D:\parsi-daten, OneDrive-Ordner), ohne Groß/Klein
+  for (const n of userNames()) out = out.replace(new RegExp(escapeRe(n), 'gi'), '<USER>');
+  return out;
+}
+
+/**
+ * Meldung für den Export: nur der feste Teil vor einem „:“ (danach stehen in alten Versionen 0.1–0.3 Dateinamen, z. B.
+ * „Verarbeitung fehlgeschlagen: Skript.pdf“); erlaubt bleibt nur „Quelle #<id>“ als Rest.
+ */
+function safeMsg(msg: string): string {
+  const i = msg.indexOf(':');
+  if (i === -1) return msg;
+  const head = msg.slice(0, i);
+  const rest = msg.slice(i + 1).trim();
+  return /^Quelle #\d+$/.test(rest) ? `${head}: ${rest}` : `${head}: …`;
 }
 
 /**
@@ -111,7 +154,7 @@ export function sanitizeLogLines(raw: string, maxLines = 2000): string[] {
     // bei Fehlern ist msg = Fehlermeldung (pino) -> weglassen, nur Typ/Code/Stack
     const msg = hasErr
       ? ''
-      : redactText(String(j.msg ?? ''))
+      : redactText(safeMsg(String(j.msg ?? '')))
           .replace(/"[^"]*"|„[^“]*“|'[^']*'/g, '"…"')
           .slice(0, 200);
     let row = `${time} ${level.padEnd(5)} ${msg}`;

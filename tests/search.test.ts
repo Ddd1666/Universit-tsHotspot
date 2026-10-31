@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openDb } from '../server/db.ts';
 import { SqliteVectorStore } from '../server/embed/vector-store.ts';
 import { buildFtsQuery, rrfFuse, MARK_START, MARK_END } from '../server/search/hybrid.ts';
-import { startTestApp, tmpDir, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
+import { startTestApp, tmpDir, waitFor, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
 import path from 'node:path';
 
 describe('FTS-Query & RRF', () => {
@@ -76,8 +76,28 @@ describe('Vektorspeicher', () => {
   });
 });
 
-describe('Vektorspeicher: entrollte int8-Schleife', () => {
-  it('Dimension nicht durch 4 teilbar: gleiche Reihenfolge wie float32 (Rest-Schleife)', () => {
+describe('Vektorspeicher: Dimension nicht durch 4 teilbar', () => {
+  it('Neu eingebetteter Vektor während des Hintergrund-Ladens: Laden wird später wiederholt statt dauerhaft aufgegeben (K14)', async () => {
+    const dir = tmpDir('vecretry');
+    const db = openDb(path.join(dir, 'v.sqlite'));
+    db.prepare("INSERT INTO sources(id, sha256, name, size, mime, kind, status, imported_at) VALUES (1, 'z', 'z', 1, 'text/plain', 'text', 'ready', 0)").run();
+    const ins = db.prepare("INSERT INTO chunks(id, source_id, ord, text, token_est) VALUES (?, 1, ?, 't', 1)");
+    const store = new SqliteVectorStore(db, { quantize: true });
+    store.setIndex('r', 8);
+    const items = Array.from({ length: 3000 }, (_, i) => (ins.run(i + 1, i), { chunkId: i + 1, sourceId: 1, vector: Float32Array.from({ length: 8 }, (_, k) => Math.sin(i + k)) }));
+    store.upsert(items);
+    store.invalidate();
+    const p = store.warmupAsync(500);
+    ins.run(5000, 5000);
+    store.upsert([{ chunkId: 5000, sourceId: 1, vector: Float32Array.from({ length: 8 }, () => 1) }]); // bricht den laufenden Ladevorgang ab
+    await p;
+    expect(store.memoryBytes()).toBe(0);
+    await waitFor(() => store.memoryBytes() > 0, { message: 'zweiter Versuch', timeout: 10_000 });
+    expect(store.search(Float32Array.from({ length: 8 }, () => 1), 1, null)[0]!.chunkId).toBe(5000);
+    db.close();
+  });
+
+  it('gleiche Reihenfolge wie float32 (Skalarprodukt über alle Komponenten, auch die letzte)', () => {
     const dir = tmpDir('vec7');
     const db = openDb(path.join(dir, 'v.sqlite'));
     db.prepare("INSERT INTO sources(id, sha256, name, size, mime, kind, status, imported_at) VALUES (1, 'y', 'y', 1, 'text/plain', 'text', 'ready', 0)").run();

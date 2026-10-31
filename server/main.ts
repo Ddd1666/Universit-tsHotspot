@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { loadConfig } from './config.ts';
-import { createHotspot, type Hotspot } from './app.ts';
+import { createHotspot, installProcessGuards, type Hotspot } from './app.ts';
 import { AlreadyRunningError } from './lock.ts';
 
 function openBrowser(url: string): void {
@@ -53,6 +53,15 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+  installProcessGuards({
+    log: (msg, extra) => (hotspot ? hotspot.app.log.error({ extra }, msg) : console.error(msg, extra)),
+    fatal: () => {
+      console.error('Schwerer interner Fehler – Uni-Hotspot wird beendet (Details im Log).');
+      const h = hotspot;
+      hotspot = undefined;
+      void (h ? h.close() : Promise.resolve()).finally(() => process.exit(1));
+    },
+  });
 
   try {
     hotspot = await createHotspot(config);

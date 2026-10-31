@@ -3,13 +3,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { once } from 'node:events';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { zipSync, strToU8 } from 'fflate';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ZipWriter } from '../server/transfer.ts';
+import { importLibrary, ZipWriter } from '../server/transfer.ts';
 import { openZip } from '../server/ingest/zip.ts';
 import { csvCell } from '../server/http/maintenance.ts';
 import { makeZip } from './fixtures.ts';
-import { startTestApp, tmpDir, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
+import { startTestApp, tmpDir, waitFor, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
 
 const open: TestApp[] = [];
 afterEach(async () => {
@@ -248,8 +249,8 @@ describe('Karteikarten-CSV und Notiz-PDF', () => {
     const r = await fetch(`${a.url}/api/cards/export.csv`, { headers: { 'x-hotspot-token': a.token } });
     expect(r.headers.get('content-type')).toMatch(/text\/csv/);
     const text = Buffer.from(await r.arrayBuffer()).toString('utf8');
-    expect(text.startsWith('﻿Vorderseite,Rückseite,')).toBe(true);
-    expect(text).toContain(`'@SUMME(A1),"Zeile 1\nZeile 2",qa,`);
+    expect(text.startsWith('﻿Vorderseite;Rückseite;')).toBe(true); // deutsches Excel: Semikolon
+    expect(text).toContain(`'@SUMME(A1);"Zeile 1\nZeile 2";qa;`);
   });
 
   it('PDF: Browser-Modus -> 501 mit Code; Desktop-Haken liefert das PDF', async () => {
@@ -264,5 +265,82 @@ describe('Karteikarten-CSV und Notiz-PDF', () => {
     expect(r.headers.get('content-disposition')).toContain('Meine_Notiz.pdf');
     expect(calls).toEqual([`/#/learn/notes?note=${n2.id}&print=1`]);
     expect((await b.api('GET', '/api/notes/999/pdf')).status).toBe(404);
+  });
+});
+
+describe('Korrekturrunde 1: Import abbruchfest, Zeitstempel, Dedupe ohne Volltextvergleich, Download-Abbruch', () => {
+  /** Export-Datei aus Datensätzen + Dateien bauen */
+  const exportZip = (recs: object[], files: Buffer[] = []) => {
+    const entries: Record<string, string | Uint8Array> = { 'manifest.json': manifest() };
+    for (const f of files) entries[`files/${sha(f)}`] = f;
+    entries['library.jsonl'] = recs.map((r) => JSON.stringify(r)).join('\n');
+    return makeZip(entries);
+  };
+
+  it('K6: Abbruch nach Paket 1 -> angelegte Quellen werden neu verarbeitet (queued), nie halb „fertig“ oder hängend in processing', async () => {
+    const a = await app();
+    const files = Array.from({ length: 5 }, (_, i) => Buffer.from(`Datei ${i} Inhalt über Optik`));
+    const recs: object[] = files.map((f, i) => ({ t: 'source', key: i + 1, sha256: sha(f), name: `f${i}.txt`, kind: 'text', status: 'ready' }));
+    files.forEach((f, i) => recs.push({ t: 'chunk', source: i + 1, ord: 0, text: f.toString(), loc: ['lines', 1, 1, null] }));
+    for (let i = 0; i < 400; i++) recs.push({ t: 'card', type: 'qa', front: `F${i}`, back: `B${i}`, status: 'active' });
+    const zipPath = path.join(tmpDir('impfail'), 'x.zip');
+    fs.writeFileSync(zipPath, exportZip(recs, files));
+    await a.hotspot.services.ingest.stop(); // Verarbeitung anhalten, damit der Zustand direkt nach dem Abbruch sichtbar ist
+    await expect(importLibrary({ db: a.hotspot.services.db, blobs: a.hotspot.services.blobs }, zipPath, { failAfterBatch: 1 })).rejects.toThrow('Abbruch');
+    const st = a.hotspot.services.db.prepare('SELECT status, count(*) AS n FROM sources GROUP BY status').all();
+    expect(st).toEqual([{ status: 'queued', n: 5 }]);
+  });
+
+  it('K11: unsinnige Zeitstempel (1e20, negativ) werden auf jetzt gekappt bzw. verworfen', async () => {
+    const a = await app();
+    const t0 = Date.now();
+    const zip = exportZip([{ t: 'card', type: 'qa', front: 'Zeit', back: 'Reise', status: 'active', createdAt: 1e20, updatedAt: -5, due: 9e15, lastReview: 1e300, reviews: [[3, 1e20, 1, 2.5], [3, 5, 1, 2.5]] }]);
+    expect((await importFile(a, zip)).status).toBe(200);
+    const c = a.hotspot.services.db.prepare('SELECT created_at, updated_at, due, last_review FROM cards').get() as Record<string, number | null>;
+    expect(c.created_at).toBeGreaterThanOrEqual(t0);
+    expect(c.created_at).toBeLessThanOrEqual(Date.now());
+    expect(c.updated_at).toBeGreaterThanOrEqual(t0);
+    expect([c.due, c.last_review]).toEqual([null, null]);
+    expect(a.hotspot.services.db.prepare('SELECT reviewed_at FROM reviews').all()).toEqual([{ reviewed_at: 5 }]);
+  });
+
+  it('K17/T4: 20 000 Karten in eine Bibliothek mit 20 000 Karten importieren – linear, Event-Loop frei; Lookups nutzen Indizes', async () => {
+    const a = await app();
+    const db = a.hotspot.services.db;
+    db.exec('BEGIN');
+    const ins = db.prepare("INSERT INTO cards(type, front, back, status, created_at, updated_at) VALUES ('qa', ?, ?, 'active', 1, 1)");
+    for (let i = 0; i < 20_000; i++) ins.run(`Vorhanden ${i} ${'x'.repeat(40)}`, `Antwort ${i}`);
+    db.exec('COMMIT');
+    const recs = Array.from({ length: 20_000 }, (_, i) => ({ t: 'card', type: 'qa', front: `Neu ${i} ${'y'.repeat(40)}`, back: `Antwort ${i}`, status: 'active', reviews: [[3, 1000 + i, 1, 2.5]] }));
+    recs.push({ t: 'card', type: 'qa', front: `Vorhanden 7 ${'x'.repeat(40)}`, back: 'Antwort 7', status: 'active', reviews: [] });
+    const eld = monitorEventLoopDelay({ resolution: 5 });
+    eld.enable();
+    const t = performance.now();
+    const r = await importFile(a, exportZip(recs));
+    const ms = performance.now() - t;
+    eld.disable();
+    expect(r.data.cards).toEqual({ added: 20_000, duplicate: 1 });
+    console.log(`INFO Import 20 000 Karten (+20 000 vorhanden): ${Math.round(ms)} ms, Event-Loop max ${Math.round(eld.max / 1e6)} ms`);
+    // Obergrenzen großzügig (30x-Schleife, parallele Testdateien); gemessen ~1–2 s / < 100 ms (README)
+    expect(ms).toBeLessThan(30_000);
+    expect(eld.max / 1e6).toBeLessThan(1000);
+    const plan = (sql: string, ...p: (string | number)[]) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...p) as { detail: string }[]).map((x) => x.detail).join(' ');
+    expect(plan('SELECT id FROM sources WHERE sha256 = ?', 'a')).toMatch(/USING (COVERING )?INDEX/);
+    expect(plan('SELECT id FROM chunks WHERE source_id = ? AND ord = ?', 1, 0)).toMatch(/USING (COVERING )?INDEX chunks_source/);
+  }, 120_000);
+
+  it('K9: abgebrochener Export-Download hinterlässt keine Zwischendatei und hängt nicht', async () => {
+    const a = await app();
+    const big = crypto.randomBytes(24 * 1024 * 1024);
+    const up = (await a.upload('gross.bin', big)).data.source;
+    await waitForSource(a, up.id);
+    const ctrl = new AbortController();
+    const res = await fetch(`${a.url}/api/library/export?subject=all&t=${a.token}`, { signal: ctrl.signal });
+    const reader = res.body!.getReader();
+    await reader.read();
+    ctrl.abort();
+    await reader.cancel().catch(() => {});
+    const tmp = a.hotspot.services.blobs.tmpDir;
+    await waitFor(() => !fs.readdirSync(tmp).some((f) => f.startsWith('export-')), { message: 'Zwischendatei weg', timeout: 15_000 });
   });
 });

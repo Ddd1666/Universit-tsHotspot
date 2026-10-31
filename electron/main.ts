@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { app, BrowserWindow, dialog, Menu, session, shell, type WebContents } from 'electron';
 import { loadConfig, resolveDataDir, type AppConfig } from '../server/config.ts';
-import { createHotspot, type Hotspot } from '../server/app.ts';
+import { createHotspot, installProcessGuards, type Hotspot } from '../server/app.ts';
 import { AlreadyRunningError } from '../server/lock.ts';
 import { DIALOG_TEXT, dialogLanguage } from './messages.ts';
 
@@ -175,6 +175,17 @@ async function boot(): Promise<void> {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  installProcessGuards({
+    log: (msg, extra) => (hotspot ? hotspot.app.log.error({ extra }, msg) : console.error(msg, extra)),
+    fatal: () => {
+      const h = hotspot;
+      hotspot = null;
+      void (h ? h.close() : Promise.resolve()).finally(() => {
+        dialog.showErrorBox('Uni-Hotspot', texts().fatal);
+        app.exit(1);
+      });
+    },
+  });
   app.on('second-instance', () => {
     if (win) {
       if (win.isMinimized()) win.restore();

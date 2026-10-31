@@ -3,16 +3,19 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it } from 'vitest';
+import fsp from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROJECT_ROOT } from '../server/config.ts';
-import { applyPendingRestore, inspectDbFile } from '../server/backup.ts';
+import { applyPendingRestore, backupDirProblem, inspectDbFile } from '../server/backup.ts';
 import { SCHEMA_VERSION } from '../server/db.ts';
 import { startTestApp, tmpDir, waitFor, waitForSource, type TestApp } from './helpers.ts';
 
 const open: TestApp[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const a of open.splice(0)) await a.close().catch(() => {});
 });
+const eperm = (p: unknown) => Object.assign(new Error(`EPERM: operation not permitted, ${String(p)}`), { code: 'EPERM' });
 async function app(dataDir?: string, extra: Parameters<typeof startTestApp>[0] = {}) {
   const a = await startTestApp({ ...(dataDir ? { dataDir } : {}), ...extra });
   open.push(a);
@@ -61,7 +64,7 @@ describe('Sicherung → Wiederherstellung (Roundtrip)', () => {
     await a.close();
 
     const b = await app(dir);
-    expect(b.hotspot.services.lastRestore).toEqual({ ok: true, id: snap.id });
+    expect(b.hotspot.services.lastRestore).toMatchObject({ ok: true, id: snap.id });
     expect(fs.existsSync(path.join(dir, 'restore-pending.json'))).toBe(false);
     expect(count(b, 'sources')).toBe(2);
     expect(count(b, 'subjects')).toBe(1);
@@ -324,7 +327,7 @@ describe('Aufbewahrung, Zielordner, Automatik', () => {
 
   it('wählbarer Zielordner (absolut), relativer Pfad abgelehnt; gleichzeitige Aufträge laufen nacheinander', async () => {
     const a = await app();
-    expect((await a.api<{ error: string }>('PUT', '/api/settings', { backupDir: 'relativ/pfad' })).data.error).toBe('invalid_setting');
+    expect((await a.api<{ error: string }>('PUT', '/api/settings', { backupDir: 'relativ/pfad' })).data.error).toBe('backup_dir_invalid');
     const target = tmpDir('bktarget');
     await a.api('PUT', '/api/settings', { backupDir: target });
     const [x, y] = await Promise.all([a.api<{ snapshot: { id: string } }>('POST', '/api/backups'), a.api<{ snapshot: { id: string } }>('POST', '/api/backups')]);
@@ -385,5 +388,146 @@ describe('Neustart im selben Prozess (Browser-Modus, server/main.ts)', () => {
       child.kill();
       await new Promise((r) => child.once('exit', r));
     }
+  });
+});
+
+describe('Korrekturrunde 1: Robustheit, Einstellungen, Neustart, Zielordner', () => {
+  it('T1/T2/K1: Zielordner nicht lesbar (EPERM) – Automatik, Liste, Diagnose und Bericht werfen nicht, busy wird zurückgesetzt', async () => {
+    const a = await app();
+    await a.api('POST', '/api/backups'); // Zielordner existiert
+    const target = path.join(a.dataDir, 'backups');
+    const orig = fs.readdirSync;
+    vi.spyOn(fs, 'readdirSync').mockImplementation(((p: fs.PathLike, o?: unknown) => {
+      if (path.resolve(String(p)) === path.resolve(target)) throw eperm(p);
+      return (orig as (p: fs.PathLike, o?: unknown) => unknown)(p, o);
+    }) as typeof fs.readdirSync);
+    const svc = a.hotspot.services.backup;
+    expect(() => svc.autoTick()).not.toThrow();
+    const list = await a.api<{ items: unknown[]; error: string }>('GET', '/api/backups');
+    expect(list.status).toBe(200);
+    expect(list.data).toMatchObject({ items: [], error: 'EPERM' });
+    const diag = await a.api<{ errors: string[] }>('GET', '/api/diagnostics');
+    expect(diag.status).toBe(200);
+    expect(diag.data.errors).toContain('backups:EPERM');
+    expect((await fetch(`${a.url}/api/diagnostics/report`, { headers: { 'x-hotspot-token': a.token } })).status).toBe(200);
+    const create = await a.api<{ error: string }>('POST', '/api/backups');
+    expect(create.status).toBeGreaterThanOrEqual(400);
+    expect(create.data.error).toBe('backup_failed');
+    expect(svc.isBusy).toBe(false);
+  });
+
+  it('K2: Löschen benennt erst um – ist die Sicherung gesperrt (rmSync EPERM), verschwindet sie trotzdem aus der Liste und wird später aufgeräumt', async () => {
+    const a = await app();
+    const id = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    const orig = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation(((p: fs.PathLike, o?: fs.RmOptions) => {
+      if (String(p).includes(id)) throw eperm(p);
+      return orig(p, o);
+    }) as typeof fs.rmSync);
+    const r = await a.api<{ items: unknown[] }>('DELETE', `/api/backups/${id}`);
+    expect(r.status).toBe(200);
+    expect(r.data.items).toEqual([]);
+    expect(fs.existsSync(path.join(a.dataDir, 'backups', id + '.partial'))).toBe(true);
+    spy.mockRestore();
+    await a.api('POST', '/api/backups');
+    expect(fs.existsSync(path.join(a.dataDir, 'backups', id + '.partial'))).toBe(false);
+  });
+
+  it('K3: Wiederherstellen dreht Zielordner/Aufbewahrung/Intervall nicht zurück', async () => {
+    const dir = tmpDir('bkset');
+    const a = await app(dir);
+    const target = tmpDir('bksettarget');
+    await a.api('PUT', '/api/settings', { backupKeep: 3, backupIntervalHours: 6 });
+    const snap = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    // nachher: anderer Zielordner – Sicherung dorthin kopieren, damit sie gefunden wird
+    fs.cpSync(path.join(dir, 'backups', snap), path.join(target, snap), { recursive: true });
+    await a.api('PUT', '/api/settings', { backupKeep: 9, backupIntervalHours: 12, backupDir: target, language: 'en' });
+    expect((await a.api('POST', `/api/backups/${snap}/restore`, { confirm: true })).status).toBe(200);
+    await a.close();
+    const b = await app(dir);
+    const st = b.hotspot.services.settings.get();
+    expect([st.backupKeep, st.backupIntervalHours, st.backupDir]).toEqual([9, 12, target]);
+    expect(st.language).toBe('de'); // alles andere ist der gesicherte Stand
+  });
+
+  it('K4: nach dem Vormerken werden schreibende Anfragen mit 503 restoring abgewiesen; /api/health meldet startedAt', async () => {
+    const a = await app();
+    const h0 = (await a.api<{ startedAt: number; restoring: boolean }>('GET', '/api/health')).data;
+    expect(h0.restoring).toBe(false);
+    expect(typeof h0.startedAt).toBe('number');
+    const snap = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    await a.api('POST', `/api/backups/${snap}/restore`, { confirm: true });
+    const w = await a.api<{ error: string }>('POST', '/api/subjects', { name: 'Zu spät', color: '#39e6ff' });
+    expect([w.status, w.data.error]).toEqual([503, 'restoring']);
+    expect((await a.api('GET', '/api/subjects')).status).toBe(200);
+    expect((await a.api<{ restoring: boolean }>('GET', '/api/health')).data.restoring).toBe(true);
+  });
+
+  it('T9: zusätzliche Felder werden abgelehnt (kein stilles Entfernen), z. B. bei der Wiederherstellung', async () => {
+    const a = await app();
+    const snap = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    expect((await a.api('POST', `/api/backups/${snap}/restore`, { confirm: true, force: true })).status).toBe(400);
+    expect(fs.existsSync(path.join(a.dataDir, 'restore-pending.json'))).toBe(false);
+  });
+
+  it('K7/T3/T12: Zielordner in <Daten>/files oder /tmp (auch andere Schreibweise), UNC, reservierte Namen, zu lang -> backup_dir_invalid', async () => {
+    const a = await app();
+    const bad = [
+      [path.join(a.dataDir, 'files'), 'inside_data'],
+      [path.join(a.dataDir, 'tmp', 'x'), 'inside_data'],
+      ['\\\\localhost\\c$\\sicher', 'unc'],
+      ['\\\\server\\share', 'unc'],
+      [path.join(a.dataDir, 'NUL'), 'reserved_name'],
+      [path.join(a.dataDir, 'com1.txt', 'x'), 'reserved_name'],
+      [path.join(a.dataDir, 'a'.repeat(250)), 'too_long'],
+    ];
+    if (process.platform === 'win32') bad.push([path.join(a.dataDir, 'FILES').toUpperCase(), 'inside_data']);
+    for (const [dir, reason] of bad) {
+      const r = await a.api<{ error: string; detail: string }>('PUT', '/api/settings', { backupDir: dir });
+      expect([r.status, r.data.error, r.data.detail], dir).toEqual([400, 'backup_dir_invalid', reason]);
+    }
+    expect(backupDirProblem('', a.dataDir)).toBeNull();
+    expect(backupDirProblem(path.join(a.dataDir, 'backups'), a.dataDir)).toBeNull();
+    expect(a.hotspot.services.settings.get().backupDir).toBe('');
+  });
+
+  it('K12: Sicherung mit Zeitpunkt in der Zukunft blockiert die Automatik nicht', async () => {
+    const a = await app();
+    const id = 'snapshot-20991231-235959-auto';
+    const d = path.join(a.dataDir, 'backups', id);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'manifest.json'), JSON.stringify({ format: 'uni-hotspot-snapshot', formatVersion: 1, createdAt: Date.now() + 10 * 365 * 86_400_000 }));
+    const svc = a.hotspot.services.backup;
+    expect(svc.list()[0]!.createdAt).toBeLessThanOrEqual(Date.now());
+    expect(svc.autoTick()).toBe(false); // Dateizeit = gerade eben -> noch nicht fällig
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 25 * 3_600_000); // ein Tag später
+    expect(svc.autoTick()).toBe(true);
+  });
+
+  it('K10: verschwindet die Datei im vorigen Snapshot während des Verlinkens, wird aus dem Datenordner verlinkt', async () => {
+    const a = await app();
+    await seed(a);
+    const first = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    const orig = fsp.link;
+    vi.spyOn(fsp, 'link').mockImplementation((async (src: fs.PathLike, dest: fs.PathLike) => {
+      if (String(src).includes(first)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return orig(src, dest);
+    }) as typeof fsp.link);
+    const second = (await a.api<{ snapshot: { files: number; missing: number } }>('POST', '/api/backups')).data.snapshot;
+    expect([second.files, second.missing]).toEqual([2, 0]);
+  });
+
+  it('K8: beim Austausch liegt die neue DB nie neben dem WAL der alten (WAL vor dem Umbenennen gelöscht)', async () => {
+    const dir = tmpDir('bkwal');
+    const a = await app(dir);
+    const snap = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    await a.api('POST', `/api/backups/${snap}/restore`, { confirm: true });
+    await a.close();
+    fs.writeFileSync(path.join(dir, 'hotspot.sqlite-wal'), 'alt');
+    let walAtRename: boolean | null = null;
+    applyPendingRestore(dir, (s) => {
+      if (s === 'renamed') walAtRename = fs.existsSync(path.join(dir, 'hotspot.sqlite-wal'));
+    });
+    expect(walAtRename).toBe(false);
   });
 });

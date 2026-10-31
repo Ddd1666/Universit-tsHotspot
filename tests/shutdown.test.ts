@@ -143,3 +143,34 @@ describe('Beenden mit offenen Verbindungen', () => {
     expect(fs.existsSync(path.join(app.dataDir, 'hotspot.lock'))).toBe(false);
   });
 });
+
+describe('Korrekturrunde 1: Prozessweiter Schutz (uncaughtException/unhandledRejection)', () => {
+  it('Betriebssystemfehler im Timer: geloggt, Prozess läuft weiter; Programmierfehler: geordnet beendet (Exit 1)', async () => {
+    const { spawn } = await import('node:child_process');
+    const { pathToFileURL } = await import('node:url');
+    const { PROJECT_ROOT } = await import('../server/config.ts');
+    const dir = tmpDir('guard');
+    const script = path.join(dir, 'guard.ts');
+    fs.writeFileSync(
+      script,
+      `import { installProcessGuards } from ${JSON.stringify(pathToFileURL(path.join(PROJECT_ROOT, 'server', 'app.ts')).href)};
+       installProcessGuards({ log: (m, e) => console.log('LOG', m, JSON.stringify(e)), fatal: () => { console.log('FATAL'); process.exit(1); } });
+       setTimeout(() => { throw Object.assign(new Error('gesperrt'), { code: 'EPERM' }); }, 10);
+       setTimeout(() => { void Promise.reject(Object.assign(new Error('weg'), { code: 'ECONNRESET' })); }, 30);
+       setTimeout(() => console.log('LEBT'), 80);
+       setTimeout(() => { (null as unknown as { x: number }).x; }, 120);
+       setTimeout(() => console.log('NICHT ERREICHT'), 2000);`,
+    );
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+    const code = await new Promise<number | null>((r) => child.once('exit', r));
+    expect(out).toContain('Unbehandelter Betriebssystemfehler (weiter)');
+    expect(out).toContain('Unbehandeltes Promise verworfen');
+    expect(out).toContain('LEBT');
+    expect(out).toContain('Schwerer interner Fehler');
+    expect(out).toContain('FATAL');
+    expect(out).not.toContain('NICHT ERREICHT');
+    expect(code).toBe(1);
+  });
+});

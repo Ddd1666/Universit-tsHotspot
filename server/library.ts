@@ -288,9 +288,11 @@ export class Library {
    * (unter Last beobachtet: indexierte Quelle ohne Originaldatei).
    */
   async gcOrphanBlobs(minAgeMs = 60 * 60 * 1000): Promise<number> {
+    const hashes = await this.blobs.listHashes();
+    // Liste der bekannten Hashes erst NACH dem Einlesen der Dateien: eine inzwischen importierte Datei ist dann bekannt
     const known = new Set((this.db.prepare('SELECT sha256 FROM sources').all() as { sha256: string }[]).map((r) => r.sha256));
     let removed = 0;
-    for (const h of this.blobs.listHashes()) {
+    for (const h of hashes) {
       if (known.has(h) || this.blobs.ageMs(h) < minAgeMs) continue;
       if (await this.blobs.delete(h)) removed++;
     }

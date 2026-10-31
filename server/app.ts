@@ -50,6 +50,8 @@ export interface Services {
   lastRestore: PendingRestoreResult | null;
   logFile: string;
   startedAt: number;
+  /** Wiederherstellung vorgemerkt: schreibende Anfragen werden bis zum Neustart abgewiesen (503 restoring) */
+  restoring: boolean;
   queueStatus():{ ingest: IngestStats; embed: EmbedStatus; media: JobCounts; learn: JobCounts };
   notifyQueue(): void;
   /** Ollama-Client für Suche – null, wenn Ollama bekanntermaßen offline ist (dann reine Volltextsuche). */
@@ -64,6 +66,35 @@ export interface Hotspot {
   mock: MockOllama | null;
   listen(): Promise<{ url: string; port: number }>;
   close(): Promise<void>;
+}
+
+/** Betriebssystem-/Netzfehler: einzelne Operation gescheitert (Dateisperre durch Virenscanner, Verbindung weg), Zustand intakt. */
+const OPERATIONAL_CODES = new Set([
+  'EPERM', 'EBUSY', 'EACCES', 'ENOENT', 'EEXIST', 'ENOTEMPTY', 'EMFILE', 'ENFILE', 'ENOSPC', 'EIO', 'EXDEV', 'ENOTDIR', 'EISDIR',
+  'ECONNRESET', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'EAI_AGAIN', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED',
+]);
+
+/**
+ * Prozessweiter Schutz (einmal je Prozess, aus server/main.ts bzw. electron/main.ts):
+ * - unhandledRejection: loggen, weiterlaufen – ein verworfenes Promise lässt keinen halben Zustand zurück.
+ * - uncaughtException mit Betriebssystem-/Netz-Fehlercode (EPERM, EBUSY, ECONNRESET …): loggen, weiterlaufen – typisch eine
+ *   gesperrte Datei in einem Timer; alle Daten liegen transaktional in SQLite.
+ * - sonst (Programmierfehler wie TypeError): Zustand ist unklar (Node-Doku: nach uncaughtException nicht sicher fortsetzbar)
+ *   -> loggen und geordnet beenden (DB schließen, Sperrdatei entfernen) statt unkontrolliert weiterzulaufen oder hart abzustürzen.
+ */
+export function installProcessGuards(opts: { log: (msg: string, extra?: unknown) => void; fatal: (err: Error) => void }): void {
+  process.on('unhandledRejection', (reason) => {
+    const e = reason as NodeJS.ErrnoException;
+    opts.log('Unbehandeltes Promise verworfen', { code: e?.code, type: e?.name });
+  });
+  process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
+    if (err?.code && OPERATIONAL_CODES.has(err.code)) {
+      opts.log('Unbehandelter Betriebssystemfehler (weiter)', { code: err.code, type: err.name });
+      return;
+    }
+    opts.log('Schwerer interner Fehler – Uni-Hotspot wird geordnet beendet', { code: err?.code, type: err?.name, stack: err?.stack?.split('\n').slice(1, 6).join('\n') });
+    opts.fatal(err);
+  });
 }
 
 /**
@@ -89,6 +120,15 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
 
   const db = openDb(path.join(config.dataDir, 'hotspot.sqlite'));
   const settings = new SettingsStore(db);
+  // Wiederherstellung dreht die Sicherungs-Einstellungen nicht mit zurück (Zielordner/Aufbewahrung/Intervall bleiben)
+  let keepProblem: string | null = null;
+  if (lastRestore?.ok && lastRestore.keepSettings && Object.keys(lastRestore.keepSettings).length) {
+    try {
+      settings.update(lastRestore.keepSettings);
+    } catch (err) {
+      keepProblem = (err as Error).message.split(':')[0] ?? 'invalid';
+    }
+  }
   const bus = new EventBus();
   const blobs = new BlobStore(config.dataDir);
   const tmpProblem = blobs.init();
@@ -111,10 +151,13 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
     logController: new LogController({ disableRequestLogging: config.logLevel !== 'debug' }),
     // Keine Antwort-Schemas -> fast-json-stringify (+ eigenes ajv) wird nie gebraucht; nicht laden spart ~0,25 s Kaltstart
     schemaController: { compilersFactory: { buildSerializer: () => () => (data: unknown) => JSON.stringify(data) } },
+    // additionalProperties: false heißt ablehnen (400) statt stillschweigend entfernen
+    ajv: { customOptions: { removeAdditional: false } },
   });
   const log = (msg: string, extra?: unknown) => app.log.info({ extra }, msg);
   if (tmpProblem) log(tmpProblem);
   if (lastRestore) log(lastRestore.ok ? `Wiederherstellung ausgeführt: ${lastRestore.id}` : 'Wiederherstellung verworfen', { code: lastRestore.code });
+  if (keepProblem) log('Sicherungs-Einstellungen nach Wiederherstellung nicht übernommen', { code: keepProblem });
 
   let queueTimer: NodeJS.Timeout | null = null;
   // Ab close(): keine neuen Queue-Timer mehr (Stop-Schritte melden noch Änderungen, die DB ist danach zu)
@@ -125,7 +168,11 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
     queueTimer = setTimeout(() => {
       queueTimer = null;
       if (closing) return;
-      bus.emit({ type: 'queue', ...services.queueStatus() });
+      try {
+        bus.emit({ type: 'queue', ...services.queueStatus() });
+      } catch (err) {
+        log('Warteschlangen-Status fehlgeschlagen', { code: (err as NodeJS.ErrnoException).code });
+      }
     }, 250);
   };
 
@@ -230,6 +277,7 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
     lastRestore,
     logFile,
     startedAt: Date.now(),
+    restoring: false,
     queueStatus: () => ({ ingest: ingest.stats(), embed: embed.status(), media: media.counts(), learn: learn.counts() }),
     notifyQueue,
     searchClient,
@@ -263,7 +311,8 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
       if (media.requeueIfToolsReady()) ingest.wakeUp();
       maintenanceTimer = setTimeout(() => {
         if (closed) return;
-        void vectors.warmupAsync().catch(() => {});
+        // beides läuft in Paketen mit setImmediate (Event-Loop bleibt frei) und wirft nie in den Timer
+        void vectors.warmupAsync().catch((err: Error) => !closed && log('Vektor-Cache laden fehlgeschlagen', { code: (err as NodeJS.ErrnoException).code }));
         void library
           .gcOrphanBlobs()
           .then((n) => n && log(`${n} verwaiste Datei(en) entfernt`))

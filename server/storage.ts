@@ -138,14 +138,25 @@ export class BlobStore {
     }
   }
 
-  /** Alle gespeicherten Hashes (für Garbage-Collection verwaister Dateien). */
-  listHashes(): string[] {
+  /**
+   * Alle gespeicherten Hashes (für Garbage-Collection verwaister Dateien) – asynchron, Ordner für Ordner: bei 10 000+
+   * Dateien blockierte die synchrone Variante den Server beim Start ~0,2 s am Stück.
+   */
+  async listHashes(): Promise<string[]> {
     const out: string[] = [];
-    if (!fs.existsSync(this.filesDir)) return out;
-    for (const dir of fs.readdirSync(this.filesDir)) {
-      const full = path.join(this.filesDir, dir);
-      if (!fs.statSync(full).isDirectory()) continue;
-      for (const f of fs.readdirSync(full)) if (SHA_RE.test(f)) out.push(f);
+    let dirs: fs.Dirent[];
+    try {
+      dirs = await fsp.readdir(this.filesDir, { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      try {
+        for (const f of await fsp.readdir(path.join(this.filesDir, d.name))) if (SHA_RE.test(f)) out.push(f);
+      } catch {
+        /* Ordner gerade gelöscht/gesperrt */
+      }
     }
     return out;
   }

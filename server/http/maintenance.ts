@@ -8,6 +8,7 @@ import type { Services } from '../app.ts';
 import { HttpError } from '../library.ts';
 import { TooLargeError } from '../storage.ts';
 import { importLibrary, writeExport } from '../transfer.ts';
+import { backupDirProblem } from '../backup.ts';
 import { collectDiagnostics, diagnosticsReport } from '../diagnostics.ts';
 import { getNote } from '../learn/data.ts';
 import { contentDisposition } from './routes.ts';
@@ -29,11 +30,27 @@ export function csvCell(v: unknown): string {
 
 /** Sicherung, Wiederherstellung, Export/Import, Diagnose (Phase 4). Token/Host/Origin-Prüfung wie alle /api-Routen. */
 export function registerMaintenanceRoutes(app: FastifyInstance, s: Services): void {
+  // Wiederherstellung vorgemerkt: bis zum Neustart nichts mehr schreiben (sonst ginge es mit dem Austausch der DB verloren)
+  app.addHook('onRequest', async (req, reply) => {
+    if (!s.restoring || !(req.raw.url ?? '').startsWith('/api/') || ['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return;
+    return reply.code(503).send({ error: 'restoring', message: 'Wiederherstellung läuft – Uni-Hotspot startet neu' });
+  });
+
+  // Zielordner der Sicherung: Plausibilität braucht den Datenordner -> hier statt im allgemeinen Einstellungs-Validator
+  app.addHook('preHandler', async (req) => {
+    if (req.method !== 'PUT' || req.url !== '/api/settings') return;
+    const dir = (req.body as Record<string, unknown> | undefined)?.backupDir;
+    if (typeof dir !== 'string') return;
+    const problem = backupDirProblem(dir, s.config.dataDir);
+    if (problem) throw new HttpError(400, 'backup_dir_invalid', 'Zielordner ungültig', problem);
+  });
+
   /* ------------------------------------------------------------ Sicherungen */
 
   const backupState = () => {
     const st = s.settings.get();
-    return { dir: s.backup.dir(), defaultDir: path.join(s.config.dataDir, 'backups'), busy: s.backup.isBusy, items: s.backup.list(), keep: st.backupKeep, intervalHours: st.backupIntervalHours, backupDir: st.backupDir, canRestart: !!s.config.requestRestart };
+    const { items, error } = s.backup.listSafe();
+    return { dir: s.backup.dir(), defaultDir: path.join(s.config.dataDir, 'backups'), busy: s.backup.isBusy, items, error, keep: st.backupKeep, intervalHours: st.backupIntervalHours, backupDir: st.backupDir, canRestart: !!s.config.requestRestart };
   };
 
   app.get('/api/backups', async () => backupState());
@@ -51,6 +68,9 @@ export function registerMaintenanceRoutes(app: FastifyInstance, s: Services): vo
     async (req) => {
       if (s.backup.isBusy) throw new HttpError(409, 'backup_busy', 'Es läuft gerade eine Sicherung');
       const r = await s.backup.stageRestore((req.params as { id: string }).id);
+      // ab jetzt: Schreibzugriffe abweisen, Hintergrundarbeit anhalten (Ergebnisse würden mit dem Austausch verworfen)
+      s.restoring = true;
+      void Promise.allSettled([s.ingest.stop(), s.embed.stop(), s.media.stop(), s.learn.stop(), s.backup.stop()]);
       const restarting = !!s.config.requestRestart;
       // Antwort erst senden, dann neu starten (Austausch der DB passiert beim Start)
       if (restarting) setTimeout(() => s.config.requestRestart?.(), 300);
@@ -73,6 +93,10 @@ export function registerMaintenanceRoutes(app: FastifyInstance, s: Services): vo
         label = fileSafe(sub.name);
       }
       const pass = new PassThrough();
+      // Download abgebrochen -> Export sofort beenden (Schreiben scheitert, Zwischendatei wird im finally gelöscht)
+      reply.raw.once('close', () => {
+        if (!reply.raw.writableFinished) pass.destroy();
+      });
       reply.header('content-disposition', contentDisposition('attachment', `Uni-Hotspot-Export-${label}-${day()}.zip`));
       reply.type('application/zip');
       void writeExport(s.db, s.blobs, scope, pass, s.blobs.tmpDir).catch((err: Error) => {
@@ -125,10 +149,15 @@ export function registerMaintenanceRoutes(app: FastifyInstance, s: Services): vo
     const head = de
       ? ['Vorderseite', 'Rückseite', 'Typ', 'Status', 'Fach', 'Quelle', 'Fällig', 'Intervall (Tage)', 'Leichtigkeit', 'Wiederholungen', 'Fehlversuche']
       : ['Front', 'Back', 'Type', 'Status', 'Subject', 'Source', 'Due', 'Interval (days)', 'Ease', 'Reviews', 'Lapses'];
-    const lines = [head.map(csvCell).join(',')];
+    // Trennzeichen: deutsches Excel erwartet „;“ (Komma = Dezimalzeichen), englisches „,“. Kein „sep=“-Kopf: den lesen
+    // Anki/LibreOffice als Datenzeile; beide erkennen das Trennzeichen beim Import selbst.
+    const sep = de ? ';' : ',';
+    const lines = [head.map(csvCell).join(sep)];
     for (const r of rows) {
       const due = typeof r.due === 'number' ? new Date(r.due).toISOString().slice(0, 10) : '';
-      lines.push([r.front, r.back, r.type, r.status, r.subject, r.source, due, r.interval_days, r.ease, r.reps, r.lapses].map(csvCell).join(','));
+      // Dezimalkomma im deutschen Format (sonst liest Excel „2.5“ als Datum)
+      const ease = typeof r.ease === 'number' ? (de ? String(r.ease).replace('.', ',') : String(r.ease)) : '';
+      lines.push([r.front, r.back, r.type, r.status, r.subject, r.source, due, r.interval_days, ease, r.reps, r.lapses].map(csvCell).join(sep));
     }
     reply.header('content-disposition', contentDisposition('attachment', `${de ? 'Karteikarten' : 'Flashcards'}-${day()}.csv`));
     return reply.type('text/csv; charset=utf-8').send('﻿' + lines.join('\r\n') + '\r\n');

@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RotatingLog, redactText, sanitizeLogLines } from '../server/logs.ts';
 import { startTestApp, tmpDir, waitFor, waitForSource, type TestApp } from './helpers.ts';
 
 const open: TestApp[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const a of open.splice(0)) await a.close().catch(() => {});
 });
 
@@ -78,7 +79,7 @@ describe('Diagnose und Log-Export ohne Inhalte der Nutzerdokumente', () => {
     expect(typeof d.app!.node).toBe('string');
     expect(d.dataDir).toMatchObject({ writable: true });
     expect((d.dataDir!.sizes as { db: number }).db).toBeGreaterThan(0);
-    expect((d.ollama!.required as unknown[]).length).toBe(3);
+    expect((d.ollama!.required as { roles: string[] }[]).map((r) => r.roles.join('+'))).toEqual(['chat+vision', 'embedding']); // gemma3:4b nur einmal
     expect(d.counts).toMatchObject({ sources: 2 });
     expect(JSON.stringify(d)).not.toMatch(/GEHEIM/);
 
@@ -90,5 +91,43 @@ describe('Diagnose und Log-Export ohne Inhalte der Nutzerdokumente', () => {
     expect(text).not.toMatch(/GEHEIM/); // … aber keine Inhalte/Dateinamen
     expect(text).not.toContain(a.token);
     expect(text).not.toContain(os.homedir());
+  });
+});
+
+describe('Korrekturrunde 1: Diagnose ohne Dateinamen, Altformat-Logs, Benutzername, Rotation', () => {
+  it('K5/T11: laufende Verarbeitung (Dateiname), Altformat-Logzeile ohne Anführungszeichen, Benutzername außerhalb von \\Users\\ – nichts davon im Bericht', async () => {
+    const a = await startTestApp({ logToFile: true });
+    open.push(a);
+    const user = os.userInfo().username;
+    const svc = a.hotspot.services;
+    // Zustand „wird gerade verarbeitet“ mit Dateiname (deterministisch statt zeitabhängig)
+    const orig = svc.ingest.stats.bind(svc.ingest);
+    svc.ingest.stats = () => ({ ...orig(), processing: [{ id: 7, name: 'GEHEIMNAME-laeuft.pdf' }] });
+    const log = path.join(a.dataDir, 'logs', 'server.log');
+    fs.appendFileSync(log, JSON.stringify({ level: 30, time: Date.now(), msg: 'Verarbeitung fehlgeschlagen: GEHEIMNAME-alt.pdf' }) + '\n');
+    fs.appendFileSync(log, JSON.stringify({ level: 30, time: Date.now(), msg: `Datenordner D:\\${user}-daten verschoben` }) + '\n');
+    const diag = (await a.api<Record<string, unknown>>('GET', '/api/diagnostics')).data;
+    expect(JSON.stringify(diag)).not.toMatch(/GEHEIMNAME/);
+    expect((diag.queue as { ingest: { processing: number } }).ingest.processing).toBe(1);
+    const text = await (await fetch(`${a.url}/api/diagnostics/report`, { headers: { 'x-hotspot-token': a.token } })).text();
+    expect(text).not.toMatch(/GEHEIMNAME/);
+    expect(text).toContain('Verarbeitung fehlgeschlagen: …');
+    if (user.length >= 3) expect(text.toLowerCase()).not.toContain(user.toLowerCase());
+  });
+
+  it('T8: Rotation scheitert (Datei nicht umbenennbar) -> Historie bleibt unverändert, kein Versuch je Zeile', () => {
+    const dir = tmpDir('logrot');
+    const file = path.join(dir, 'server.log');
+    fs.writeFileSync(file + '.1', 'ALT-1');
+    fs.writeFileSync(file + '.2', 'ALT-2');
+    fs.mkdirSync(file + '.rotating'); // Umbenennen auf diesen Namen scheitert
+    const log = new RotatingLog(file, { maxBytes: 500, keep: 3 });
+    const spy = vi.spyOn(fs, 'renameSync');
+    for (let i = 0; i < 40; i++) log.write('x'.repeat(99) + '\n');
+    log.end();
+    expect(fs.readFileSync(file + '.1', 'utf8')).toBe('ALT-1');
+    expect(fs.readFileSync(file + '.2', 'utf8')).toBe('ALT-2');
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(8); // höchstens ein Versuch je 500 Byte, nicht je Zeile
+    expect(fs.statSync(file).size).toBe(4000); // nichts verloren
   });
 });

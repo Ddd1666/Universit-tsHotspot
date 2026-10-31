@@ -58,7 +58,7 @@ describe('Import & Verarbeitung', () => {
     expect(a.data.status).toBe('created');
     expect(b.data.status).toBe('duplicate');
     expect(b.data.source.id).toBe(a.data.source.id);
-    expect(app.hotspot.services.blobs.listHashes()).toHaveLength(1);
+    expect(await app.hotspot.services.blobs.listHashes()).toHaveLength(1);
   });
 
   it('Fehler pro Datei brechen den Import nicht ab', async () => {

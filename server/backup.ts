@@ -13,17 +13,17 @@ import type { SettingsStore } from './settings.ts';
  * Sicherungen (Snapshots) des Datenordners und Wiederherstellung.
  *
  * Snapshot = Ordner `snapshot-<JJJJMMTT-hhmmss>[-n]-<auto|manual|pre-restore>` im Zielordner:
- *   hotspot.sqlite   konsistente Kopie Ã¼ber die SQLite-Backup-API (auch bei laufendem WAL), danach journal_mode=DELETE
- *   files/ab/<sha>   Originaldateien â€“ Hardlink (gleiches Laufwerk; vom vorigen Snapshot oder aus dem Datenordner), sonst Kopie
- *   manifest.json    Format, App-/Schema-Version, Anzahl/GrÃ¶ÃŸe
- * Er entsteht unter `<name>.partial` und wird erst am Ende umbenannt: ein Abbruch (Absturz, kill) hinterlÃ¤sst nie einen
- * halben Snapshot, der als gÃ¼ltig gilt.
+ *   hotspot.sqlite   konsistente Kopie über die SQLite-Backup-API (auch bei laufendem WAL), danach journal_mode=DELETE
+ *   files/ab/<sha>   Originaldateien – Hardlink (gleiches Laufwerk; vom vorigen Snapshot oder aus dem Datenordner), sonst Kopie
+ *   manifest.json    Format, App-/Schema-Version, Anzahl/Größe
+ * Er entsteht unter `<name>.partial` und wird erst am Ende umbenannt: ein Abbruch (Absturz, kill) hinterlässt nie einen
+ * halben Snapshot, der als gültig gilt.
  *
- * Wiederherstellen (gefÃ¤hrlicher Pfad): Snapshot wird geprÃ¼ft (Ordner/Dateien ohne Symlinks, DB-Kopf, Schema-Version nicht
- * neuer als die App, quick_check, Schema identisch mit dem, das die Migrationen fÃ¼r diese Version erzeugen), dann wird der
- * Ist-Zustand gesichert, fehlende Originaldateien werden SHA-256-geprÃ¼ft Ã¼bernommen und `restore-pending.json` geschrieben.
- * Der Austausch der DB passiert beim nÃ¤chsten Start (vor dem Ã–ffnen der DB, unter der Instanz-Sperre) â€“ idempotent,
- * ein Abbruch mittendrin wird beim folgenden Start zu Ende gefÃ¼hrt.
+ * Wiederherstellen (gefährlicher Pfad): Snapshot wird geprüft (Ordner/Dateien ohne Symlinks, DB-Kopf, Schema-Version nicht
+ * neuer als die App, quick_check, Schema identisch mit dem, das die Migrationen für diese Version erzeugen), dann wird der
+ * Ist-Zustand gesichert, fehlende Originaldateien werden SHA-256-geprüft übernommen und `restore-pending.json` geschrieben.
+ * Der Austausch der DB passiert beim nächsten Start (vor dem Öffnen der DB, unter der Instanz-Sperre) – idempotent,
+ * ein Abbruch mittendrin wird beim folgenden Start zu Ende geführt.
  */
 
 export type SnapshotReason = 'auto' | 'manual' | 'pre-restore';
@@ -41,7 +41,7 @@ export interface SnapshotInfo {
   files: number;
   bytes: number;
   dbBytes: number;
-  /** Originaldateien, die beim Sichern fehlten (z. B. gleichzeitig gelÃ¶scht) */
+  /** Originaldateien, die beim Sichern fehlten (z. B. gleichzeitig gelöscht) */
   missing: number;
 }
 
@@ -69,7 +69,7 @@ function schemaOf(db: DatabaseSync): string[] {
 }
 
 const referenceSchemas = new Map<number, string[]>();
-/** Schema, das die eigenen Migrationen fÃ¼r Version v erzeugen. */
+/** Schema, das die eigenen Migrationen für Version v erzeugen. */
 function referenceSchema(v: number): string[] {
   let s = referenceSchemas.get(v);
   if (!s) {
@@ -87,8 +87,8 @@ function referenceSchema(v: number): string[] {
 }
 
 /**
- * PrÃ¼ft eine fremde/alte DB-Datei, bevor sie die Nutzer-DB ersetzt. Wirft HttpError mit Code.
- * GeÃ¶ffnet wird nur lesend; Trigger/Views werden dabei nicht ausgefÃ¼hrt.
+ * Prüft eine fremde/alte DB-Datei, bevor sie die Nutzer-DB ersetzt. Wirft HttpError mit Code.
+ * Geöffnet wird nur lesend; Trigger/Views werden dabei nicht ausgeführt.
  */
 export function inspectDbFile(file: string): { version: number } {
   let st: fs.Stats;
@@ -118,10 +118,10 @@ export function inspectDbFile(file: string): { version: number } {
     if (version > SCHEMA_VERSION) throw new HttpError(409, 'restore_too_new', `Sicherung stammt von einer neueren Version (Schema ${version} > ${SCHEMA_VERSION})`, String(version));
     if (version < 1) throw new HttpError(400, 'restore_invalid', 'Keine Uni-Hotspot-Datenbank', 'no_version');
     const check = (db.prepare('PRAGMA quick_check').get() as { quick_check: string }).quick_check;
-    if (check !== 'ok') throw new HttpError(400, 'restore_corrupt', 'Datenbank der Sicherung ist beschÃ¤digt');
+    if (check !== 'ok') throw new HttpError(400, 'restore_corrupt', 'Datenbank der Sicherung ist beschädigt');
     const names = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name));
     if (REQUIRED_TABLES.some((t) => !names.has(t))) throw new HttpError(400, 'restore_invalid', 'Keine Uni-Hotspot-Datenbank', 'tables');
-    // manipulierte DB (zusÃ¤tzliche Trigger/Views/Spalten) -> verweigern
+    // manipulierte DB (zusätzliche Trigger/Views/Spalten) -> verweigern
     const got = schemaOf(db);
     const want = referenceSchema(version);
     if (got.length !== want.length || got.some((x, i) => x !== want[i])) throw new HttpError(400, 'restore_invalid', 'Schema weicht ab (manipulierte oder fremde Datenbank)', 'schema');
@@ -156,6 +156,43 @@ async function sha256File(file: string): Promise<string> {
   return h.digest('hex');
 }
 
+/** Löschen, das nie wirft (Windows: Virenscanner/Explorer hält Dateien offen) – Fehler nur loggen. */
+function rmLogged(p: string, log: (msg: string, extra?: unknown) => void): boolean {
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 3 });
+    return true;
+  } catch (err) {
+    log('Löschen fehlgeschlagen (wird später erneut versucht)', { code: (err as NodeJS.ErrnoException).code });
+    return false;
+  }
+}
+
+const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+
+/**
+ * Zielordner prüfen (null = ok, sonst Grund): absolut, nicht zu lang (Windows-Pfadlimit inkl. Snapshot-Unterordner),
+ * kein UNC-/Gerätepfad (\\server\share, \\localhost\c$, \\?\…), keine reservierten Namen (CON, NUL, COM1 …) und nicht in
+ * <Datenordner>/files bzw. /tmp (würde beim Aufräumen/als Originaldatei behandelt). Vergleich unter Windows ohne Groß/Klein.
+ */
+export function backupDirProblem(dir: string, dataDir: string): string | null {
+  const raw = dir.trim();
+  if (!raw) return null;
+  if (!path.isAbsolute(raw)) return 'not_absolute';
+  if (/^[\\/]{2}/.test(raw)) return 'unc';
+  if (raw.length > 240) return 'too_long';
+  if (raw.split(/[\\/]/).some((seg) => RESERVED.test(seg.trim()))) return 'reserved_name';
+  const norm = (p: string) => {
+    const r = path.resolve(p).replace(/[\\/]+$/, '');
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  const d = norm(raw);
+  for (const sub of ['files', 'tmp']) {
+    const s = norm(path.join(dataDir, sub));
+    if (d === s || d.startsWith(s + path.sep)) return 'inside_data';
+  }
+  return null;
+}
+
 /** Datei per Hardlink (gleiches Laufwerk), sonst als Kopie anlegen. */
 async function linkOrCopy(src: string, dest: string): Promise<'link' | 'copy'> {
   try {
@@ -173,12 +210,16 @@ async function linkOrCopy(src: string, dest: string): Promise<'link' | 'copy'> {
 function readManifest(dir: string): Partial<SnapshotInfo> | null {
   try {
     const file = path.join(dir, 'manifest.json');
-    if (fs.statSync(file).size > 64 * 1024) return null;
+    const st = fs.statSync(file);
+    if (st.size > 64 * 1024) return null;
     const m = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
     if (m.format !== 'uni-hotspot-snapshot') return null;
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const now = Date.now();
+    // manipulierte/verstellte Uhr: ein Zeitpunkt in der Zukunft würde die Automatik dauerhaft blockieren -> Dateizeit, sonst 0
+    const created = num(m.createdAt) > now + 60_000 ? (st.mtimeMs <= now + 60_000 ? st.mtimeMs : 0) : num(m.createdAt);
     return {
-      createdAt: num(m.createdAt),
+      createdAt: created,
       appVersion: typeof m.appVersion === 'string' ? m.appVersion.slice(0, 40) : null,
       schemaVersion: typeof m.schemaVersion === 'number' ? m.schemaVersion : null,
       files: num(m.files),
@@ -191,7 +232,7 @@ function readManifest(dir: string): Partial<SnapshotInfo> | null {
   }
 }
 
-/** Sync-Retry fÃ¼r Windows (Virenscanner hÃ¤lt frische Dateien kurz offen). */
+/** Sync-Retry für Windows (Virenscanner hält frische Dateien kurz offen). */
 function retrySync<T>(fn: () => T): T {
   for (let i = 0; ; i++) {
     try {
@@ -208,42 +249,53 @@ export interface PendingRestoreResult {
   ok: boolean;
   id: string | null;
   code?: string;
+  /** Sicherungs-Einstellungen vor der Wiederherstellung – werden nach dem Öffnen der DB wieder gesetzt (nicht mit zurückgedreht) */
+  keepSettings?: Record<string, unknown>;
 }
 
+const KEEP_SETTINGS = ['backupDir', 'backupKeep', 'backupIntervalHours'] as const;
+
 /**
- * Beim Start (Instanz-Sperre gehalten, DB noch nicht geÃ¶ffnet): vorgemerkte Wiederherstellung ausfÃ¼hren.
- * Reihenfolge: Kopie nach `.restore-tmp` -> umbenennen auf hotspot.sqlite -> -wal/-shm der alten DB lÃ¶schen -> Vormerkung lÃ¶schen.
- * Bricht der Prozess irgendwo ab, bleibt die Vormerkung stehen und der nÃ¤chste Start wiederholt alles (die neue DB wird
- * nie mit einem WAL der alten geÃ¶ffnet). `onStep` nur fÃ¼r Tests (Absturz an einer Stelle simulieren).
+ * Beim Start (Instanz-Sperre gehalten, DB noch nicht geöffnet): vorgemerkte Wiederherstellung ausführen.
+ * Reihenfolge: Kopie nach `.restore-tmp` -> umbenennen auf hotspot.sqlite -> -wal/-shm der alten DB löschen -> Vormerkung löschen.
+ * Bricht der Prozess irgendwo ab, bleibt die Vormerkung stehen und der nächste Start wiederholt alles (die neue DB wird
+ * nie mit einem WAL der alten geöffnet). `onStep` nur für Tests (Absturz an einer Stelle simulieren).
  */
 export function applyPendingRestore(dataDir: string, onStep?: (step: 'copied' | 'renamed' | 'cleaned') => void): PendingRestoreResult | null {
   const pendingFile = path.join(dataDir, PENDING);
   if (!fs.existsSync(pendingFile)) return null;
-  let p: { db?: unknown; id?: unknown };
+  let p: { db?: unknown; id?: unknown; settings?: unknown };
   try {
     p = JSON.parse(fs.readFileSync(pendingFile, 'utf8')) as typeof p;
   } catch {
     p = {};
   }
+  const keepSettings: Record<string, unknown> = {};
+  if (p.settings && typeof p.settings === 'object') for (const k of KEEP_SETTINGS) if (k in p.settings) keepSettings[k] = (p.settings as Record<string, unknown>)[k];
   const id = typeof p.id === 'string' && SNAPSHOT_RE.test(p.id) ? p.id : null;
   const src = typeof p.db === 'string' && path.isAbsolute(p.db) && path.basename(p.db) === 'hotspot.sqlite' ? p.db : null;
   try {
-    if (!src || !id) throw new HttpError(400, 'restore_invalid', 'Vormerkung ungÃ¼ltig');
-    inspectDbFile(src); // erneut prÃ¼fen: Sicherung kÃ¶nnte seit dem Vormerken verÃ¤ndert worden sein
+    if (!src || !id) throw new HttpError(400, 'restore_invalid', 'Vormerkung ungültig');
+    inspectDbFile(src); // erneut prüfen: Sicherung könnte seit dem Vormerken verändert worden sein
   } catch (err) {
     fs.rmSync(pendingFile, { force: true });
     return { ok: false, id, code: err instanceof HttpError ? err.code : 'restore_failed' };
   }
   const target = path.join(dataDir, 'hotspot.sqlite');
   const tmp = target + '.restore-tmp';
+  const dropWal = () => {
+    for (const suffix of ['-wal', '-shm', '-journal']) retrySync(() => fs.rmSync(target + suffix, { force: true }));
+  };
   retrySync(() => fs.copyFileSync(src, tmp));
   onStep?.('copied');
+  // WAL/SHM der alten DB VOR dem Umbenennen löschen: die neue Datei liegt nie neben einem fremden WAL
+  dropWal();
   retrySync(() => fs.renameSync(tmp, target));
   onStep?.('renamed');
-  for (const suffix of ['-wal', '-shm', '-journal']) retrySync(() => fs.rmSync(target + suffix, { force: true }));
+  dropWal(); // idempotent (falls ein abgebrochener Vorlauf dazwischen lag)
   onStep?.('cleaned');
   fs.rmSync(pendingFile, { force: true });
-  return { ok: true, id };
+  return { ok: true, id, keepSettings };
 }
 
 export class BackupService {
@@ -252,7 +304,7 @@ export class BackupService {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private readonly deps: { db: DB; dataDir: string; settings: SettingsStore; log: (msg: string, extra?: unknown) => void; onChange?: () => void };
-  /** Testhaken: simulierter Absturz/Anhalten wÃ¤hrend des Sicherns */
+  /** Testhaken: simulierter Absturz/Anhalten während des Sicherns */
   onStep: ((step: 'db' | 'files') => void | Promise<void>) | null = null;
 
   constructor(deps: BackupService['deps']) {
@@ -269,23 +321,33 @@ export class BackupService {
     return this.busy;
   }
 
-  list(): SnapshotInfo[] {
-    const dir = this.dir();
-    if (!isRealDir(dir)) return [];
+  /** Sicherungen im Zielordner; wirft nie (unlesbarer Ordner -> leere Liste + Fehlercode für die Oberfläche). */
+  listSafe(): { items: SnapshotInfo[]; error: string | null } {
     const out: SnapshotInfo[] = [];
-    for (const name of fs.readdirSync(dir)) {
-      const m = SNAPSHOT_RE.exec(name);
-      if (!m || !isRealDir(path.join(dir, name))) continue;
-      const man = readManifest(path.join(dir, name));
-      if (!man) continue;
-      out.push({ id: name, reason: m[3] as SnapshotReason, createdAt: man.createdAt ?? 0, appVersion: man.appVersion ?? null, schemaVersion: man.schemaVersion ?? null, files: man.files ?? 0, bytes: man.bytes ?? 0, dbBytes: man.dbBytes ?? 0, missing: man.missing ?? 0 });
+    try {
+      const dir = this.dir();
+      if (!fs.existsSync(dir)) return { items: [], error: null };
+      if (!isRealDir(dir)) return { items: [], error: 'not_a_dir' };
+      for (const name of fs.readdirSync(dir)) {
+        const m = SNAPSHOT_RE.exec(name);
+        if (!m || !isRealDir(path.join(dir, name))) continue;
+        const man = readManifest(path.join(dir, name));
+        if (!man) continue;
+        out.push({ id: name, reason: m[3] as SnapshotReason, createdAt: man.createdAt ?? 0, appVersion: man.appVersion ?? null, schemaVersion: man.schemaVersion ?? null, files: man.files ?? 0, bytes: man.bytes ?? 0, dbBytes: man.dbBytes ?? 0, missing: man.missing ?? 0 });
+      }
+    } catch (err) {
+      return { items: [], error: (err as NodeJS.ErrnoException).code ?? 'unreadable' };
     }
-    return out.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+    return { items: out.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)), error: null };
   }
 
-  /** Pfad eines Snapshots aus seiner ID â€“ nur gÃ¼ltige Namen direkt im Zielordner, kein Symlink. */
+  list(): SnapshotInfo[] {
+    return this.listSafe().items;
+  }
+
+  /** Pfad eines Snapshots aus seiner ID – nur gültige Namen direkt im Zielordner, kein Symlink. */
   private resolve(id: string): string {
-    if (!SNAPSHOT_RE.test(id)) throw new HttpError(400, 'restore_invalid', 'UngÃ¼ltige Sicherungs-ID', 'id');
+    if (!SNAPSHOT_RE.test(id)) throw new HttpError(400, 'restore_invalid', 'Ungültige Sicherungs-ID', 'id');
     const p = path.join(this.dir(), id);
     if (!isRealDir(p)) throw new HttpError(404, 'restore_not_found', 'Sicherung nicht gefunden');
     return p;
@@ -298,31 +360,38 @@ export class BackupService {
     return run;
   }
 
+  /**
+   * Alles in try/finally: ein Dateisystemfehler (EPERM durch Virenscanner, Laufwerk weg …) darf weder den Prozess beenden
+   * noch „busy“ hängen lassen.
+   */
   private async doCreate(reason: SnapshotReason): Promise<SnapshotInfo> {
-    const target = this.dir();
+    let tmp: string | null = null;
     try {
-      fs.mkdirSync(target, { recursive: true });
-      fs.accessSync(target, fs.constants.W_OK);
-    } catch {
-      throw new HttpError(400, 'backup_dir_not_writable', 'Zielordner kann nicht angelegt/beschrieben werden', target);
-    }
-    if (!isRealDir(target)) throw new HttpError(400, 'backup_dir_not_writable', 'Zielordner ist kein Ordner', target);
-    this.busy = true;
-    this.deps.onChange?.();
-    // Reste abgebrochener LÃ¤ufe (Absturz/kill) entfernen â€“ es lÃ¤uft immer nur ein Snapshot
-    for (const name of fs.readdirSync(target)) {
-      if (name.endsWith('.partial') && SNAPSHOT_RE.test(name.slice(0, -8))) fs.rmSync(path.join(target, name), { recursive: true, force: true, maxRetries: 3 });
-    }
-    const prev = this.list()[0] ?? null;
-    let id = `snapshot-${stamp()}-${reason}`;
-    for (let i = 2; fs.existsSync(path.join(target, id)) || fs.existsSync(path.join(target, id + '.partial')); i++) id = `snapshot-${stamp()}-${i}-${reason}`;
-    const tmp = path.join(target, id + '.partial');
-    try {
+      this.busy = true;
+      this.deps.onChange?.();
+      const target = this.dir();
+      const problem = backupDirProblem(this.deps.settings.get().backupDir, this.deps.dataDir);
+      if (problem) throw new HttpError(400, 'backup_dir_invalid', 'Zielordner ungültig', problem);
+      try {
+        fs.mkdirSync(target, { recursive: true });
+        fs.accessSync(target, fs.constants.W_OK);
+      } catch {
+        throw new HttpError(400, 'backup_dir_not_writable', 'Zielordner kann nicht angelegt/beschrieben werden', target);
+      }
+      if (!isRealDir(target)) throw new HttpError(400, 'backup_dir_not_writable', 'Zielordner ist kein Ordner', target);
+      // Reste abgebrochener Läufe (Absturz/kill, nicht löschbare Sicherungen) entfernen – es läuft immer nur ein Snapshot
+      for (const name of fs.readdirSync(target)) {
+        if (name.endsWith('.partial') && SNAPSHOT_RE.test(name.slice(0, -8))) rmLogged(path.join(target, name), this.deps.log);
+      }
+      const prev = this.list()[0] ?? null;
+      let id = `snapshot-${stamp()}-${reason}`;
+      for (let i = 2; fs.existsSync(path.join(target, id)) || fs.existsSync(path.join(target, id + '.partial')); i++) id = `snapshot-${stamp()}-${i}-${reason}`;
+      tmp = path.join(target, id + '.partial');
       fs.mkdirSync(tmp);
       const dbFile = path.join(tmp, 'hotspot.sqlite');
       await sqliteBackup(this.deps.db, dbFile, { rate: 256 });
       await this.onStep?.('db');
-      // eigenstÃ¤ndige Einzeldatei (kein WAL) + Liste der referenzierten Dateien genau aus dieser Kopie
+      // eigenständige Einzeldatei (kein WAL) + Liste der referenzierten Dateien genau aus dieser Kopie
       const snap = new DatabaseSync(dbFile);
       let hashes: string[];
       let schemaVersion: number;
@@ -347,52 +416,91 @@ export class BackupService {
           if (this.stopped) throw new HttpError(503, 'backup_failed', 'Abgebrochen (App wird beendet)');
         }
         await fsp.mkdir(path.dirname(dest), { recursive: true });
-        try {
-          // inkrementell: gleiche Datei aus dem vorigen Snapshot verlinken (auch wenn der Zielordner auf einem anderen Laufwerk liegt)
-          const fromPrev = prevFiles && fs.existsSync(path.join(prevFiles, rel)) ? path.join(prevFiles, rel) : null;
-          await linkOrCopy(fromPrev ?? path.join(dataFiles, rel), dest);
-          bytes += (await fsp.stat(dest)).size;
-          files++;
-        } catch {
-          missing++; // Originaldatei fehlt (z. B. gerade gelÃ¶scht) â€“ Snapshot bleibt nutzbar
+        // inkrementell: gleiche Datei aus dem vorigen Snapshot verlinken (auch wenn der Zielordner auf einem anderen Laufwerk liegt);
+        // verschwindet sie dort gerade (vorige Sicherung gelöscht), aus dem Datenordner holen
+        const sources = [...(prevFiles ? [path.join(prevFiles, rel)] : []), path.join(dataFiles, rel)];
+        let ok = false;
+        for (const src of sources) {
+          try {
+            await linkOrCopy(src, dest);
+            bytes += (await fsp.stat(dest)).size;
+            files++;
+            ok = true;
+            break;
+          } catch {
+            /* nächste Quelle */
+          }
         }
+        if (!ok) missing++; // Originaldatei fehlt (z. B. gerade gelöscht) – Snapshot bleibt nutzbar
         if (i === Math.floor(hashes.length / 2)) await this.onStep?.('files');
       }
       if (!hashes.length) await this.onStep?.('files');
       const info: SnapshotInfo = { id, reason, createdAt: Date.now(), appVersion: APP_VERSION, schemaVersion, files, bytes, dbBytes: fs.statSync(dbFile).size, missing };
       fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify({ format: 'uni-hotspot-snapshot', formatVersion: 1, ...info }, null, 2));
-      retrySync(() => fs.renameSync(tmp, path.join(target, id)));
+      const done = tmp;
+      retrySync(() => fs.renameSync(done, path.join(target, id)));
+      tmp = null;
       this.deps.log(`Sicherung ${id}: ${files} Datei(en)${missing ? `, ${missing} fehlend` : ''}`);
       this.prune();
       return info;
     } catch (err) {
-      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
+      if (tmp) rmLogged(tmp, this.deps.log);
       if (err instanceof HttpError) throw err;
       this.deps.log('Sicherung fehlgeschlagen', { code: (err as NodeJS.ErrnoException).code });
-      throw new HttpError(500, 'backup_failed', 'Sicherung fehlgeschlagen', (err as NodeJS.ErrnoException).code);
+      throw new HttpError(500, 'backup_failed', 'Sicherung fehlgeschlagen', (err as NodeJS.ErrnoException).code ?? 'unknown');
     } finally {
       this.busy = false;
       this.deps.onChange?.();
     }
   }
 
-  /** Aufbewahrung: nur automatische Snapshots werden ausgedÃ¼nnt (manuelle und "vor Wiederherstellung" bleiben). */
+  /** Aufbewahrung: nur automatische Snapshots werden ausgedünnt (manuelle und "vor Wiederherstellung" bleiben). Wirft nie. */
   private prune(): void {
-    const keep = this.deps.settings.get().backupKeep;
-    for (const s of this.list().filter((x) => x.reason === 'auto').slice(keep)) this.remove(s.id);
+    try {
+      const keep = this.deps.settings.get().backupKeep;
+      for (const s of this.list().filter((x) => x.reason === 'auto').slice(keep)) {
+        try {
+          this.remove(s.id);
+        } catch (err) {
+          this.deps.log('Alte Sicherung konnte nicht entfernt werden', { code: (err as HttpError).code });
+        }
+      }
+    } catch (err) {
+      this.deps.log('Aufbewahrung fehlgeschlagen', { code: (err as NodeJS.ErrnoException).code });
+    }
   }
 
+  /**
+   * Erst in `<id>.partial` umbenennen (gilt sofort nicht mehr als Sicherung), dann löschen. Scheitert das Löschen
+   * (gesperrte Datei), räumt der nächste Sicherungslauf den Rest weg.
+   */
   remove(id: string): void {
     const p = this.resolve(id);
-    fs.rmSync(p, { recursive: true, force: true, maxRetries: 3 });
+    const doomed = p + '.partial';
+    try {
+      retrySync(() => fs.renameSync(p, doomed));
+    } catch (err) {
+      throw new HttpError(409, 'backup_failed', 'Sicherung ist gesperrt', (err as NodeJS.ErrnoException).code ?? 'locked');
+    }
+    rmLogged(doomed, this.deps.log);
     this.deps.onChange?.();
   }
 
   /**
-   * Wiederherstellung vormerken: prÃ¼fen, Ist-Zustand sichern, fehlende Originaldateien Ã¼bernehmen (Hash geprÃ¼ft),
+   * Wiederherstellung vormerken: prüfen, Ist-Zustand sichern, fehlende Originaldateien übernehmen (Hash geprüft),
    * Vormerkung schreiben. Der Austausch der DB passiert beim Neustart (applyPendingRestore).
    */
   async stageRestore(id: string): Promise<{ preRestore: string; missingFiles: number; schemaVersion: number }> {
+    try {
+      return await this.doStageRestore(id);
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      this.deps.log('Wiederherstellung vorbereiten fehlgeschlagen', { code: (err as NodeJS.ErrnoException).code });
+      throw new HttpError(500, 'restore_failed', 'Wiederherstellung fehlgeschlagen', (err as NodeJS.ErrnoException).code ?? 'unknown');
+    }
+  }
+
+  private async doStageRestore(id: string): Promise<{ preRestore: string; missingFiles: number; schemaVersion: number }> {
     const dir = this.resolve(id);
     const dbFile = path.join(dir, 'hotspot.sqlite');
     const { version } = inspectDbFile(dbFile);
@@ -409,7 +517,7 @@ export class BackupService {
       const part = path.join(this.deps.dataDir, 'tmp', `restore-${crypto.randomBytes(6).toString('hex')}.part`);
       await fsp.mkdir(path.dirname(part), { recursive: true });
       await linkOrCopy(path.join(dir, 'files', rel), part);
-      // manipulierte Sicherung: Inhalt muss zum Namen (SHA-256) passen, sonst wÃ¼rde der Speicher falsche Inhalte ausliefern
+      // manipulierte Sicherung: Inhalt muss zum Namen (SHA-256) passen, sonst würde der Speicher falsche Inhalte ausliefern
       if ((await sha256File(part)) !== h) {
         await fsp.rm(part, { force: true });
         continue;
@@ -428,34 +536,45 @@ export class BackupService {
     }
     const pendingFile = path.join(this.deps.dataDir, PENDING);
     const tmp = `${pendingFile}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ id, db: dbFile, stagedAt: Date.now() }));
+    // Sicherungs-Einstellungen gehören nicht zum wiederhergestellten Stand: nach dem Austausch wieder setzen
+    const st = this.deps.settings.get();
+    const settings = Object.fromEntries(KEEP_SETTINGS.map((k) => [k, st[k]]));
+    fs.writeFileSync(tmp, JSON.stringify({ id, db: dbFile, stagedAt: Date.now(), settings }));
     retrySync(() => fs.renameSync(tmp, pendingFile));
     this.deps.log(`Wiederherstellung von ${id} vorgemerkt (Ist-Zustand gesichert als ${pre.id})`);
     return { preRestore: pre.id, missingFiles, schemaVersion: version };
   }
 
-  /** Automatische Sicherung: prÃ¼ft stÃ¼ndlich (erstmals nach 2 min), ob die letzte automatische Ã¤lter als das Intervall ist. */
+  /** Automatische Sicherung: prüft stündlich (erstmals nach 2 min), ob die letzte automatische älter als das Intervall ist. */
   start(): void {
     this.stopped = false;
     const schedule = (ms: number) => {
       this.timer = setTimeout(() => {
-        this.autoTick();
-        if (!this.stopped) schedule(3_600_000);
+        try {
+          this.autoTick();
+        } finally {
+          if (!this.stopped) schedule(3_600_000);
+        }
       }, ms);
       this.timer.unref();
     };
     schedule(120_000);
   }
 
-  /** FÃ¤llige automatische Sicherung anstoÃŸen (true = gestartet). */
+  /** Fällige automatische Sicherung anstoßen (true = gestartet). Wirft nie (läuft im Timer). */
   autoTick(): boolean {
-    if (this.stopped || this.busy) return false;
-    const hours = this.deps.settings.get().backupIntervalHours;
-    if (!hours) return false;
-    const last = this.list().find((s) => s.reason === 'auto');
-    if (last && Date.now() - last.createdAt < hours * 3_600_000 - 60_000) return false;
-    void this.create('auto').catch((err: unknown) => this.deps.log('Automatische Sicherung fehlgeschlagen', { code: (err as HttpError).code }));
-    return true;
+    try {
+      if (this.stopped || this.busy) return false;
+      const hours = this.deps.settings.get().backupIntervalHours;
+      if (!hours) return false;
+      const last = this.list().find((s) => s.reason === 'auto');
+      if (last && Date.now() - last.createdAt < hours * 3_600_000 - 60_000) return false;
+      void this.create('auto').catch((err: unknown) => this.deps.log('Automatische Sicherung fehlgeschlagen', { code: (err as HttpError).code, detail: (err as HttpError).detail }));
+      return true;
+    } catch (err) {
+      this.deps.log('Automatische Sicherung: Prüfung fehlgeschlagen', { code: (err as NodeJS.ErrnoException).code });
+      return false;
+    }
   }
 
   async stop(): Promise<void> {

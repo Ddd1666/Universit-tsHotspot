@@ -50,7 +50,8 @@ export function registerRoutes(app: FastifyInstance, s: Services): void {
 
   /* ------------------------------------------------------------ Basis */
 
-  app.get('/api/health', async () => ({ ok: true, version: APP_VERSION, mock: s.config.mockOllama }));
+  // startedAt: die Oberfläche erkennt daran den Neustart nach einer Wiederherstellung (statt fester Wartezeit)
+  app.get('/api/health', async () => ({ ok: true, version: APP_VERSION, mock: s.config.mockOllama, startedAt: s.startedAt, restoring: s.restoring }));
 
   app.get('/api/bootstrap', async () => ({
     version: APP_VERSION,

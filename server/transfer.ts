@@ -1,8 +1,10 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { once } from 'node:events';
+import { finished } from 'node:stream/promises';
 import type { Readable, Writable } from 'node:stream';
 import { APP_VERSION } from './config.ts';
 import { tx, type DB } from './db.ts';
@@ -61,9 +63,11 @@ export class ZipWriter {
   }
 
   private async write(buf: Buffer): Promise<void> {
-    if (this.out.destroyed) throw new Error('Ausgabe geschlossen');
+    if (this.out.destroyed) throw Object.assign(new Error('Ausgabe geschlossen'), { code: 'ERR_STREAM_DESTROYED' });
     this.offset += buf.length;
-    if (!this.out.write(buf)) await once(this.out, 'drain');
+    // auf "drain" ODER "close" warten: bricht der Download ab, käme "drain" nie und der Export hinge für immer
+    if (!this.out.write(buf)) await Promise.race([once(this.out, 'drain'), once(this.out, 'close')]);
+    if (this.out.destroyed) throw Object.assign(new Error('Ausgabe geschlossen'), { code: 'ERR_STREAM_DESTROYED' });
   }
 
   /** Eintrag mit bekannter Größe; Daten kommen als Stream oder Buffer. */
@@ -175,15 +179,20 @@ export type ExportScope = { kind: 'all' } | { kind: 'subject'; id: number };
 /** Zeilenpuffer für library.jsonl (Temp-Datei: Größe muss vor dem ZIP-Eintrag bekannt sein). */
 async function writeJsonl(file: string, produce: (emit: (rec: object) => Promise<void>) => Promise<void>): Promise<void> {
   const ws = fs.createWriteStream(file);
+  let failed: Error | null = null;
+  // Schreibfehler (Platte voll …) als Fehler weitergeben statt unbehandeltem "error"-Ereignis
+  ws.on('error', (err) => (failed = err));
   const emit = async (rec: object) => {
-    if (!ws.write(JSON.stringify(rec) + '\n')) await once(ws, 'drain');
+    if (failed) throw failed;
+    if (!ws.write(JSON.stringify(rec) + '\n')) await Promise.race([once(ws, 'drain'), once(ws, 'close')]);
   };
   try {
     await produce(emit);
   } finally {
     ws.end();
-    await once(ws, 'close');
+    await finished(ws).catch(() => {});
   }
+  if (failed) throw failed;
 }
 
 interface ExportCounts {
@@ -362,6 +371,13 @@ export interface ImportReport {
 const str = (v: unknown, max: number): string | null => (typeof v === 'string' ? v.slice(0, max) : null);
 const int = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+/** Zeitstempel (ms) nur im Bereich, den Date darstellen kann (0 … 8,64e15), sonst null */
+const tsOrNull = (v: unknown): number | null => {
+  const n = int(v);
+  return n !== null && n >= 0 && n <= 8.64e15 ? n : null;
+};
+/** Schlüssel für Dedupe im Speicher (statt einer Abfrage je Datensatz über ungeindexte Textspalten) */
+const dedupeKey = (...parts: string[]) => crypto.createHash('sha1').update(parts.join('\u0000')).digest('base64');
 
 /** Positionsangabe als JSON-Text (Karten/Fragen) – nur bekannte Felder. */
 function cleanLoc(v: unknown): string | null {
@@ -401,9 +417,9 @@ export interface ImportDeps {
  * Importiert eine Export-Datei. Quellen ohne passenden Inhalt/Typ werden zur Verarbeitung eingereiht (Rückgabe
  * `sources.requeued` > 0 -> Ingest wecken). Vektoren berechnet die Embedding-Queue nach.
  */
-export async function importLibrary(deps: ImportDeps, zipPath: string): Promise<ImportReport> {
+export async function importLibrary(deps: ImportDeps, zipPath: string, opts: { failAfterBatch?: number } = {}): Promise<ImportReport> {
   try {
-    return await doImport(deps, zipPath);
+    return await doImport(deps, zipPath, opts);
   } catch (err) {
     // Zip-Slip/-Bombe/kaputtes Archiv (auch erst beim Entpacken erkannt) -> ein Code, Detail = Grund
     if (err instanceof ZipSecurityError) throw new HttpError(400, 'import_invalid', 'Keine gültige Export-Datei', err.code);
@@ -411,7 +427,7 @@ export async function importLibrary(deps: ImportDeps, zipPath: string): Promise<
   }
 }
 
-async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport> {
+async function doImport(deps: ImportDeps, zipPath: string, opts: { failAfterBatch?: number }): Promise<ImportReport> {
   const { db, blobs } = deps;
   const zipSize = fs.statSync(zipPath).size;
   const report: ImportReport = {
@@ -510,6 +526,22 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
       ),
     };
     const now = Date.now();
+    const ts = (v: unknown) => tsOrNull(v) ?? now;
+    // vorhandene Karten/Notizen einmal einlesen: O(1) je Datensatz statt Volltextvergleich über die ganze Tabelle
+    // (in Paketen nach ID, damit auch 100 000 Karten den Event-Loop nicht am Stück blockieren)
+    const cardKeys = new Set<string>();
+    const cardPage = db.prepare('SELECT id, type, front, back FROM cards WHERE id > ? ORDER BY id LIMIT 2000');
+    for (let last = 0; ; ) {
+      const rows = cardPage.all(last) as { id: number; type: string; front: string; back: string }[];
+      for (const r of rows) cardKeys.add(dedupeKey(r.type, r.front, r.back));
+      if (rows.length < 2000) break;
+      last = rows[rows.length - 1]!.id;
+      await new Promise((r) => setImmediate(r));
+    }
+    const noteKeys = new Set<string>();
+    for (const r of db.prepare('SELECT title, body FROM notes').iterate() as Iterable<{ title: string; body: string }>) noteKeys.add(dedupeKey(r.title, r.body));
+    /** neue Quellen: Zielstatus erst am Ende setzen – bis dahin 'processing' (Abbruch/Absturz -> beim Start/catch 'queued') */
+    const intended = new Map<number, { status: string; processedAt: number | null }>();
 
     const handle = (rec: Record<string, unknown>): void => {
       switch (rec.t) {
@@ -571,6 +603,9 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
             report.sources.requeued++;
           }
           const parent = int(rec.parent) !== null ? (sourceMap.get(rec.parent as number) ?? null) : null;
+          const processedAt = status === 'queued' ? null : now;
+          // bis zum Abschluss 'processing': die Verarbeitung fasst die Quelle nicht an; ein Absturz mittendrin wird beim
+          // nächsten Start zu 'queued' (neu verarbeiten) statt halb importiert als „fertig“ zu gelten
           const id = Number(
             ins.source.run(
               subj(rec.subject),
@@ -581,13 +616,14 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
               fs.statSync(file).size,
               det.mime,
               det.kind,
-              status,
+              status === 'unsupported' ? status : 'processing',
               detail,
               status === 'ready' ? int(rec.pageCount) : null,
-              int(rec.importedAt) ?? now,
-              status === 'queued' ? null : now,
+              ts(rec.importedAt),
+              null,
             ).lastInsertRowid,
           );
+          if (status !== 'unsupported') intended.set(id, { status, processedAt });
           sourceMap.set(key, id);
           if (status === 'ready') newSources.add(id);
           report.sources.added++;
@@ -611,7 +647,8 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
           const title = str(rec.title, 200)?.trim();
           const body = str(rec.body, 200_000) ?? '';
           if (!title) throw new Error('skip');
-          if (db.prepare('SELECT 1 FROM notes WHERE title = ? AND body = ?').get(title, body)) {
+          const nk = dedupeKey(title, body);
+          if (noteKeys.has(nk)) {
             report.notes.duplicate++;
             return;
           }
@@ -631,7 +668,8 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
             scope = {};
           }
           const level = ['tldr', 'outline', 'detailed', 'cheatsheet'].includes(rec.level as string) ? (rec.level as string) : null;
-          ins.note.run(title, body, level, JSON.stringify(scope), JSON.stringify(cites), subj(rec.subject), rec.ai ? 1 : 0, rec.edited ? 1 : 0, int(rec.createdAt) ?? now, int(rec.updatedAt) ?? now);
+          ins.note.run(title, body, level, JSON.stringify(scope), JSON.stringify(cites), subj(rec.subject), rec.ai ? 1 : 0, rec.edited ? 1 : 0, ts(rec.createdAt), ts(rec.updatedAt));
+          noteKeys.add(nk);
           report.notes.added++;
           return;
         }
@@ -641,7 +679,8 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
           const front = str(rec.front, 2000);
           const back = str(rec.back, 4000);
           if (!type || !status || !front || back === null) throw new Error('skip');
-          if (db.prepare('SELECT 1 FROM cards WHERE type = ? AND front = ? AND back = ?').get(type, front, back)) {
+          const ck = dedupeKey(type, front, back);
+          if (cardKeys.has(ck)) {
             report.cards.duplicate++;
             return;
           }
@@ -663,17 +702,19 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
               ease !== null && ease >= 1.3 && ease <= 5 ? ease : 2.5,
               Math.max(0, int(rec.intervalDays) ?? 0),
               Math.max(0, int(rec.lapses) ?? 0),
-              int(rec.due),
-              int(rec.lastReview),
-              int(rec.createdAt) ?? now,
-              int(rec.updatedAt) ?? now,
+              tsOrNull(rec.due),
+              tsOrNull(rec.lastReview),
+              ts(rec.createdAt),
+              ts(rec.updatedAt),
             ).lastInsertRowid,
           );
           for (const r of (Array.isArray(rec.reviews) ? rec.reviews : []).slice(0, 10_000) as unknown[][]) {
             const rating = Array.isArray(r) ? int(r[0]) : null;
-            if (rating === null || rating < 1 || rating > 4 || int(r[1]) === null) continue;
-            ins.review.run(id, rating, r[1] as number, Math.max(0, int(r[2]) ?? 0), num(r[3]) ?? 2.5);
+            const at = Array.isArray(r) ? tsOrNull(r[1]) : null;
+            if (rating === null || rating < 1 || rating > 4 || at === null) continue;
+            ins.review.run(id, rating, at, Math.max(0, int(r[2]) ?? 0), num(r[3]) ?? 2.5);
           }
+          cardKeys.add(ck);
           report.cards.added++;
           return;
         }
@@ -693,7 +734,7 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
             }
           }
           const { sid, cid } = mapRef(rec);
-          const r = ins.question.run(type, question, options, answer, str(rec.explanation, 4000), str(rec.topic, 200), fp, subj(rec.subject), sid, cid, str(rec.sourceName, 255), cleanLoc(rec.loc), int(rec.createdAt) ?? now);
+          const r = ins.question.run(type, question, options, answer, str(rec.explanation, 4000), str(rec.topic, 200), fp, subj(rec.subject), sid, cid, str(rec.sourceName, 255), cleanLoc(rec.loc), ts(rec.createdAt));
           if (Number(r.changes)) report.questions.added++;
           else report.questions.duplicate++;
           return;
@@ -717,36 +758,46 @@ async function doImport(deps: ImportDeps, zipPath: string): Promise<ImportReport
       });
       batch = [];
     };
-    for await (const line of lines(await zip.openStream(libEntry, libEntry.size))) {
-      if (!line.trim()) continue;
-      let rec: unknown;
-      try {
-        rec = JSON.parse(line);
-      } catch {
-        report.skippedRecords++;
-        continue;
-      }
-      if (!rec || typeof rec !== 'object') {
-        report.skippedRecords++;
-        continue;
-      }
-      batch.push(rec as Record<string, unknown>);
-      if (batch.length >= 300) {
-        flush();
-        await new Promise((r) => setImmediate(r));
-      }
-    }
-    flush();
-    // Abschnittszahl der neuen Quellen; Quellen ohne Abschnitte (Export unvollständig) neu verarbeiten
-    tx(db, () => {
-      const setCount = db.prepare('UPDATE sources SET chunk_count = ? WHERE id = ?');
-      for (const id of newSources) {
-        const n = chunkCount.get(id) ?? 0;
-        if (n) setCount.run(n, id);
-        else {
-          db.prepare("UPDATE sources SET status = 'queued', processed_at = NULL WHERE id = ?").run(id);
-          report.sources.requeued++;
+    try {
+      let batches = 0;
+      for await (const line of lines(await zip.openStream(libEntry, libEntry.size))) {
+        if (!line.trim()) continue;
+        let rec: unknown;
+        try {
+          rec = JSON.parse(line);
+        } catch {
+          report.skippedRecords++;
+          continue;
         }
+        if (!rec || typeof rec !== 'object') {
+          report.skippedRecords++;
+          continue;
+        }
+        batch.push(rec as Record<string, unknown>);
+        if (batch.length >= 150) {
+          flush();
+          if (++batches === opts.failAfterBatch) throw new Error('Test: Abbruch nach Paket');
+          await new Promise((r) => setImmediate(r));
+        }
+      }
+      flush();
+    } catch (err) {
+      // Abbruch mittendrin (kaputte Datei, Platte voll …): bereits angelegte Quellen neu verarbeiten lassen – nie „halb fertig“
+      tx(db, () => {
+        const q = db.prepare("UPDATE sources SET status = 'queued', processed_at = NULL WHERE id = ? AND status = 'processing'");
+        for (const id of intended.keys()) q.run(id);
+      });
+      throw err;
+    }
+    // Abschluss: Abschnittszahl + Zielstatus; Quellen ohne Abschnitte (Export unvollständig) neu verarbeiten
+    tx(db, () => {
+      const setDone = db.prepare('UPDATE sources SET status = ?, chunk_count = ?, processed_at = ? WHERE id = ?');
+      for (const [id, want] of intended) {
+        const n = chunkCount.get(id) ?? 0;
+        if (want.status === 'ready' && !n) {
+          setDone.run('queued', 0, null, id);
+          report.sources.requeued++;
+        } else setDone.run(want.status, n, want.processedAt, id);
       }
     });
     return report;

@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { APP_VERSION } from './config.ts';
 import { SCHEMA_VERSION } from './db.ts';
@@ -7,68 +6,46 @@ import { hasModel } from './ollama/status.ts';
 import { redactText, sanitizeLogLines } from './logs.ts';
 import type { Services } from './app.ts';
 
-/** Ordnergröße (Bytes, Anzahl Dateien) – Symlinks werden nicht verfolgt. */
-async function dirSize(dir: string): Promise<{ bytes: number; files: number }> {
-  let bytes = 0;
-  let files = 0;
-  const walk = async (d: string) => {
-    let list: fs.Dirent[];
-    try {
-      list = await fsp.readdir(d, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of list) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) await walk(p);
-      else if (e.isFile()) {
-        try {
-          bytes += (await fsp.stat(p)).size;
-          files++;
-        } catch {
-          /* gerade gelöscht */
-        }
-      }
-    }
-  };
-  await walk(dir);
-  return { bytes, files };
-}
-
 /**
  * Diagnose: Versionen, Ollama-/Werkzeug-Status, Datenordner (Größe, frei, beschreibbar), Zähler, Sicherungen.
  * Enthält keine Inhalte aus Dokumenten (nur Zahlen, Modell-/Werkzeugnamen, Pfade des Programms/Datenordners).
  */
 export async function collectDiagnostics(s: Services): Promise<Record<string, unknown>> {
   const dataDir = s.config.dataDir;
-  let writable = true;
-  try {
-    fs.accessSync(dataDir, fs.constants.W_OK);
-  } catch {
-    writable = false;
-  }
-  let freeBytes: number | null;
-  try {
-    const st = fs.statfsSync(dataDir);
-    freeBytes = st.bavail * st.bsize;
-  } catch {
-    freeBytes = null;
-  }
-  const sizeOf = async (sub: string) => (await dirSize(path.join(dataDir, sub))).bytes;
-  const dbBytes = ['hotspot.sqlite', 'hotspot.sqlite-wal'].reduce((n, f) => {
+  const errors: string[] = [];
+  /** einzelner Teil darf scheitern (unlesbarer Ordner, gesperrte Datei) – die Diagnose liefert trotzdem (nie 500) */
+  const safe = <T>(label: string, fn: () => T, fallback: T): T => {
     try {
-      return n + fs.statSync(path.join(dataDir, f)).size;
-    } catch {
-      return n;
+      return fn();
+    } catch (err) {
+      errors.push(`${label}:${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      return fallback;
     }
-  }, 0);
-  const files = await dirSize(path.join(dataDir, 'files'));
-  const backupDir = s.backup.dir();
-  const backups = s.backup.list();
+  };
+  const writable = safe('writable', () => (fs.accessSync(dataDir, fs.constants.W_OK), true), false);
+  const freeBytes = safe(
+    'free',
+    () => {
+      const st = fs.statfsSync(dataDir);
+      return st.bavail * st.bsize;
+    },
+    null as number | null,
+  );
+  const fileSize = (f: string) => safe(`stat`, () => (fs.existsSync(f) ? fs.statSync(f).size : 0), 0);
+  const dbBytes = fileSize(path.join(dataDir, 'hotspot.sqlite')) + fileSize(path.join(dataDir, 'hotspot.sqlite-wal'));
+  // Originaldateien aus der DB (eine Zeile je Inhalt) statt jede Datei per stat – bei 10 000+ Dateien sonst Sekunden je Aufruf
+  const files = safe('files', () => s.db.prepare('SELECT count(*) AS n, coalesce(sum(size), 0) AS bytes FROM (SELECT max(size) AS size FROM sources GROUP BY sha256)').get() as { n: number; bytes: number }, { n: 0, bytes: 0 });
+  const backupDir = safe('backupDir', () => s.backup.dir(), '');
+  const { items: backups, error: backupError } = s.backup.listSafe();
+  if (backupError) errors.push(`backups:${backupError}`);
+  // logisch (Hardlinks zählen mehrfach), aus den Manifesten – kein Durchlaufen der Snapshot-Ordner
+  const backupBytes = backups.reduce((n, b) => n + b.bytes + b.dbBytes, 0);
+  const logBytes = safe('logs', () => fs.readdirSync(path.join(dataDir, 'logs')).reduce((n, f) => n + fileSize(path.join(dataDir, 'logs', f)), 0), 0);
   const st = s.settings.get();
   const ollama = s.monitor.status;
-  const tools = s.media.tools();
-  const sqlite = (s.db.prepare('SELECT sqlite_version() AS v').get() as { v: string }).v;
+  const tools = safe('tools', () => s.media.tools(), { ffmpeg: null, whisper: null, models: {} } as unknown as ReturnType<Services['media']['tools']>);
+  const sqlite = safe('sqlite', () => (s.db.prepare('SELECT sqlite_version() AS v').get() as { v: string }).v, '?');
+  const q = safe('queue', () => s.queueStatus(), null);
   return {
     app: {
       version: APP_VERSION,
@@ -90,11 +67,12 @@ export async function collectDiagnostics(s: Services): Promise<Record<string, un
       version: ollama.version,
       models: ollama.models.length,
       running: ollama.running.map((r) => ({ name: r.name, gpuPercent: r.gpuPercent })),
-      required: [
-        { role: 'chat', model: st.chatModel },
-        { role: 'embedding', model: st.embeddingModel },
-        { role: 'vision', model: st.visionModel },
-      ].map((r) => ({ ...r, installed: ollama.reachable ? hasModel(ollama, r.model) : null })),
+      // je Modell eine Zeile (gemma3:4b für Chat und Bilder nur einmal)
+      required: [...new Set([st.chatModel, st.embeddingModel, st.visionModel])].map((model) => ({
+        model,
+        roles: (['chat', 'embedding', 'vision'] as const).filter((r) => ({ chat: st.chatModel, embedding: st.embeddingModel, vision: st.visionModel })[r] === model),
+        installed: ollama.reachable ? hasModel(ollama, model) : null,
+      })),
       error: ollama.error ? redactText(ollama.error).slice(0, 200) : null,
     },
     tools: { ffmpeg: !!tools.ffmpeg, whisper: !!tools.whisper, whisperModels: Object.keys(tools.models).sort() },
@@ -104,12 +82,19 @@ export async function collectDiagnostics(s: Services): Promise<Record<string, un
       freeBytes,
       // OneDrive & Co. synchronisieren SQLite-Dateien während des Schreibens -> Warnhinweis
       synced: /onedrive|dropbox|google drive|icloud/i.test(dataDir),
-      sizes: { db: dbBytes, files: files.bytes, backups: backupDir.startsWith(dataDir) ? await sizeOf(path.relative(dataDir, backupDir)) : null, logs: await sizeOf('logs') },
-      fileCount: files.files,
+      sizes: { db: dbBytes, files: files.bytes, backups: backupBytes, logs: logBytes },
+      fileCount: files.n,
     },
-    counts: s.library.stats(),
-    queue: s.queueStatus(),
-    backups: { dir: backupDir, count: backups.length, last: backups[0]?.createdAt ?? null, intervalHours: st.backupIntervalHours, keep: st.backupKeep },
+    counts: safe('counts', () => s.library.stats(), null),
+    // nur Zähler – keine Dateinamen laufender Verarbeitungen, keine Fehlertexte
+    queue: q && {
+      ingest: { queued: q.ingest.queued, processing: q.ingest.processing.length },
+      embed: { state: q.embed.state, pending: q.embed.pending, done: q.embed.done, failed: q.embed.failed },
+      media: q.media,
+      learn: q.learn,
+    },
+    backups: { dir: backupDir, count: backups.length, last: backups[0]?.createdAt ?? null, intervalHours: st.backupIntervalHours, keep: st.backupKeep, error: backupError },
+    errors,
   };
 }
 

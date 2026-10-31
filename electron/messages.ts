@@ -17,6 +17,7 @@ export const DIALOG_TEXT = {
     reload: 'Neu laden',
     quit: 'Beenden',
     restartFailed: 'Neustart nach der Wiederherstellung fehlgeschlagen. Bitte Uni-Hotspot neu starten.',
+    fatal: 'Uni-Hotspot wurde nach einem internen Fehler geordnet beendet. Deine Daten sind gespeichert. Details: Einstellungen → Diagnose → Bericht.',
   },
   en: {
     notBuilt: 'The web interface has not been built. Please run “npm run build” or start start.bat again.',
@@ -30,6 +31,7 @@ export const DIALOG_TEXT = {
     reload: 'Reload',
     quit: 'Quit',
     restartFailed: 'Restart after restoring failed. Please start Uni-Hotspot again.',
+    fatal: 'Uni-Hotspot was shut down after an internal error. Your data is saved. Details: Settings → Diagnostics → report.',
   },
 } satisfies Record<DialogLang, Record<string, unknown>>;
 

@@ -234,28 +234,56 @@ export class SqliteVectorStore implements VectorStore {
    * synchrone Laden den Server ~1,8 s am Stück). Ändert sich der Index währenddessen, wird abgebrochen – die nächste Suche
    * lädt dann wie bisher synchron.
    */
-  async warmupAsync(batch = 1000): Promise<void> {
+  async warmupAsync(batch = 1000, attempt = 1): Promise<void> {
     if (this.cache || this.loading) return;
-    if (this.repair() > 0) this.onRepaired?.();
-    const info = this.info();
-    if (!info.count || !info.dim) return;
+    // Index-Metadaten ohne Vektoren-Scan; Vektoren mit falscher Länge sammelt das Laden selbst ein (früher: eigener
+    // repair()-Durchlauf über alle BLOBs, 0,7 s Blockade am Stück bei 100k)
+    const dimRaw = getMeta(this.db, 'vector_dim');
+    const dim = dimRaw ? Number(dimRaw) : null;
+    const count = (this.db.prepare('SELECT count(*) AS n FROM embeddings').get() as { n: number }).n;
+    if (!count) return;
+    if (!dim) {
+      if (this.repair() > 0) this.onRepaired?.(); // ohne Dimension sind alle Vektoren ungültig (selten)
+      return;
+    }
     const gen = ++this.generation;
     this.loading = true;
+    let aborted = false;
     try {
-      const c = this.emptyCache(info.dim, info.count);
+      const c = this.emptyCache(dim, count);
+      const bad: number[] = [];
       const stmt = this.db.prepare('SELECT chunk_id, source_id, vec FROM embeddings WHERE chunk_id > ? ORDER BY chunk_id LIMIT ?');
       let last = 0;
       for (;;) {
         const rows = stmt.all(last, batch) as { chunk_id: number; source_id: number; vec: Uint8Array }[];
-        for (const row of rows) if (row.vec.byteLength === info.dim * 4) this.appendToCache(row.chunk_id, row.source_id, fromBlob(row.vec), c);
+        for (const row of rows) {
+          if (row.vec.byteLength === dim * 4) this.appendToCache(row.chunk_id, row.source_id, fromBlob(row.vec), c);
+          else bad.push(row.chunk_id);
+        }
         if (rows.length < batch) break;
         last = rows[rows.length - 1]!.chunk_id;
         await new Promise((r) => setImmediate(r));
-        if (gen !== this.generation || this.cache) return;
+        if (gen !== this.generation || this.cache) {
+          aborted = gen !== this.generation && !this.cache;
+          return;
+        }
+      }
+      if (bad.length) {
+        const list = jsonList(bad);
+        tx(this.db, () => {
+          this.db.prepare('DELETE FROM embeddings WHERE chunk_id IN (SELECT value FROM json_each(?))').run(list);
+          this.db.prepare('UPDATE chunks SET embed_state = 0 WHERE id IN (SELECT value FROM json_each(?))').run(list);
+        });
+        this.generation++;
+        this.onRepaired?.();
+        aborted = true; // Bestand geändert -> sauber neu laden
+        return;
       }
       if (gen === this.generation && !this.cache) this.cache = c;
     } finally {
       this.loading = false;
+      // Index hat sich währenddessen geändert (neue Vektoren eingebettet): später erneut versuchen statt dauerhaft aufzugeben
+      if (aborted && attempt < 5) setTimeout(() => void this.warmupAsync(batch, attempt + 1).catch(() => {}), 2000 * attempt).unref();
     }
   }
 
