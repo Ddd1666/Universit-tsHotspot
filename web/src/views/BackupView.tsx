@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { del, downloadFile, exportUrl, get, post, uploadRaw, waitForServer } from '../api';
+import { del, downloadFile, exportUrl, get, post, serverStartedAt, uploadRaw, waitForServer } from '../api';
 import { CopyCmd } from '../components/CopyCmd';
 import { Icon } from '../components/Icon';
 import { ViewHeader } from '../components/ViewHeader';
@@ -44,11 +44,12 @@ export function BackupView() {
     if (ok !== true) return;
     setWorking(true);
     try {
+      const before = await serverStartedAt();
       const r = await post<{ restarting: boolean; missingFiles: number; preRestore: string }>(`/api/backups/${encodeURIComponent(s.id)}/restore`, { confirm: true });
       if (r.missingFiles) toast(t('backup.missingFiles', { n: r.missingFiles }), 'error');
       if (r.restarting) {
         setRestarting(true);
-        await waitForServer();
+        await waitForServer(before);
         location.reload();
       } else {
         toast(t('backup.restartNeeded'), 'info');
@@ -122,7 +123,12 @@ export function BackupView() {
               <span className="spinner" aria-hidden="true" /> {t('backup.running')}
             </p>
           )}
-          {state && state.items.length === 0 && <p className="muted">{t('backup.empty')}</p>}
+          {state?.error && (
+            <p className="notice warn" role="alert">
+              <Icon name="alert" size={16} /> {t('backup.dirUnreadable', { code: state.error })}
+            </p>
+          )}
+          {state && !state.error && state.items.length === 0 && <p className="muted">{t('backup.empty')}</p>}
           {state && state.items.length > 0 && (
             <ul className="snapshot-list">
               {state.items.map((s) => (
@@ -178,7 +184,7 @@ export function BackupView() {
           </label>
           <label className="field">
             <span>{t('backup.dir')}</span>
-            {state && <CopyCmd cmd={state.dir} />}
+            {state && <CopyCmd cmd={state.dir} wrap />}
             <div className="row gap">
               <input className="input mono" value={dir} onChange={(e) => setDir(e.target.value)} placeholder={state?.defaultDir ?? ''} aria-label={t('backup.dirChange')} />
               <button className="btn small" disabled={dir.trim() === settings.backupDir} onClick={() => void saveDir(dir.trim())}>

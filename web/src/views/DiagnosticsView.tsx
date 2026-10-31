@@ -88,9 +88,9 @@ export function DiagnosticsView() {
             <h3>{t('wiz.models')}</h3>
             <ul className="wiz-checks">
               {d.ollama.required.map((r) => (
-                <li key={r.role}>
+                <li key={r.model}>
                   <div className="row gap wrap">
-                    <strong>{t(`wiz.role.${r.role}`)}</strong>
+                    <strong>{r.roles.map((x) => t(`wiz.role.${x}`)).join(' + ')}</strong>
                     <span className="mono">{r.model}</span>
                     <span className="spacer" />
                     {yes(r.installed, t('wiz.installed'), r.installed === null ? t('wiz.unknown') : t('wiz.missing'))}
@@ -117,15 +117,15 @@ export function DiagnosticsView() {
             <h2 id="dg-data">
               <Icon name="folder" /> {t('set.data')}
             </h2>
-            <CopyCmd cmd={d.dataDir.path} />
+            <CopyCmd cmd={d.dataDir.path} wrap />
             <dl className="kv">
               <Row label={t('diag.writable')}>{yes(d.dataDir.writable)}</Row>
               <Row label={t('diag.free')}>{d.dataDir.freeBytes !== null ? formatBytes(d.dataDir.freeBytes, lang) : '–'}</Row>
               <Row label={t('diag.db')}>{formatBytes(d.dataDir.sizes.db, lang)}</Row>
               <Row label={t('diag.files')}>{t('diag.filesVal', { n: d.dataDir.fileCount, size: formatBytes(d.dataDir.sizes.files, lang) })}</Row>
-              <Row label={t('diag.backups')}>{d.dataDir.sizes.backups !== null ? formatBytes(d.dataDir.sizes.backups, lang) : t('diag.elsewhere')}</Row>
+              <Row label={t('diag.backups')}>{formatBytes(d.dataDir.sizes.backups, lang)}</Row>
               <Row label={t('diag.logs')}>{formatBytes(d.dataDir.sizes.logs, lang)}</Row>
-              <Row label={t('diag.content')}>{t('set.stats', { sources: d.counts.sources, chunks: d.counts.chunks, vectors: d.counts.vectors, size: formatBytes(d.counts.bytes, lang) })}</Row>
+              {d.counts && <Row label={t('diag.content')}>{t('set.stats', { sources: d.counts.sources, chunks: d.counts.chunks, vectors: d.counts.vectors, size: formatBytes(d.counts.bytes, lang) })}</Row>}
             </dl>
             {d.dataDir.synced && (
               <p className="notice warn" role="note">

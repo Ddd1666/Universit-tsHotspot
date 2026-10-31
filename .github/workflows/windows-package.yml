@@ -2,6 +2,11 @@
 # Start: manuell (Actions -> "Windows-Paket" -> Run workflow) oder per Tag v*.
 # Ergebnis: Artefakt "Uni-Hotspot-win-x64" (Download = ZIP) mit Ordner Uni-Hotspot-<version>-win-x64/Uni-Hotspot.exe.
 # Enthält keine Modelle, kein whisper.cpp, kein ffmpeg (bleiben bestätigter Download in der App).
+#
+# Lieferkette: die Actions sind hier mit Versions-Tag (v4) angegeben. Vor dem ersten Lauf auf den Commit-SHA der jeweils
+# aktuellen v4-Version pinnen (github.com/actions/checkout, /setup-node, /upload-artifact -> Releases), z. B.
+#   uses: actions/checkout@<40-stelliger SHA> # v4.x.y
+# Die SHAs sind hier bewusst nicht eingetragen (nicht geraten).
 name: Windows-Paket
 
 on:
@@ -23,6 +28,10 @@ jobs:
     env:
       npm_config_fund: 'false'
       npm_config_audit: 'false'
+    # bash (Git Bash) mit -e: jeder fehlschlagende Befehl beendet den Schritt (pwsh prüft nur den letzten Exit-Code)
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Quellcode
         uses: actions/checkout@v4
@@ -36,11 +45,14 @@ jobs:
       - name: Abhängigkeiten (exakt nach package-lock.json)
         run: npm ci
 
-      - name: Typecheck, Lint, Tests (Mock-Ollama)
-        run: |
-          npm run typecheck
-          npm run lint
-          npm test
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests (Mock-Ollama)
+        run: npm test
 
       - name: Oberfläche bauen
         run: npm run build
@@ -54,12 +66,15 @@ jobs:
       - name: Rauchtest – Paket startet ohne Admin (Mock-Ollama, eigener Datenordner)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $env:HOTSPOT_SMOKE_TEST = '1'
           $env:HOTSPOT_MOCK_OLLAMA = '1'
           $env:HOTSPOT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uh-smoke-data'
           $exe = Get-ChildItem -Path out -Recurse -Filter 'Uni-Hotspot.exe' | Select-Object -First 1
           if (-not $exe) { throw 'Uni-Hotspot.exe fehlt im Paket' }
           $p = Start-Process -FilePath $exe.FullName -PassThru
+          # Handle sofort abgreifen: sonst liefert ExitCode nach dem Ende des Prozesses $null
+          $null = $p.Handle
           if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; throw 'Rauchtest: Zeitüberschreitung (120 s)' }
           if ($p.ExitCode -ne 0) { throw "Rauchtest fehlgeschlagen (Exit-Code $($p.ExitCode))" }
           if (-not (Test-Path (Join-Path $env:HOTSPOT_DATA_DIR 'hotspot.sqlite'))) { throw 'Rauchtest: keine Datenbank angelegt' }

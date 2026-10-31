@@ -120,6 +120,15 @@ describe('Windows-Paket (Phase 4)', () => {
     expect(wf).toMatch(/actions\/upload-artifact@v4/);
     expect(wf).not.toMatch(/ollama pull|setup-media/); // Modelle/Werkzeuge nie im Paket
     expect(wf).not.toMatch(/\t/); // YAML: keine Tabs
+    // T6: Prüfungen als eigene Schritte bzw. bash -e (pwsh prüft nur den letzten Exit-Code eines Schritts)
+    expect(wf).toMatch(/shell: bash/);
+    for (const step of ['npm run typecheck', 'npm run lint', 'npm test']) expect(wf).toMatch(new RegExp(`run: ${step}\\s*\\n`));
+    expect(wf).toMatch(/\$null = \$p\.Handle/); // ExitCode sonst $null
+  });
+
+  it('K16: LIESMICH nennt, was bei einem neuen Ordner mitzukopieren ist', () => {
+    const src = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'package-win.mjs'), 'utf8');
+    expect(src).toMatch(/resources\\\\app\\\\tools/);
   });
 });
 

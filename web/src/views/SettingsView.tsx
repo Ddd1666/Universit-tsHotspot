@@ -334,7 +334,7 @@ export function SettingsView() {
           </div>
           <label className="field">
             <span>{t('set.dataDir')}</span>
-            <CopyCmd cmd={info?.dataDir ?? boot.dataDir} />
+            <CopyCmd cmd={info?.dataDir ?? boot.dataDir} wrap />
             <small className="muted">{t('set.dataDirHint')}</small>
           </label>
           <p className="muted small mono">

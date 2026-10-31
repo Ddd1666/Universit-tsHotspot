@@ -1891,9 +1891,6 @@ input[type='range'] {
   transition:
     border-color 0.15s,
     box-shadow 0.2s;
-  /* lange Listen: Zeilen außerhalb des Sichtbereichs werden nicht gerendert (native Virtualisierung) */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 54px;
 }
 .source-more {
   display: flex;
@@ -3470,6 +3467,10 @@ button.loc.link:focus-visible {
 }
 .wizard h2 {
   outline: none;
+}
+.copy-cmd.wrap code {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .wizard h3 {
   font-size: 12px;

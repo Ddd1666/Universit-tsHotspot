@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import { del, get, patch, post } from '../api';
 import { Icon } from '../components/Icon';
 import { ImportPanel } from '../components/ImportPanel';
@@ -10,6 +10,27 @@ import { useApp, useHubEvent } from '../store';
 import type { Source, Subject } from '../types';
 
 const PAGE = 200;
+/** Abstand zwischen Zeilen (CSS .source-list gap) und Puffer-Zeilen ober-/unterhalb des Sichtbereichs */
+const ROW_GAP = 6;
+const OVERSCAN = 15;
+
+/** Fach-Auswahl je Zeile: Optionen erst beim Öffnen rendern (sonst Zeilen × Fächer DOM-Knoten). */
+function MoveSelect({ s, subjects, label, noSubject, onMove }: { s: Source; subjects: Subject[]; label: string; noSubject: string; onMove(id: string): void }) {
+  const [open, setOpen] = useState(false);
+  const cur = subjects.find((x) => x.id === s.subjectId);
+  return (
+    <select className="move-select" value={s.subjectId ?? ''} onFocus={() => setOpen(true)} onPointerDown={() => setOpen(true)} onChange={(e) => onMove(e.target.value)} aria-label={label} title={label}>
+      <option value="">{noSubject}</option>
+      {open
+        ? subjects.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.name}
+            </option>
+          ))
+        : cur && <option value={cur.id}>{cur.name}</option>}
+    </select>
+  );
+}
 
 function SubjectForm({ initial, onSave, onCancel }: { initial?: Subject; onSave(name: string, color: string): void; onCancel(): void }) {
   const { t } = useApp();
@@ -174,38 +195,46 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
     },
     [subject, q, status],
   );
-  /** Erste Seite bzw. alles bisher Geladene neu holen (bei Filterwechsel: zurück auf eine Seite). */
+  /** Generation: jedes Neuladen verwirft noch laufende Antworten (auch Nachladen) – keine Lücken, kein Kürzen. */
+  const gen = useRef(0);
+  /** Neu laden: bisher geladene Anzahl erhalten (seitenweise à 2 000), bei Filterwechsel zurück auf eine Seite. */
   const load = useCallback(() => {
     const same = keyRef.current === filterKey;
     keyRef.current = filterKey;
-    const limit = same ? Math.min(2000, Math.max(PAGE, shownRef.current)) : PAGE;
-    get<{ items: Source[]; total: number }>(`/api/sources?${params(0, limit)}`)
-      .then((r) => {
-        if (keyRef.current !== filterKey) return;
-        setSources(r.items);
-        setTotal(r.total);
-      })
-      .catch((e: unknown) => toastError(e));
+    const want = same ? Math.max(PAGE, shownRef.current) : PAGE;
+    const my = ++gen.current;
+    void (async () => {
+      const out: Source[] = [];
+      let tot = 0;
+      for (let off = 0; off < want; off += 2000) {
+        const n = Math.min(2000, want - off);
+        const r = await get<{ items: Source[]; total: number }>(`/api/sources?${params(off, n)}`);
+        if (gen.current !== my) return;
+        const known = new Set(out.map((s) => s.id));
+        out.push(...r.items.filter((s) => !known.has(s.id)));
+        tot = r.total;
+        if (r.items.length < n) break;
+      }
+      setSources(out);
+      setTotal(tot);
+    })().catch((e: unknown) => gen.current === my && toastError(e));
   }, [filterKey, params, toastError]);
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
-  useEffect(() => {
-    shownRef.current = sources?.length ?? 0;
-  }, [sources]);
-
-  // Beim Scrollen nachladen (statt fester Kappung); Zeilen außerhalb des Sichtbereichs rendert der Browser nicht (content-visibility)
-  const sentinel = useRef<HTMLLIElement>(null);
+  // Beim Scrollen nachladen (statt fester Kappung); gerendert werden nur die sichtbaren Zeilen (Fenster, s. u.)
+  const sentinel = useRef<HTMLDivElement>(null);
   const loadingMore = useRef(false);
   const loadMore = useCallback(() => {
     const have = shownRef.current;
     if (loadingMore.current || have >= total) return;
     loadingMore.current = true;
-    const key = filterKey;
+    const my = gen.current;
     get<{ items: Source[]; total: number }>(`/api/sources?${params(have, PAGE)}`)
       .then((r) => {
-        if (keyRef.current !== key) return;
+        if (gen.current !== my) return; // inzwischen neu geladen
+
         setSources((list) => {
           const known = new Set((list ?? []).map((s) => s.id));
           return [...(list ?? []), ...r.items.filter((s) => !known.has(s.id))];
@@ -214,7 +243,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
       })
       .catch((e: unknown) => toastError(e))
       .finally(() => (loadingMore.current = false));
-  }, [total, filterKey, params, toastError]);
+  }, [total, params, toastError]);
   useEffect(() => {
     const el = sentinel.current;
     if (!el) return;
@@ -222,6 +251,45 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
     io.observe(el);
     return () => io.disconnect();
   }, [loadMore, sources]);
+
+  // Fenster: nur sichtbare Zeilen (+ Puffer) rendern – bei 5 200 Quellen ~70 Zeilen im DOM statt 5 200 (Zeilenhöhe gemessen)
+  const colRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const [rowH, setRowH] = useState(58);
+  const [win, setWin] = useState({ start: 0, end: 60 });
+  const recompute = useCallback(() => {
+    const col = colRef.current;
+    const list = listRef.current;
+    if (!col || !list) return;
+    const first = list.querySelector<HTMLElement>('.source-row');
+    const h = first ? first.getBoundingClientRect().height + ROW_GAP : rowH;
+    if (Math.abs(h - rowH) > 1) setRowH(h);
+    const top = col.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    const n = shownRef.current;
+    const start = Math.max(0, Math.min(n, Math.floor(top / h) - OVERSCAN));
+    const end = Math.min(n, Math.max(start, Math.ceil((top + col.clientHeight) / h)) + OVERSCAN);
+    setWin((w) => (w.start === start && w.end === end ? w : { start, end }));
+  }, [rowH]);
+  useLayoutEffect(() => {
+    shownRef.current = sources?.length ?? 0;
+    recompute();
+  }, [sources, recompute]);
+  useEffect(() => {
+    const col = colRef.current;
+    if (!col) return;
+    let raf = 0;
+    const on = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(recompute);
+    };
+    col.addEventListener('scroll', on, { passive: true });
+    window.addEventListener('resize', on);
+    return () => {
+      cancelAnimationFrame(raf);
+      col.removeEventListener('scroll', on);
+      window.removeEventListener('resize', on);
+    };
+  }, [recompute]);
 
   /** Entprellt neu laden: erst nach einer Ruhephase, bei Dauer-Ereignissen spätestens alle 5 s. */
   const scheduleReload = useCallback((delay: number) => {
@@ -339,7 +407,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
 
       <div className="library">
         <SubjectList current={subject} />
-        <section className="source-col" aria-label={title}>
+        <section className="source-col" aria-label={title} ref={colRef}>
           <ImportPanel />
           <div
             className={`dropzone ${dragOver ? 'over' : ''} ${empty ? 'big' : ''}`}
@@ -395,11 +463,16 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
               <div />
             </div>
           ) : (
-            <ul className="source-list">
-              {sources.map((s) => {
+            <ul
+              className="source-list"
+              ref={listRef}
+              aria-label={title}
+              style={{ paddingTop: win.start * rowH, paddingBottom: Math.max(0, sources.length - win.end) * rowH }}
+            >
+              {sources.slice(win.start, win.end).map((s, i) => {
                 const detail = statusDetailText(s, t);
                 return (
-                  <li key={s.id} className={`source-row ${preview?.id === s.id ? 'active' : ''}`}>
+                  <li key={s.id} className={`source-row ${preview?.id === s.id ? 'active' : ''}`} aria-posinset={win.start + i + 1} aria-setsize={total}>
                     <KindIcon kind={s.kind} />
                     <button className="source-main" onClick={() => setPreview({ id: s.id, chunk: null })} title={t('lib.preview')}>
                       <span className="source-name ellipsis">{s.name}</span>
@@ -429,14 +502,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
                           <Icon name="refresh" size={14} />
                         </button>
                       )}
-                      <select className="move-select" value={s.subjectId ?? ''} onChange={(e) => void move(s, e.target.value)} aria-label={`${t('lib.move')} ${s.name}`} title={t('lib.move')}>
-                        <option value="">{t('lib.noSubject')}</option>
-                        {subjects.map((x) => (
-                          <option key={x.id} value={x.id}>
-                            {x.name}
-                          </option>
-                        ))}
-                      </select>
+                      <MoveSelect s={s} subjects={subjects} label={`${t('lib.move')} ${s.name}`} noSubject={t('lib.noSubject')} onMove={(v) => void move(s, v)} />
                       <button className="icon-btn small danger" onClick={() => void remove(s)} title={t('lib.delete')} aria-label={`${t('lib.delete')}: ${s.name}`}>
                         <Icon name="trash" size={14} />
                       </button>
@@ -444,14 +510,14 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
                   </li>
                 );
               })}
-              {sources.length < total && (
-                <li ref={sentinel} className="source-more">
-                  <button className="btn small ghost" onClick={loadMore}>
-                    {t('lib.loadMore', { shown: sources.length, total })}
-                  </button>
-                </li>
-              )}
             </ul>
+          )}
+          {sources !== null && sources.length < total && (
+            <div ref={sentinel} className="source-more">
+              <button className="btn small ghost" onClick={loadMore}>
+                {t('lib.loadMore', { shown: sources.length, total })}
+              </button>
+            </div>
           )}
           {sources !== null && sources.length === 0 && (q || status) && <p className="muted pad">{t('lib.noMatch')}</p>}
         </section>

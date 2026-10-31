@@ -52,6 +52,8 @@ export interface BackupState {
   defaultDir: string;
   busy: boolean;
   items: Snapshot[];
+  /** Zielordner nicht lesbar (z. B. EPERM) */
+  error: string | null;
   keep: number;
   intervalHours: number;
   backupDir: string;
@@ -71,12 +73,13 @@ export interface ImportReport {
 
 export interface Diagnostics {
   app: { version: string; schema: number; mock: boolean; platform: string; node: string; electron: string | null; chrome: string | null; sqlite: string; uptimeSec: number; rssBytes: number; vectorCacheBytes: number; pdfExport: boolean };
-  ollama: { reachable: boolean; url: string; version: string | null; models: number; running: { name: string; gpuPercent: number }[]; required: { role: 'chat' | 'embedding' | 'vision'; model: string; installed: boolean | null }[]; error: string | null };
+  ollama: { reachable: boolean; url: string; version: string | null; models: number; running: { name: string; gpuPercent: number }[]; required: { roles: ('chat' | 'embedding' | 'vision')[]; model: string; installed: boolean | null }[]; error: string | null };
   tools: { ffmpeg: boolean; whisper: boolean; whisperModels: string[] };
-  dataDir: { path: string; writable: boolean; freeBytes: number | null; synced: boolean; sizes: { db: number; files: number; backups: number | null; logs: number }; fileCount: number };
-  counts: Stats;
-  queue: QueueStatus;
-  backups: { dir: string; count: number; last: number | null; intervalHours: number; keep: number };
+  dataDir: { path: string; writable: boolean; freeBytes: number | null; synced: boolean; sizes: { db: number; files: number; backups: number; logs: number }; fileCount: number };
+  counts: Stats | null;
+  queue: { ingest: { queued: number; processing: number }; embed: { state: string; pending: number; done: number; failed: number }; media: JobCounts; learn: JobCounts } | null;
+  backups: { dir: string; count: number; last: number | null; intervalHours: number; keep: number; error: string | null };
+  errors: string[];
 }
 
 export interface Subject {

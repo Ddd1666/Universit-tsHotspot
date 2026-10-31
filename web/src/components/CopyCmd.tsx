@@ -3,11 +3,12 @@ import { useApp } from '../store';
 import { Icon } from './Icon';
 
 /** Befehl/Pfad zum Kopieren (z. B. `ollama pull …` – die App führt so etwas nie selbst aus). */
-export function CopyCmd({ cmd }: { cmd: string }) {
+/** `wrap`: lange Pfade umbrechen statt abschneiden/seitlich scrollen. */
+export function CopyCmd({ cmd, wrap = false }: { cmd: string; wrap?: boolean }) {
   const { t } = useApp();
   const [copied, setCopied] = useState(false);
   return (
-    <div className="copy-cmd">
+    <div className={wrap ? 'copy-cmd wrap' : 'copy-cmd'}>
       <code>{cmd}</code>
       <button
         className="btn small"

@@ -129,9 +129,9 @@ export function Wizard() {
           <h3>{t('wiz.models')}</h3>
           <ul className="wiz-checks">
             {diag.ollama.required.map((r) => (
-              <li key={r.role}>
+              <li key={r.model}>
                 <div className="row gap wrap">
-                  <strong>{t(`wiz.role.${r.role}`)}</strong>
+                  <strong>{r.roles.map((x) => t(`wiz.role.${x}`)).join(' + ')}</strong>
                   <span className="mono">{r.model}</span>
                   <span className="spacer" />
                   {status(r.installed, t('wiz.installed'), r.installed === null ? t('wiz.unknown') : t('wiz.missing'))}
@@ -149,7 +149,7 @@ export function Wizard() {
         <p className="muted">{t('common.loading')}</p>
       ) : (
         <>
-          <CopyCmd cmd={diag.dataDir.path} />
+          <CopyCmd cmd={diag.dataDir.path} wrap />
           <ul className="wiz-checks">
             <li className="row gap wrap">
               {status(diag.dataDir.writable, t('wiz.writable'), t('wiz.notWritable'))}

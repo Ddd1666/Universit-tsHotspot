@@ -74,6 +74,8 @@ fs.writeFileSync(
     'Daten: %USERPROFILE%\\Uni-Hotspot-Daten (Datenbank, Originaldateien, Sicherungen, Logs). Der Programmordner enthält keine Nutzerdaten.',
     'Update: neue Version über diesen Ordner entpacken (oder neuen Ordner nutzen). Der Datenordner bleibt unberührt;',
     'eine nötige Datenbank-Migration legt vorher automatisch eine Sicherung unter <Datenordner>\\backups an.',
+    'Bei einem NEUEN Ordner aus dem alten mitkopieren: resources\\app\\tools (Medien-Werkzeuge, sonst neu laden) und',
+    'resources\\app\\hotspot.config.json (nur falls ein anderer Datenordner eingestellt war).',
     'Entfernen: diesen Ordner löschen (Daten bleiben, bis du den Datenordner selbst löschst).',
     'Medien-Werkzeuge (whisper.cpp, ffmpeg) sind nicht enthalten – Download nach Bestätigung unter Einstellungen -> Medien',
     '(landen in resources\\app\\tools).',

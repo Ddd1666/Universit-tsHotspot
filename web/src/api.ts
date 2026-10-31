@@ -119,18 +119,26 @@ export function uploadRaw<T>(path: string, file: File, onProgress: (fraction: nu
   });
 }
 
-/** Nach einem Neustart des Servers (Wiederherstellung) warten, bis er wieder antwortet. */
-export async function waitForServer(timeoutMs = 120_000): Promise<boolean> {
+/** Startzeitpunkt des laufenden Servers (null = nicht erreichbar). */
+export async function serverStartedAt(): Promise<number | null> {
+  try {
+    const r = await fetch('/api/health', { headers: { 'x-hotspot-token': TOKEN } });
+    return r.ok ? ((await r.json()) as { startedAt?: number }).startedAt ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nach einer Wiederherstellung warten, bis der NEU gestartete Server antwortet: erkennbar an einem anderen `startedAt`
+ * (statt fester Wartezeit – der alte Server antwortet evtl. noch kurz).
+ */
+export async function waitForServer(prevStartedAt: number | null, timeoutMs = 180_000): Promise<boolean> {
   const end = Date.now() + timeoutMs;
-  await new Promise((r) => setTimeout(r, 1200));
   while (Date.now() < end) {
-    try {
-      const r = await fetch('/api/health', { headers: { 'x-hotspot-token': TOKEN } });
-      if (r.ok) return true;
-    } catch {
-      /* noch nicht erreichbar */
-    }
-    await new Promise((r) => setTimeout(r, 600));
+    const s = await serverStartedAt();
+    if (s !== null && s !== prevStartedAt) return true;
+    await new Promise((r) => setTimeout(r, 500));
   }
   return false;
 }
