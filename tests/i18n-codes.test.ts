@@ -100,6 +100,42 @@ describe('Übersetzungen für Server-Fehlercodes (EN-Oberfläche ohne deutsche S
     }
   });
 
+  it('Phase 4: Wörterbücher vollständig – gleiche Schlüssel, gleiche Platzhalter, nichts leer, EN ohne deutsche Umlaute', async () => {
+    const { DICTS } = await import('../web/src/i18n.ts');
+    const de = DICTS.de as Record<string, string>;
+    const en = DICTS.en as Record<string, string>;
+    expect(Object.keys(en).sort()).toEqual(Object.keys(de).sort());
+    // {name} = Platzhalter; {{…}} = Lückentext-Beispiel (bleibt übersetzbar)
+    const vars = (s: string) => [...s.matchAll(/(?<!\{)\{(\w+)\}(?!\})/g)].map((m) => m[1]).sort();
+    for (const k of Object.keys(de)) {
+      expect(de[k]!.trim(), `DE leer: ${k}`).not.toBe('');
+      expect(en[k]!.trim(), `EN leer: ${k}`).not.toBe('');
+      expect(vars(en[k]!), `Platzhalter ${k}`).toEqual(vars(de[k]!));
+      expect(en[k], `deutscher Text in EN: ${k}`).not.toMatch(/[äöüÄÖÜß]/);
+    }
+  });
+
+  it('Phase 4: jeder in der Oberfläche benutzte Schlüssel existiert (t("…") und t(`präfix.${…}`))', async () => {
+    const { DICTS } = await import('../web/src/i18n.ts');
+    const keys = Object.keys(DICTS.de);
+    const web = walk(path.join(PROJECT_ROOT, 'web', 'src')).filter((f) => /\.tsx?$/.test(f) && !f.endsWith('i18n.ts'));
+    let literal = 0;
+    for (const f of web) {
+      const src = fs.readFileSync(f, 'utf8');
+      for (const m of src.matchAll(/\bt\(\s*'([a-z][\w.-]*)'/g)) {
+        literal++;
+        expect(keys, `${path.basename(f)}: ${m[1]}`).toContain(m[1]);
+      }
+      for (const m of src.matchAll(/\bt\(\s*`([a-z][\w.-]*\.)\$\{/g)) expect(keys.some((k) => k.startsWith(m[1]!)), `${path.basename(f)}: ${m[1]}…`).toBe(true);
+    }
+    expect(literal).toBeGreaterThan(500);
+    // neue Ansichten nutzen ausschließlich übersetzte Texte für Beschriftungen
+    for (const f of ['views/BackupView.tsx', 'views/DiagnosticsView.tsx', 'components/Wizard.tsx', 'components/ErrorBoundary.tsx']) {
+      const src = fs.readFileSync(path.join(PROJECT_ROOT, 'web', 'src', f), 'utf8');
+      expect(src.match(/aria-label="[^"]*[a-zäöü]{3}[^"]*"/g) ?? [], f).toEqual([]);
+    }
+  });
+
   it('Electron-Dialoge: keine fest verdrahteten deutschen Texte, DE/EN vollständig', () => {
     const main = fs.readFileSync(path.join(PROJECT_ROOT, 'electron', 'main.ts'), 'utf8');
     for (const m of main.matchAll(/dialog\.show\w+\(([^;]*)/g)) expect(m[1], m[0]).not.toMatch(/['"`][^'"`]*[äöüßÄÖÜ][^'"`]*['"`]/);

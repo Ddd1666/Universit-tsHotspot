@@ -388,6 +388,9 @@ export function ChatView({ chatId }: { chatId: number | null }) {
     if (chatId === null) {
       setSession(null);
       setMessages([]);
+      // „Neuer Chat“ beginnt immer mit Standard-Wissensbereich/-Modell (nicht mit der Auswahl des vorigen Entwurfs)
+      setDraftScope({ mode: 'all' });
+      setDraftModel(null);
       requestAnimationFrame(() => inputRef.current?.focus());
       return;
     }

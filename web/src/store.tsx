@@ -213,7 +213,9 @@ export function AppProvider({ boot, children }: { boot: Bootstrap; children: Rea
 
   const navigate = useCallback((hash: string) => {
     if (location.hash !== hash) location.hash = hash;
-    else setRoute(parseRoute(hash));
+    // sofort umschalten, nicht erst beim (asynchronen) hashchange: sonst landet z. B. Text, der direkt nach „Neuer Chat“
+    // getippt und abgeschickt wird, noch im vorher offenen Chat
+    setRoute(parseRoute(hash));
   }, []);
 
   const ask = useCallback((req: Omit<DialogRequest, 'resolve'>) => new Promise<string | boolean | null>((resolve) => setDialog({ ...req, resolve })), []);

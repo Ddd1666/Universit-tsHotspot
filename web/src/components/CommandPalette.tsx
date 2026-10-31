@@ -44,10 +44,10 @@ export function CommandPalette() {
   }, [paletteOpen, setPaletteOpen]);
 
   useEffect(() => {
+    setQ('');
+    setActive(0);
     if (paletteOpen) {
       prevFocus.current = document.activeElement as HTMLElement | null;
-      setQ('');
-      setActive(0);
       requestAnimationFrame(() => inputRef.current?.focus());
     } else prevFocus.current?.focus?.();
   }, [paletteOpen]);
@@ -94,7 +94,13 @@ export function CommandPalette() {
     return ranked;
   }, [q, t, chats, subjects, settings, navigate, updateSettings, sidebarOpen, setSidebarOpen, setWizardOpen]);
 
-  useEffect(() => setActive(0), [q]);
+  // Maus wählt erst nach echter Bewegung aus: sonst „gewinnt“ beim Tippen das Element, das zufällig unter dem stehenden
+  // Mauszeiger auftaucht (Chromium schickt nach Layoutänderungen künstliche Mausereignisse) und Enter führt das Falsche aus
+  const hoverOk = useRef(false);
+  useEffect(() => {
+    setActive(0);
+    hoverOk.current = false;
+  }, [q]);
   useEffect(() => {
     listRef.current?.querySelector(`[data-idx="${active}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [active]);
@@ -141,7 +147,16 @@ export function CommandPalette() {
           />
           <kbd>Esc</kbd>
         </div>
-        <div className="palette-list" id="palette-list" role="listbox" ref={listRef}>
+        <div
+          className="palette-list"
+          id="palette-list"
+          role="listbox"
+          aria-label={t('cmd.label')}
+          ref={listRef}
+          onPointerMove={(e) => {
+            if (e.movementX || e.movementY) hoverOk.current = true;
+          }}
+        >
           {items.length === 0 && <p className="muted pad">{t('cmd.empty')}</p>}
           {items.map((it, idx) => {
             const header = showHeaders && it.group !== lastGroup ? it.group : null;
@@ -155,7 +170,7 @@ export function CommandPalette() {
                   role="option"
                   aria-selected={idx === active}
                   className={`palette-item ${idx === active ? 'active' : ''}`}
-                  onMouseEnter={() => setActive(idx)}
+                  onMouseEnter={() => hoverOk.current && setActive(idx)}
                   onClick={() => {
                     close();
                     it.run();

@@ -627,6 +627,7 @@ const de = {
   'apierr.import_too_new': 'Die Export-Datei stammt von einer neueren Uni-Hotspot-Version (Format {detail}).',
   'apierr.pdf_unavailable': 'PDF-Export gibt es nur in der Desktop-App – im Browser „Drucken → Als PDF speichern“ nutzen.',
   'a11y.skip': 'Zum Inhalt springen',
+  'a11y.busy': 'Verarbeitung läuft',
   'cmd.label': 'Befehlspalette',
   'lib.loadMore': 'Weitere laden ({shown} von {total})',
   'lib.noMatch': 'Keine Quelle passt zum Filter.',
@@ -664,7 +665,9 @@ const de = {
   'backup.interval': 'Intervall',
   'backup.off': 'aus',
   'backup.everyHours': 'alle {n} Stunden',
-  'backup.everyDays': 'alle {n} Tag(e)',
+  'backup.everyDays': 'alle {n} Tage',
+  'backup.daily': 'täglich',
+  'backup.weekly': 'wöchentlich',
   'backup.keep': 'Aufbewahren (automatische Sicherungen)',
   'backup.keepHint': 'Ältere automatische Sicherungen werden gelöscht; manuelle und „vor Wiederherstellung“ bleiben.',
   'backup.dir': 'Zielordner',
@@ -748,7 +751,7 @@ const de = {
   'wiz.dataText': 'Hier liegt alles: Datenbank, Originaldateien, Sicherungen. Automatische Sicherung: alle {h} Stunden, die letzten {n} bleiben (Einstellungen → Sicherung & Export).',
   'wiz.mediaText': 'Für Audio- und Videotranskripte braucht Uni-Hotspot whisper.cpp und ffmpeg. Beides lässt sich später unter Einstellungen → Medien nach Bestätigung laden. Bilder und Scans brauchen nur Ollama.',
   'wiz.toMedia': 'Zu Einstellungen → Medien',
-  'wiz.hasSubjects': 'Du hast schon {n} Fach/Fächer angelegt – weiter geht’s.',
+  'wiz.hasSubjects': 'Du hast schon {n} Fach/Fächer – hier kannst du optional ein weiteres anlegen.',
   'wiz.subjectPlaceholder': 'z. B. Thermodynamik',
   'wiz.subjectCreated': 'Fach „{name}“ angelegt.',
   'wiz.g1': 'Bibliothek öffnen und Unterlagen hineinziehen (oder „Dateien importieren“).',
@@ -1399,6 +1402,7 @@ const en: Dict = {
   'apierr.import_too_new': 'The export file comes from a newer Uni-Hotspot version (format {detail}).',
   'apierr.pdf_unavailable': 'PDF export is only available in the desktop app – in the browser use “Print → Save as PDF”.',
   'a11y.skip': 'Skip to content',
+  'a11y.busy': 'Processing',
   'cmd.label': 'Command palette',
   'lib.loadMore': 'Load more ({shown} of {total})',
   'lib.noMatch': 'No source matches the filter.',
@@ -1436,7 +1440,9 @@ const en: Dict = {
   'backup.interval': 'Interval',
   'backup.off': 'off',
   'backup.everyHours': 'every {n} hours',
-  'backup.everyDays': 'every {n} day(s)',
+  'backup.everyDays': 'every {n} days',
+  'backup.daily': 'daily',
+  'backup.weekly': 'weekly',
   'backup.keep': 'Keep (automatic backups)',
   'backup.keepHint': 'Older automatic backups are deleted; manual and “before restore” backups are kept.',
   'backup.dir': 'Target folder',
@@ -1520,7 +1526,7 @@ const en: Dict = {
   'wiz.dataText': 'Everything lives here: database, original files, backups. Automatic backup: every {h} hours, the latest {n} are kept (Settings → Backup & export).',
   'wiz.mediaText': 'Audio and video transcripts need whisper.cpp and ffmpeg. Both can be downloaded later under Settings → Media after confirmation. Images and scans only need Ollama.',
   'wiz.toMedia': 'Go to Settings → Media',
-  'wiz.hasSubjects': 'You already have {n} subject(s) – let’s continue.',
+  'wiz.hasSubjects': 'You already have {n} subject(s) – you can optionally add another one here.',
   'wiz.subjectPlaceholder': 'e.g. Thermodynamics',
   'wiz.subjectCreated': 'Subject “{name}” created.',
   'wiz.g1': 'Open the library and drag your documents in (or “Import files”).',
@@ -1543,7 +1549,8 @@ const en: Dict = {
 };
 
 export type TKey = keyof typeof de;
-const DICTS: Record<Lang, Dict> = { de, en };
+/** exportiert für den Vollständigkeits-Test (tests/i18n-codes.test.ts) */
+export const DICTS: Record<Lang, Dict> = { de, en };
 
 export function translate(lang: Lang, key: TKey, vars?: Record<string, string | number>): string {
   let s = DICTS[lang][key] ?? DICTS.de[key] ?? key;

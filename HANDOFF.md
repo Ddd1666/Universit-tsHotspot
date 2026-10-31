@@ -9,6 +9,11 @@ VRAM wurden nie ausgeführt** – genau das prüft Abschnitt 3a. Auf dem Laptop 
 **Phase 3** (Lernmodi: Zusammenfassungen, Karteikarten + Wiederholung, Quiz, Wissensgraph) ebenfalls unter Windows 11 entwickelt und
 **nur gegen Mock-Ollama** getestet: 299 Unit-/Integrationstests (inkl. Korrekturrunden 1 und 2) (30×-Log: `docs/test-logs/phase3.txt`), Browser-E2E 34/34.
 Qualität der KI-Ausgaben, Dauer und VRAM mit echtem Modell sind unbekannt – das prüft Abschnitt 3b (inkl. `npm run eval:learning`).
+**Phase 4** (Version 0.4.0: portables Windows-Paket, Sicherung/Wiederherstellung, Export/Import, Erststart-Assistent, Diagnose, Politur)
+ebenfalls unter Windows 11 entwickelt und **nur gegen Mock-Ollama** getestet (Testzahlen/Log: `docs/test-logs/phase4.txt`). **Das
+Windows-Paket (Electron) wurde nie gebaut oder gestartet** – der GitHub-Actions-Workflow ist geschrieben und YAML-geprüft, aber nicht
+ausgeführt; geprüft ist nur die Zusammenstellung der App-Dateien. Das prüft Abschnitt 3c zusammen mit Sicherung/Wiederherstellung an
+den echten Daten.
 
 ## 0. Regeln für dich (lokaler Claude) – zuerst lesen
 
@@ -55,9 +60,12 @@ $env:electron_config_cache = "$PWD\.cache\electron"   # Electron-Download im Pro
 $env:NODE_COMPILE_CACHE    = "$PWD\.cache\node-compile" # Vite/tsc-Compile-Cache nicht nach %TEMP%
 npm.cmd ci --no-audit --no-fund           # exakt nach package-lock.json; keine nativen Kompilierungen nötig
 node scripts\check-deps.mjs --write       # Marker setzen, damit start.bat nicht erneut installiert
-npm.cmd test                              # optional: 148 Tests mit Mock-Ollama, schreibt nur nach .\.tmp\tests (wird danach geleert)
+npm.cmd test                              # optional: alle Tests mit Mock-Ollama (Zahl: docs/test-logs/phase4.txt), schreibt nur nach .\.tmp\tests
 npm.cmd run build                         # Web-Oberfläche bauen (dist\web)
 ```
+
+Hinweis Phase 4: Die Versionsnummer in `package-lock.json` ist auf 0.4.0 gestiegen ⇒ `start.bat` führt beim ersten Start einmal
+`npm ci` aus (braucht Internet, 1–3 min; ohne Netz startet der bisherige Stand). Das portable Paket (Abschnitt 3c) braucht weder Node noch `npm`.
 
 Alternativ erledigt **`start.bat`** das selbst (`scripts\ensure-deps.mjs`): es vergleicht den SHA-256 von `package-lock.json` mit
 `node_modules\.hotspot-lock-hash` und führt `npm ci` nur beim ersten Start oder nach einem Update (geänderte Lock-Datei) aus –
@@ -222,6 +230,62 @@ Ausgaben und Feldern „Bewertung 1–5“ – vom Nutzer ausfüllen lassen.
 `ollama ps` während Generierung + Chat, Qualitätsnoten (oder den ausgefüllten Eval-Bericht), Anteil verworfener Karten/Fragen,
 Neustart-Ergebnis, Auffälligkeiten (falsche Zitate, englische statt deutscher Ausgaben, Fehlermeldungen), letzte 100 Zeilen `logs\server.log`.
 
+## 3c. Finale Laptop-Checkliste Phase 4 (Paket, Sicherung, Migration der echten Daten)
+
+**Zuerst – echte Daten sichern (Pflicht, App beendet, kein Uni-Hotspot-Fenster/Konsolenfenster offen):**
+```powershell
+Copy-Item -Recurse "$env:USERPROFILE\Uni-Hotspot-Daten" "$env:USERPROFILE\Uni-Hotspot-Daten.vor-phase4-$(Get-Date -Format yyyyMMdd-HHmm)"
+(Get-ChildItem -Recurse "$env:USERPROFILE\Uni-Hotspot-Daten" | Measure-Object Length -Sum).Sum / 1MB   # Größe notieren
+```
+Ohne diese Kopie **nicht** weitermachen. Phase 4 ändert das DB-Schema nicht (bleibt v4); eine Phase-1/2-DB wird wie bisher migriert (Auto-Backup).
+
+**3c.1 Paket holen und entpacken (ohne Admin)**
+- [ ] Nutzer startet im GitHub-Repo *Actions → „Windows-Paket“ → Run workflow* (Branch `claude/nifty-goodall-j9oqls`) – erst nach dem
+      Push. Erwartung: alle Schritte grün inkl. „Rauchtest – Paket startet ohne Admin“. Schlägt ein Schritt fehl: Log des Schritts melden.
+- [ ] Artefakt **Uni-Hotspot-win-x64** herunterladen (ZIP, ~120–150 MB), Rechtsklick → „Alle extrahieren“ nach `%USERPROFILE%\Uni-Hotspot-Paket`
+      (nicht OneDrive/Downloads). Erwartung: Ordner `Uni-Hotspot-0.4.0-win-x64` mit `Uni-Hotspot.exe`, `LIESMICH.txt`, `resources\app\`.
+- [ ] `Uni-Hotspot.exe` doppelklicken → **SmartScreen**-Warnung „Der Computer wurde durch Windows geschützt“ → *Weitere Informationen →
+      Trotzdem ausführen* (Nutzer selbst). Kein UAC-Dialog darf erscheinen. Blockiert **Smart App Control** das Programm ganz: melden,
+      nichts an Windows ändern, weiter mit `start.bat` (Weg B).
+- [ ] Start ohne Node.js: Fenster erscheint in < 10 s, kein „MOCK“, Einstellungen zeigen Ollama „Verbunden“. *Diagnose* (Einstellungen →
+      Daten → Diagnose): „Electron 44.x“, Schema 4, Datenordner `C:\Users\<Name>\Uni-Hotspot-Daten`, beschreibbar.
+- [ ] Startzeit mit Stoppuhr (Doppelklick bis bedienbar) notieren; Taskmanager: RAM aller „Uni-Hotspot“-Prozesse notieren.
+
+**3c.2 Erststart-Assistent** (erscheint einmal, auch bei vorhandenen Daten)
+- [ ] Schritte durchklicken: Ollama „läuft (Version …)“, Modelle `gemma3:4b`/`nomic-embed-text` „installiert“. Ein fehlendes Modell zeigt
+      einen kopierbaren `ollama pull …`-Befehl (nicht ausführen ohne Zustimmung). Datenordner „beschreibbar“, freier Platz plausibel.
+- [ ] „Überspringen“ schließt; `Strg+K` → „Einrichtungsassistent“ öffnet ihn wieder; Esc schließt.
+
+**3c.3 Bestehende Daten (Migration/Kompatibilität)**
+- [ ] Bibliothek, Chats, Karten (Wiederholen-Zähler), Notizen, Quiz-Verlauf, Graph wie vorher. `backups\` enthält ggf. `hotspot-v…sqlite` (nur bei Schema < 4).
+- [ ] Suche + Chat mit Zitat funktionieren im Paket genauso wie mit `start.bat`.
+
+**3c.4 Sicherung & Wiederherstellung real** (*Einstellungen → Daten → Sicherung & Export*)
+- [ ] „Jetzt sichern“ → Eintrag „manuell“ mit Dateizahl/Größe; Dauer notieren. Im Explorer: `Uni-Hotspot-Daten\backups\snapshot-…-manual\`
+      mit `hotspot.sqlite`, `files\`, `manifest.json`. Freier Platz auf C: sinkt nur um etwa die DB-Größe (Hardlinks).
+- [ ] Testweise ein **unwichtiges** Fach anlegen und eine Testquelle importieren, dann die Sicherung **wiederherstellen** (Bestätigung) →
+      „Wird wiederhergestellt …“, App lädt neu, Toast „Wiederherstellung abgeschlossen“; Testfach/Testquelle sind weg, alles andere da;
+      neuer Eintrag „vor Wiederherstellung“. Desktop-App und Browser-Modus je einmal.
+- [ ] Optional Zielordner auf USB-Stick/zweitem Laufwerk setzen → „Jetzt sichern“ → Dateien werden kopiert (dauert länger) → zweite Sicherung
+      deutlich schneller (nur neue Dateien). Danach Zielordner wieder leeren (= Standard).
+- [ ] Automatik: Intervall „alle 6 Stunden“ einstellen, App > 2 min laufen lassen → Eintrag „automatisch“ erscheint; danach wieder 24 h.
+
+**3c.5 Export/Import, PDF, CSV**
+- [ ] Ein kleines Fach exportieren (`Uni-Hotspot-Export-<Fach>-<Datum>.zip`, Speichern-Dialog) und sofort wieder importieren → Bericht
+      „0 neu, n schon vorhanden“. Die ZIP lässt sich im Explorer öffnen.
+- [ ] Notiz → „PDF“: Desktop = Speichern-Dialog, PDF zeigt nur die Notiz mit Quellenliste; Browser-Modus = Druckdialog („Als PDF speichern“).
+- [ ] Karteikarten → „Karten als CSV“ → öffnet in Excel mit Umlauten korrekt; optional in Anki importieren (Datei → Importieren).
+
+**3c.6 Diagnose & Robustheit**
+- [ ] *Diagnose → Bericht herunterladen*: Datei durchsehen – **keine** Dateinamen, Dokumentinhalte oder Chat-Texte, Benutzername als `<USER>`/`<HOME>`.
+- [ ] `logs\` enthält höchstens `server.log` + `.1` … `.3`.
+- [ ] Update-Probe: Paket-Ordner umbenennen, ZIP erneut entpacken → Start → Daten unverändert (Datenordner unberührt).
+
+**Was melden (Phase 4):** Workflow-Ergebnis (grün/rot + Log), SmartScreen/Smart App Control-Verhalten, Startzeit + RAM (Paket und `start.bat`),
+Dauer „Jetzt sichern“ und Wiederherstellen bei der echten Datenmenge, Größe der Export-ZIP, Auffälligkeiten im Diagnose-Bericht, Fehlermeldungen
+(Screenshot), letzte 100 Zeilen `logs\server.log`. **Bei Problemen mit den echten Daten:** App beenden, Datenordner durch die Kopie vom Anfang
+ersetzen (nur mit Zustimmung des Nutzers).
+
 ## 4. Bekannte Windows-Risiken & Abhilfe
 
 | Risiko | Symptom | Abhilfe (reversibel) |
@@ -243,6 +307,10 @@ Neustart-Ergebnis, Auffälligkeiten (falsche Zitate, englische statt deutscher A
 | whisper-cli.exe/ffmpeg.exe durch Smart App Control blockiert | Medien-Job „Werkzeug fehlgeschlagen“ | melden; nicht an Windows-Sicherheitseinstellungen drehen. Bilder/Scans funktionieren weiter (brauchen nur Ollama) |
 | Werkzeuge entfernen | – | Ordner `tools` im Projektordner löschen (App beendet); Audio/Video werden dann wieder nur gespeichert |
 | Firewall-Dialog | Windows fragt nach Netzwerkzugriff | sollte nicht erscheinen (nur 127.0.0.1); falls doch: „Abbrechen“ – Freigabe ist nicht nötig |
+| Paket: SmartScreen / Smart App Control | Warnung bzw. Programm wird blockiert (unsigniert) | SmartScreen: „Weitere Informationen → Trotzdem ausführen“ (Nutzer). Smart App Control: nicht abschalten – `start.bat` nutzen |
+| Wiederherstellung hängt beim Neustart | „Wird wiederhergestellt …“ > 2 min | App beenden und neu starten: die Vormerkung `restore-pending.json` wird beim Start zu Ende geführt (idempotent); ist sie ungültig, wird sie verworfen (Meldung) |
+| Start schlägt nach Wiederherstellung fehl | Fehlermeldung beim Start | Datenordner-Kopie bzw. Snapshot `…-pre-restore` zurückspielen (README „Manuell“); `restore-pending.json` darf bei beendeter App gelöscht werden |
+| Sicherung auf USB/zweites Laufwerk langsam | erste Sicherung dauert | normal (Kopie statt Hardlink); Folgesicherungen verlinken unveränderte Dateien vom vorigen Snapshot |
 
 ## 5. Was bei Problemen zu melden ist
 

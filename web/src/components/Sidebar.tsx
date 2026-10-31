@@ -18,7 +18,7 @@ function OllamaPill() {
         <strong>{label}</strong>
         <small>{running ? `${running.name} · ${t('set.gpu', { p: running.gpuPercent })}` : ollama.version ? `v${ollama.version}` : ollama.url}</small>
       </span>
-      {busy && <span className="spinner" aria-label="busy" />}
+      {busy && <span className="spinner" role="img" aria-label={t('a11y.busy')} />}
     </button>
   );
 }

@@ -190,10 +190,10 @@ export function Wizard() {
       );
       break;
     case 'subject':
-      body = subjects.length ? (
-        <p>{t('wiz.hasSubjects', { n: subjects.length })}</p>
-      ) : (
-        <form
+      body = (
+        <>
+          {subjects.length > 0 && <p className="muted">{t('wiz.hasSubjects', { n: subjects.length })}</p>}
+          <form
           className="subject-form"
           onSubmit={(e) => {
             e.preventDefault();
@@ -212,7 +212,8 @@ export function Wizard() {
           <button type="submit" className="btn small primary" disabled={!name.trim()}>
             <Icon name="plus" size={14} /> {t('lib.addSubject')}
           </button>
-        </form>
+          </form>
+        </>
       );
       break;
     default:
@@ -270,7 +271,7 @@ export function Wizard() {
             </button>
           ) : (
             <button className="btn primary" onClick={() => setStep(STEPS[idx + 1]!)}>
-              {step === 'subject' && !subjects.length ? t('wiz.later') : t('wiz.next')}
+              {step === 'subject' ? t('wiz.later') : t('wiz.next')}
             </button>
           )}
         </div>

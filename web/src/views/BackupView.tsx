@@ -160,7 +160,7 @@ export function BackupView() {
             <select className="input" value={settings.backupIntervalHours} onChange={(e) => void updateSettings({ backupIntervalHours: Number(e.target.value) }).then(load)}>
               {[...new Set([...INTERVALS, settings.backupIntervalHours])].map((h) => (
                 <option key={h} value={h}>
-                  {h === 0 ? t('backup.off') : h % 24 === 0 ? t('backup.everyDays', { n: h / 24 }) : t('backup.everyHours', { n: h })}
+                  {h === 0 ? t('backup.off') : h === 24 ? t('backup.daily') : h === 168 ? t('backup.weekly') : h % 24 === 0 ? t('backup.everyDays', { n: h / 24 }) : t('backup.everyHours', { n: h })}
                 </option>
               ))}
             </select>
@@ -249,7 +249,7 @@ export function BackupView() {
           <button className="btn small" onClick={() => void downloadFile('/api/cards/export.csv', 'cards.csv').catch(toastError)}>
             <Icon name="sheet" size={14} /> {t('transfer.csv')}
           </button>
-          <small className="muted">{t('transfer.csvHint')}</small>
+          <p className="muted small">{t('transfer.csvHint')}</p>
         </section>
       </div>
     </div>

@@ -130,8 +130,28 @@ const page = await context.newPage();
 const errors = [];
 /** bewusst ausgelöste Fehlerantworten (z. B. Validierung) – je Eintrag wird genau eine Konsolenmeldung toleriert */
 const expectedConsole = [];
+/** Neustart nach Wiederherstellung: Server ist kurz weg -> abgewiesene Verbindungen sind dann erwartet */
+let allowNetErrors = false;
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
-page.on('console', (m) => m.type() === 'error' && errors.push('console: ' + m.text()));
+page.on('console', (m) => {
+  if (m.type() !== 'error') return;
+  if (allowNetErrors && /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|401|Failed to load resource/.test(m.text())) return;
+  errors.push('console: ' + m.text());
+});
+// Barrierefreiheit: Bedienelemente ohne zugänglichen Namen (Accessibility-Baum von Chromium, wie ihn Screenreader sehen)
+const cdp = await context.newCDPSession(page);
+const a11yIssues = [];
+const NAMED_ROLES = new Set(['button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'tab', 'switch', 'slider', 'spinbutton', 'menuitem']);
+const audit = async (label) => {
+  const { nodes } = await cdp.send('Accessibility.getFullAXTree');
+  let checked = 0;
+  for (const n of nodes) {
+    if (n.ignored || !NAMED_ROLES.has(n.role?.value)) continue;
+    checked++;
+    if (!String(n.name?.value ?? '').trim()) a11yIssues.push(`${label}: ${n.role.value} ohne Namen`);
+  }
+  return checked;
+};
 const results = [];
 const step = async (name, fn) => {
   const t0 = Date.now();
@@ -151,8 +171,34 @@ const shot = async (name) => {
 };
 
 try {
-  await step('App lädt', async () => {
+  await step('App lädt, Erststart-Assistent: Ollama/Modelle, Datenordner, Werkzeuge, erstes Fach, Tastatur', async () => {
     await page.goto(url);
+    const wiz = page.locator('.wizard');
+    await wiz.waitFor();
+    results.push(`INFO Start bis bedienbar (Chromium, Mock): ${Math.round(await page.evaluate(() => performance.now()))} ms`);
+    await audit('Assistent');
+    await shot('phase4-assistent.png');
+    await wiz.getByRole('button', { name: 'Weiter' }).click();
+    await wiz.locator('.wiz-checks li').first().waitFor();
+    const txt = await wiz.innerText();
+    if (!txt.includes('Ollama läuft') || !txt.includes('installiert')) throw new Error('Ollama-Prüfung fehlt: ' + txt.slice(0, 200));
+    // Fokusfalle: Tab bleibt im Dialog
+    for (let i = 0; i < 14; i++) await page.keyboard.press('Tab');
+    if (!(await page.evaluate(() => !!document.activeElement?.closest('.wizard')))) throw new Error('Fokus verlässt den Assistenten');
+    await shot('phase4-assistent-ollama.png');
+    await wiz.getByRole('button', { name: 'Weiter' }).click();
+    await wiz.getByText('beschreibbar', { exact: true }).waitFor();
+    await wiz.getByRole('button', { name: 'Weiter' }).click();
+    await wiz.getByText('ffmpeg', { exact: true }).waitFor();
+    await wiz.getByRole('button', { name: 'Weiter' }).click();
+    await wiz.getByLabel('Name des Fachs').fill('Mathe');
+    await wiz.getByRole('button', { name: 'Fach anlegen' }).click();
+    await wiz.getByText('Fach „Mathe“ angelegt').waitFor();
+    await shot('phase4-assistent-fertig.png');
+    await wiz.getByRole('button', { name: 'Los geht’s' }).click();
+    await wiz.waitFor({ state: 'detached' });
+    await page.locator('.library-view').waitFor();
+    await page.goto(url + '/#/chat');
     await page.getByRole('link', { name: 'Bibliothek' }).waitFor();
     await shot('01-start-chat-de.png');
   });
@@ -479,6 +525,90 @@ try {
     await api('DELETE', `/api/notes/${note.id}`);
   });
 
+  // ------------------------------------------------------------------ Phase 4: Sicherung, Export/Import, Diagnose, Druck
+  await step('Phase 4: Sicherung erstellen, Bibliothek exportieren + wieder importieren (nur Duplikate), Wiederherstellen mit Neustart', async () => {
+    await page.goto(url + '/#/backup');
+    await page.getByRole('button', { name: 'Jetzt sichern' }).click();
+    await page.locator('.snapshot-row').first().waitFor({ timeout: 30_000 });
+    const before = await api('GET', '/api/stats');
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('link', { name: 'Exportieren' }).click()]);
+    if (!/^Uni-Hotspot-Export-Bibliothek-\d{4}-\d\d-\d\d\.zip$/.test(dl.suggestedFilename())) throw new Error('Export-Name: ' + dl.suggestedFilename());
+    const zipPath = path.join(ROOT, '.tmp', 'e2e', 'export.zip');
+    await dl.saveAs(zipPath);
+    await page.locator('input[type=file][accept*=zip]').setInputFiles(zipPath);
+    await page.locator('.report-list').waitFor({ timeout: 60_000 });
+    const rep = await page.locator('.report-list').innerText();
+    if (!/Quellen: 0 neu, \d+ schon vorhanden/.test(rep)) throw new Error('Import-Bericht: ' + rep);
+    results.push(`INFO Export ${(fs.statSync(zipPath).size / 1024).toFixed(0)} KB; Re-Import: ${rep.replace(/\s+/g, ' ')}`);
+    await audit('Sicherung');
+    await shot('phase4-sicherung.png');
+    await api('POST', '/api/subjects', { name: 'Nach-Sicherung', color: '#ff5fd9' });
+    allowNetErrors = true;
+    await page.locator('.snapshot-row').first().getByRole('button', { name: /Wiederherstellen/ }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'Wiederherstellen' }).click();
+    await page.getByText('Wird wiederhergestellt').waitFor();
+    await page.locator('.toast', { hasText: 'Wiederherstellung abgeschlossen' }).waitFor({ timeout: 60_000 });
+    allowNetErrors = false;
+    const subs = await api('GET', '/api/subjects');
+    if (subs.some((s) => s.name === 'Nach-Sicherung')) throw new Error('Fach nach der Sicherung ist noch da – nicht wiederhergestellt');
+    const after = await api('GET', '/api/stats');
+    if (after.sources !== before.sources || after.chunks !== before.chunks) throw new Error(`Bestand abweichend: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    const list = (await api('GET', '/api/backups')).items.map((s) => s.reason);
+    if (!list.includes('pre-restore')) throw new Error('Ist-Zustand nicht gesichert: ' + list);
+  });
+
+  await step('Phase 4: Diagnose – Versionen, Status, Größen; Bericht ohne Dateinamen und Inhalte', async () => {
+    await page.goto(url + '/#/diagnostics');
+    await page.locator('.diag-view .kv').first().waitFor();
+    const txt = await page.locator('.diag-view').innerText();
+    if (!/Node\.js/.test(txt) || !/Schema 4/.test(txt)) throw new Error('Diagnose unvollständig');
+    await audit('Diagnose');
+    await shot('phase4-diagnose.png');
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Bericht herunterladen' }).click()]);
+    const p = path.join(ROOT, '.tmp', 'e2e', 'diagnose.txt');
+    await dl.saveAs(p);
+    const report = fs.readFileSync(p, 'utf8');
+    if (!report.includes('--- Log (bereinigt')) throw new Error('Bericht ohne Log');
+    for (const bad of ['Thermodynamik-Skript', 'Hausarbeit', 'Entropie', 'Carnot', 'Wärmekraftmaschine']) if (report.includes(bad)) throw new Error('Bericht enthält Nutzerinhalt: ' + bad);
+  });
+
+  await step('Phase 4: Notiz als PDF – im Browser-Modus Druckdialog, Druckansicht zeigt nur die Notiz', async () => {
+    await page.goto(url + '/#/learn/notes');
+    await page.locator('.note-item').first().click();
+    await page.locator('.note-body').waitFor();
+    await page.evaluate(() => {
+      window.print = () => (window.__printed = (window.__printed ?? 0) + 1);
+    });
+    await page.getByRole('button', { name: 'PDF', exact: true }).click();
+    if ((await page.evaluate(() => window.__printed)) !== 1) throw new Error('Druckdialog nicht geöffnet');
+    await page.emulateMedia({ media: 'print' });
+    const vis = await page.evaluate(() => ({ sidebar: getComputedStyle(document.querySelector('.sidebar')).display, note: getComputedStyle(document.querySelector('.note-body')).display }));
+    if (vis.sidebar !== 'none' || vis.note === 'none') throw new Error('Druckansicht: ' + JSON.stringify(vis));
+    await page.screenshot({ path: path.join(OUT, 'phase4-druckansicht-notiz.png') });
+    await page.emulateMedia({ media: 'screen' });
+  });
+
+  await step('Phase 4: Assistent jederzeit wieder aufrufbar (Strg+K), Esc schließt', async () => {
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('Einrichtung');
+    await page.keyboard.press('Enter');
+    await page.locator('.wizard').waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('.wizard').waitFor({ state: 'detached' });
+  });
+
+  await step('Phase 4: Barrierefreiheit – jedes Bedienelement hat einen zugänglichen Namen (alle Ansichten)', async () => {
+    let total = 0;
+    for (const hash of ['#/chat', '#/library', '#/search', '#/queue', '#/settings', '#/backup', '#/diagnostics', ...['review', 'cards', 'quiz', 'notes', 'graph', 'stats'].map((t) => `#/learn/${t}`)]) {
+      await page.goto(url + '/' + hash);
+      await page.locator('.view').first().waitFor();
+      await page.waitForTimeout(500);
+      total += await audit(hash);
+    }
+    results.push(`INFO Barrierefreiheit: ${total} Bedienelemente in 13 Ansichten geprüft, ${a11yIssues.length} ohne Namen`);
+    if (a11yIssues.length) throw new Error([...new Set(a11yIssues)].slice(0, 8).join('; '));
+  });
+
   await step('Hybrid-Suche mit Quellenangabe', async () => {
     await page.getByRole('link', { name: 'Suche' }).click();
     await page.getByPlaceholder('Begriff, Frage oder Stichwort …').fill('Entropie abgeschlossenen System');
@@ -717,6 +847,33 @@ try {
     await page.locator('.note-item').first().click();
     await page.locator('.note-body').waitFor();
     await shot('phase3-schmal-notiz.png');
+    await page.setViewportSize({ width: 390, height: 844 });
+  });
+
+  await step('Phase 4: Sicherung, Diagnose, Assistent bei 600 px (kein horizontaler Überlauf)', async () => {
+    await page.setViewportSize({ width: 600, height: 900 });
+    const noOverflow = async (label) => {
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (overflow > 1) throw new Error(`${label}: horizontaler Überlauf ${overflow}px`);
+    };
+    for (const [hash, name] of [
+      ['#/backup', 'phase4-schmal-sicherung.png'],
+      ['#/diagnostics', 'phase4-schmal-diagnose.png'],
+    ]) {
+      await page.goto(url + '/' + hash);
+      await page.locator('.settings-section').first().waitFor();
+      await page.waitForTimeout(400);
+      await noOverflow(hash);
+      await shot(name);
+    }
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('Einrichtung');
+    await page.keyboard.press('Enter');
+    await page.locator('.wizard').getByRole('button', { name: 'Weiter' }).click();
+    await page.locator('.wizard .wiz-checks li').first().waitFor();
+    await noOverflow('Assistent');
+    await shot('phase4-schmal-assistent.png');
+    await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 390, height: 844 });
   });
 

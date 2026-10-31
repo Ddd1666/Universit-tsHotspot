@@ -3471,6 +3471,13 @@ button.loc.link:focus-visible {
 .wizard h2 {
   outline: none;
 }
+.wizard h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin: 14px 0 6px;
+}
 .wiz-body {
   overflow-y: auto;
   min-height: 0;

@@ -7,7 +7,15 @@ Unabhängig von anderen Projekten (kein Bezug zu „Kompass“).
 
 ![Chat mit Quellen](docs/screenshots/chat-quellen.png)
 
-**Phase 3 (dieser Stand):** Lernmodi – Zusammenfassungen als Notizen, Karteikarten mit Wiederholungsplan (SM-2), Quiz mit
+**Phase 4 (dieser Stand, Version 0.4.0):** portables Windows-Paket ohne Installation/Admin (Bau per GitHub Actions), automatische
+Sicherungen mit Wiederherstellung, Export/Import einer Bibliothek oder eines Fachs, Erststart-Assistent, Diagnose-Seite, Notiz als PDF,
+Karteikarten als CSV, Politur (Fehlerseite statt weißer Fläche, Barrierefreiheits-Audit, Bibliothek ohne 2000er-Kappung).
+Ansichten: [Assistent](docs/screenshots/phase4-assistent.png) · [Assistent: Ollama](docs/screenshots/phase4-assistent-ollama.png) ·
+[Sicherung & Export](docs/screenshots/phase4-sicherung.png) · [Diagnose](docs/screenshots/phase4-diagnose.png) ·
+[Druckansicht Notiz](docs/screenshots/phase4-druckansicht-notiz.png) · schmal: [Sicherung](docs/screenshots/phase4-schmal-sicherung.png) /
+[Diagnose](docs/screenshots/phase4-schmal-diagnose.png) / [Assistent](docs/screenshots/phase4-schmal-assistent.png)
+
+**Phase 3:** Lernmodi – Zusammenfassungen als Notizen, Karteikarten mit Wiederholungsplan (SM-2), Quiz mit
 Klausursimulation und Freitextbewertung, Wissensgraph. Alles quellengebunden, als KI-generiert markiert, bearbeitbar.
 Ansichten: [Notiz mit Quellen](docs/screenshots/phase3-notiz.png) · [Karten-Entwürfe](docs/screenshots/phase3-karten-entwuerfe.png) ·
 [Wiederholen](docs/screenshots/phase3-wiederholen.png) · [Quiz-Freitext](docs/screenshots/phase3-quiz-freitext.png) · [Klausur](docs/screenshots/phase3-klausur.png) ·
@@ -23,8 +31,39 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
 [Suche](docs/screenshots/suche.png) · [Einstellungen](docs/screenshots/einstellungen.png) · [Command-Palette](docs/screenshots/command-palette.png) ·
 [Hell](docs/screenshots/suche-hell.png) · [Schmal: Chat](docs/screenshots/schmal-chat.png) / [Bibliothek](docs/screenshots/schmal-bibliothek.png)
 
+## Schnellstart
+
+**Weg A – portables Paket (empfohlen, kein Node.js nötig):**
+1. Paket besorgen: im GitHub-Repo *Actions → „Windows-Paket“ → Run workflow*, danach das Artefakt **Uni-Hotspot-win-x64**
+   herunterladen (ZIP). Oder selbst bauen, siehe „Windows-Paket“.
+2. ZIP **vollständig entpacken** (Rechtsklick → „Alle extrahieren“) nach z. B. `%USERPROFILE%\Uni-Hotspot` – nicht in OneDrive/Downloads.
+3. `Uni-Hotspot.exe` doppelklicken. **SmartScreen** warnt („Der Computer wurde durch Windows geschützt“), weil das Programm nicht
+   signiert ist: *Weitere Informationen → Trotzdem ausführen*. Es wird nichts installiert (keine Registry, kein Autostart, kein Admin).
+4. Ollama starten, der **Einrichtungsassistent** prüft Modelle und zeigt die nötigen `ollama pull …`-Befehle (die App lädt nie selbst Modelle).
+
+**Weg B – aus dem Quellcode:** Node.js ≥ 22.18, dann `start.bat` (Desktop) bzw. `start-browser.bat` (Browser) – Details im nächsten Abschnitt.
+
+Beide Wege nutzen denselben Datenordner `%USERPROFILE%\Uni-Hotspot-Daten`. **Update:** neue Version drüber entpacken (bzw. bei Weg B
+neuen Stand holen und `start.bat`); der Datenordner bleibt unberührt, eine nötige Datenbank-Migration legt vorher automatisch eine
+Kopie unter `backups\` an. **Vor dem ersten Start einer neuen Version empfohlen:** Datenordner kopieren (App beendet).
+
 ## Funktionen
 
+- **Sicherung & Wiederherstellung (Phase 4):** automatische Snapshots (Standard: alle 24 h, die letzten 7 bleiben; manuelle und
+  „vor Wiederherstellung“ werden nie automatisch gelöscht), „Jetzt sichern“, Zielordner wählbar. Datenbank konsistent über die
+  SQLite-Backup-API (auch während der Arbeit), Originaldateien als Hardlink (gleiches Laufwerk, kostet keinen Platz) bzw. Kopie.
+  **Wiederherstellen** nur nach Bestätigung: Sicherung wird geprüft, der Ist-Zustand vorher gesichert, dann startet der Server neu
+  und die Oberfläche lädt neu. Details: „Datenordner & Sicherung“.
+- **Export/Import (Phase 4):** ganze Bibliothek oder ein Fach als ZIP – Originaldateien, Abschnitte (inkl. OCR/Transkripte),
+  Notizen, Karteikarten mit Lernverlauf, Quizfragen. Import führt zusammen (gleiche Quelle = gleicher Inhalt wird übersprungen,
+  gleichnamige Fächer werden zusammengeführt, doppelte Karten/Notizen/Fragen übersprungen) und meldet das Ergebnis. Format: „Export-Format“.
+- **Notiz als PDF** (Desktop: Electron `printToPDF`, Browser: Druckdialog „Als PDF speichern“ mit eigener Druckansicht) und
+  **Karteikarten als CSV** (Excel/LibreOffice, Anki über *Datei → Importieren*: Spalte 1 = Vorderseite, 2 = Rückseite).
+- **Erststart-Assistent:** Ollama + benötigte Modelle (kopierbare Befehle), Datenordner (beschreibbar, freier Platz, Warnung bei
+  OneDrive), Medien-Werkzeuge (optional), erstes Fach, Kurzanleitung. Überspringbar, jederzeit über *Einstellungen → Daten* oder `Strg+K`.
+- **Diagnose:** Versionen (App, Schema, Node, Electron, SQLite), Ollama-Status und Modelle, Werkzeuge, Datenordner-Größen und freier
+  Platz, Sicherungen; **Bericht herunterladen** = Diagnose + bereinigtes Log **ohne Dokumentinhalte, Dateinamen, Chat-Texte**
+  (Benutzerpfade anonymisiert) – zum Weitergeben bei Problemen.
 - **Import „alles aufnehmen“:** Drag & Drop (auch Ordner), Datei-/Ordnerdialog, Fortschritt pro Datei, abbrechbar, Fehler pro Datei
   ohne Gesamtabbruch; Ordner-Import überspringt Systemordner (`.git`, `node_modules`, `__pycache__`, `.venv` …) und Office-Sperrdateien (`~$…`).
   Jede Datei wird gespeichert (SHA-256, Dedupe). Text wird extrahiert aus PDF (mit Seitenzahlen), DOCX, PPTX
@@ -103,6 +142,7 @@ Transkript per whisper.cpp) – durchsuchbar, zitierbar, im Chat befragbar. Neue
   Wissensbereich (alle Quellen / Fächer / einzelne Quellen / freier Chat) und Modell. Streaming mit Stopp/Neu-generieren,
   Zitate `[1]` klickbar → Quellen-Panel (Datei öffnen/herunterladen, in Bibliothek zeigen), Denk-Blöcke (qwen3) einklappbar.
 - **Bibliothek:** Fächer mit Farbe (anlegen/umbenennen/löschen), Quellen mit Status, Vorschau des extrahierten Texts, verschieben, löschen (konsistent: Datei + Chunks + Index + Vektoren).
+  Lange Listen werden seitenweise beim Scrollen nachgeladen (je 200; früher fest „2000 von N“), Zeilen außerhalb des Sichtbereichs rendert der Browser nicht (`content-visibility`).
   Chunks überschreiten nie Seiten-/Folien-/Blattgrenzen; „In Bibliothek zeigen“ springt zur zitierten Stelle.
 - **Einstellungen → Medien:** Werkzeug-Status, Download erst nach Bestätigung (Größen + Zielordner), Schalter je Typ, Sprache (auto/de/en),
   Whisper-Modell, Vision-Modell, max. Aufnahmedauer.
@@ -184,7 +224,7 @@ des Datenordners (= Ordner kopieren) bleibt dadurch klein.
 Alle Modelle werden live aus Ollama (`/api/tags`) gelesen. Ollama wird ausschließlich lokal angesprochen (nur 127.0.0.1/localhost erlaubt).
 Ohne Ollama funktionieren Import und Volltextsuche weiter; Embeddings werden als „ausstehend“ gespeichert und automatisch nachgeholt.
 
-## Datenordner & Backup
+## Datenordner & Sicherung
 
 Alle Nutzerdaten liegen in **einem** Ordner – Standard unter Windows `%USERPROFILE%\Uni-Hotspot-Daten`
 (bewusst nicht „Dokumente“, weil dort oft OneDrive synchronisiert), sonst `./data`. Änderbar per Umgebungsvariable `HOTSPOT_DATA_DIR`
@@ -194,18 +234,96 @@ oder in den Einstellungen (schreibt `hotspot.config.json` im Projektordner, wirk
 Uni-Hotspot-Daten/
   hotspot.sqlite (+ -wal/-shm)   Metadaten, Chats, Volltextindex (FTS5), Vektoren
   files/ab/<sha256>              Originaldateien, content-addressed (Dedupe)
-  logs/server.log                Log (rotiert ab 10 MB)
-  backups/                       automatische DB-Kopie vor jeder Schema-Migration (die neuesten 3)
+  logs/server.log (+ .1 … .3)    Log, rotiert ab 10 MB auch im laufenden Betrieb (höchstens 4 Dateien)
+  backups/                       Standard-Zielordner der Sicherungen (snapshot-…/) und DB-Kopien vor Schema-Migrationen (hotspot-v…sqlite, die neuesten 3)
+  restore-pending.json           nur kurzzeitig: vorgemerkte Wiederherstellung (wird beim nächsten Start ausgeführt)
   (Lernmodi: Notizen, Karten, Wiederholungen, Quiz, Graph, Zwischenergebnisse liegen in hotspot.sqlite)
   tmp/media/job-<n>/             Zwischendateien laufender Medien-Jobs (WAV-Segmente) – werden sofort wieder gelöscht
   electron-profile/              Browser-Profil der Desktop-App
 ```
 
-**Backup = Ordner kopieren, während die App beendet ist** (SQLite im WAL-Modus).
+**Sicherungen (Snapshots)** – *Einstellungen → Daten → Sicherung & Export* bzw. `#/backup`:
+
+```
+<Zielordner>/snapshot-20261030-120000-auto/      (Grund: auto | manual | pre-restore)
+  hotspot.sqlite     konsistente Kopie per SQLite-Backup-API, danach journal_mode=DELETE (eine eigenständige Datei, kein WAL)
+  files/ab/<sha256>  Originaldateien: Hardlink vom vorigen Snapshot oder aus dem Datenordner (gleiches Laufwerk), sonst Kopie
+  manifest.json      Format, App-/Schema-Version, Anzahl/Größe, fehlende Dateien
+```
+
+- Ein Snapshot entsteht unter `…​.partial` und wird erst ganz am Ende umbenannt – ein Absturz/kill mittendrin hinterlässt nie eine
+  „gültige“ halbe Sicherung; Reste räumt der nächste Lauf weg. Es läuft immer nur ein Snapshot gleichzeitig.
+- Automatik: stündliche Prüfung (erstmals 2 min nach dem Start), ob die letzte automatische Sicherung älter als das Intervall ist.
+  Aufbewahrung N gilt nur für automatische Sicherungen.
+- **Zielordner auf einem anderen Laufwerk/USB-Stick** schützt auch vor Laufwerksausfall; dann werden Dateien kopiert (ab dem zweiten
+  Snapshot nur neue, der Rest wird vom vorigen Snapshot im Zielordner verlinkt; auf FAT/exFAT-Sticks ohne Hardlinks immer kopiert).
+  Im Datenordner selbst schützt die Sicherung vor Bedienfehlern und DB-Schäden, nicht vor einem defekten Laufwerk.
+- **Wiederherstellen** (gefährlicher Pfad, daher streng): nur Snapshots aus dem Zielordner (ID = Ordnername, keine Pfade aus der Anfrage,
+  keine Symlinks/Junctions), DB-Kopf „SQLite format 3“, Schema-Version nicht neuer als die App (sonst `restore_too_new`), `quick_check`,
+  **Schema muss exakt dem entsprechen, das die eigenen Migrationen für diese Version erzeugen** (zusätzliche Trigger/Views/Spalten ⇒
+  verweigert), fehlende Originaldateien werden übernommen und **SHA-256-geprüft** (Inhalt muss zum Namen passen). Danach: Ist-Zustand
+  als `pre-restore`-Snapshot sichern, `restore-pending.json` schreiben, Server im selben Prozess neu starten (Desktop und Browser-Modus;
+  gleicher Port/Token, die Oberfläche lädt neu). Beim Start – unter der Instanz-Sperre, vor dem Öffnen der DB – wird die DB ausgetauscht:
+  Kopie nach `hotspot.sqlite.restore-tmp` → umbenennen → `-wal`/`-shm` der alten DB löschen → Vormerkung löschen. Bricht das an
+  irgendeiner Stelle ab, wiederholt der nächste Start alles (die neue DB wird nie mit dem WAL der alten geöffnet). Ältere Snapshots
+  (Schema v2/v3) werden danach normal migriert (mit Auto-Backup).
+- **Manuell (Notfall, App beendet):** Datenordner umbenennen, neuen leeren Datenordner anlegen, `hotspot.sqlite` und `files\` aus einem
+  Snapshot hineinkopieren. Alternativ weiterhin: **Ordner kopieren, während die App beendet ist.**
+
 **Datenbank-Migrationen:** das Schema ist versioniert (`PRAGMA user_version`). Vor jeder Migration einer bestehenden DB legt die App per
 `VACUUM INTO` eine konsistente Kopie unter `backups/` an; jede Migration läuft in einer Transaktion (Fehler ⇒ Rollback). Eine DB einer
 neueren App-Version wird nicht angefasst (klare Meldung). Getestet mit einer echten Phase-1-Datenbank (`tests/fixtures/phase1.sqlite`)
-und einer Phase-2-Datenbank (`tests/fixtures/phase2.sqlite`, Schema v3 → v4: Lernmodi-Tabellen; Backup `backups/hotspot-v3-….sqlite`).
+und einer Phase-2-Datenbank (`tests/fixtures/phase2.sqlite`, Schema v3 → v4: Lernmodi-Tabellen; Backup `backups/hotspot-v3-….sqlite`)
+sowie einer Phase-3-Datenbank (`tests/fixtures/phase3.sqlite`, Schema v4 mit Karten/Verlauf/Notizen/Quiz/Graph – Phase 4 ändert das
+Schema nicht, Einstellungen liegen in der Schlüssel/Wert-Tabelle). Alle drei Fixtures werden außerdem als Snapshot wiederhergestellt und migriert (Test).
+
+## Export-Format (Export/Import)
+
+ZIP (unkomprimiert, ZIP64 ab 4 GB; Name `Uni-Hotspot-Export-<Fach|Bibliothek>-<Datum>.zip`):
+
+```
+manifest.json    {"format":"uni-hotspot-export","formatVersion":1,"appVersion","createdAt","scope":{"kind":"all"|"subject","name"},"counts":{…}}
+files/<sha256>   Originaldateien (Name = SHA-256 des Inhalts)
+library.jsonl    eine JSON-Zeile je Datensatz, Verweise über Schlüssel der Export-DB:
+                 {"t":"subject","key","name","color"}
+                 {"t":"source","key","subject","parent","sha256","name","relPath","kind","status","statusDetail","pageCount","importedAt"}
+                 {"t":"chunk","source","ord","text","heading","loc":[art,start,ende,label],"origin"}
+                 {"t":"note","title","body","level","scope","subject","ai","edited","createdAt","updatedAt","citations":[{"n","source","chunkOrd","sourceName","loc","heading"}]}
+                 {"t":"card","type","front","back","status","ai","subject","source","chunkOrd","sourceName","loc","reps","ease","intervalDays","lapses","due","lastReview","createdAt","updatedAt","reviews":[[bewertung,zeit,intervall,ease],…]}
+                 {"t":"question","type","question","options","answer","explanation","topic","fingerprint","subject","source","chunkOrd","sourceName","loc","createdAt"}
+```
+
+Nicht enthalten: Chats, Vektoren (werden neu berechnet), Quiz-Verlauf, Wissensgraph, Einstellungen – eine 1:1-Kopie ist die Sicherung.
+**Import-Sicherheit:** Eintragsnamen werden nie als Pfade benutzt (nur exakt `manifest.json`, `library.jsonl`, `files/<sha256>`),
+Symlink- oder verschlüsselte Einträge ⇒ Abbruch, Zip-Slip/-Bomben-Schutz wie beim ZIP-Import (Kompressionsrate, Summe, gezählte
+entpackte Bytes), Datensatz höchstens 8 MB, Dateiinhalt muss zum SHA-256 passen, **Typ wird aus dem Inhalt neu erkannt** (passt er
+nicht zum Export, wird die Quelle neu verarbeitet statt fremde Abschnitte zu übernehmen), alle Felder validiert und gekürzt, keine
+IDs der Ursprungs-DB übernommen, SQL parametrisiert, Pakete à 300 Datensätze je Transaktion (Event-Loop bleibt frei).
+**Konflikte:** Quelle mit gleichem Inhalt existiert ⇒ vorhandene bleibt (inkl. Fach), Verweise zeigen auf sie; Fach mit gleichem Namen ⇒
+zusammengeführt; Karte (Typ+Vorder-+Rückseite), Notiz (Titel+Text), Frage (Fingerabdruck) schon vorhanden ⇒ übersprungen.
+
+## Windows-Paket (Distribution)
+
+**Entscheidung:** portabler Ordner, gebaut per **GitHub Actions auf `windows-latest`** (`.github/workflows/windows-package.yml`,
+manuell oder per Tag `v*`): `npm ci` → Typecheck/Lint/Tests → `npm run build` → Electron-Laufzeit für Windows laden →
+`node scripts/package-win.mjs` → **Rauchtest** (Paket startet ohne Admin mit Mock-Ollama und eigenem Datenordner, beendet sich mit
+Exit-Code 0) → Artefakt hochladen (der Artefakt-Download ist die ZIP). Hier (Entwicklungsrechner) wurde nur die Zusammenstellung der
+App-Dateien geprüft (`node scripts/package-win.mjs --check` + Start der zusammengestellten App außerhalb des Repos); der Workflow selbst
+ist **nicht ausgeführt** (nur YAML-Prüfung).
+
+- **Warum kein electron-builder/Installer:** ~200 MB zusätzliche Dev-Abhängigkeiten (`app-builder-bin` für alle Plattformen,
+  NSIS-Download beim Bauen) für einen Kopierschritt – es gibt keine nativen Module, keine Signatur, keinen Auto-Updater. Ein
+  per-user-Installer (`perMachine: false`) brächte nur Startmenü-Eintrag/Deinstallationseintrag; ohne ihn bleibt alles ein Ordner
+  (Entfernen = Ordner löschen). Verknüpfung: Rechtsklick auf `Uni-Hotspot.exe` → „An Start anheften“.
+- **Paketinhalt:** `Uni-Hotspot.exe` (umbenanntes `electron.exe`), Electron-Laufzeit, `resources\app\` mit `electron/`, `server/`,
+  `dist/web/`, `scripts/media-manifest.json`, `package.json` und nur den Laufzeit-Abhängigkeiten laut `package-lock.json` (57 Pakete,
+  ~15 MB; kein asar, weil der Server TypeScript per Type-Stripping direkt ausführt), `LIESMICH.txt`. **Nicht enthalten:** Modelle,
+  whisper.cpp, ffmpeg (weiterhin bestätigter Download in der App, Ziel `resources\app\tools\`), Tests, Nutzerdaten.
+- **Ohne Codesignatur** ⇒ SmartScreen-Warnung beim ersten Start („Weitere Informationen → Trotzdem ausführen“); ggf. blockiert
+  Smart App Control unsignierte Programme ganz – dann Weg B (`start.bat`) nutzen. Code-Signing und Auto-Updater sind nicht im Umfang.
+- **Update:** neue ZIP über den Ordner entpacken (Dateien ersetzen) oder in einen neuen Ordner; `tools\` und `hotspot.config.json`
+  im alten Ordner ggf. mitnehmen. Datenordner bleibt unberührt.
+- Lokal bauen (auf Windows): `npm ci`, `npm run build`, `node node_modules\electron\install.js`, `npm run package:win` ⇒ `out\Uni-Hotspot-0.4.0-win-x64\`.
 
 ## Architektur (kurz)
 
@@ -264,6 +382,18 @@ scripts/            start/dev/bench/e2e
 | Strukturierte Ausgabe | Ollama `format` (JSON-Schema) + eigene Validierung | JSON-Schema-Validator-Bibliothek |
 | Notizen/Karten rendern | vorhandenes `marked` + `DOMPurify` | – |
 
+**Phase 4: keine neue npm-Abhängigkeit.**
+
+| Bedarf | Lösung | verworfen |
+|---|---|---|
+| Konsistente DB-Sicherung | `backup()` aus `node:sqlite` (SQLite-Online-Backup-API, läuft schrittweise) | Rohkopie (bei WAL inkonsistent) |
+| ZIP schreiben (Export) | eigener ZIP-Writer (~120 Zeilen, unkomprimiert, CRC über `zlib.crc32`, ZIP64) – gelesen wird mit dem vorhandenen `yauzl` | `archiver`/`jszip` |
+| Windows-Paket | `scripts/package-win.mjs` (Kopierschritt) + GitHub Actions | `electron-builder`/`electron-packager` (siehe „Windows-Paket“) |
+| PDF | Electron `printToPDF` (Desktop) bzw. Druck-CSS (Browser) | PDF-Bibliothek |
+| Log-Rotation | eigenes synchrones pino-Ziel (`server/logs.ts`, ~60 Zeilen) | `pino-roll`/`rotating-file-stream` |
+| Lange Listen | Seiten à 200 + `content-visibility: auto` | Virtualisierungs-Bibliothek |
+| Barrierefreiheits-Prüfung | Accessibility-Baum von Chromium per CDP im E2E-Skript | `axe-core` |
+
 Build/Dev: `react`, `react-dom`, `vite` + `@vitejs/plugin-react` (UI), `marked` + `dompurify` (sicheres Markdown), `katex` (Formeln, lazy),
 `electron` (Desktop-Hülle; Binary wird erst beim ersten Desktop-Start geladen), `typescript`, `eslint`, `vitest`, `jsdom` (Sanitizer-Tests), `fflate` (Test-Fixtures).
 
@@ -281,6 +411,8 @@ npm run bench       # Messungen (Mock)
 npm run bench:media # Phase-2-Messungen (Mock-Ollama + Fake-Werkzeuge)
 npm run bench:learn # Phase-3-Messungen (Abfragen bei 2000 Quellen / 40k Abschnitten)
 npm run eval:learning -- <Datei|Ordner>  # Lernmodi an echten Unterlagen mit echtem Ollama -> Bericht zum Bewerten
+npm run bench:phase4 # Phase-4-Messungen (Kaltstart/RAM, Suche bei 100k Abschnitten, Liste 20k, Sicherung/Wiederherstellung)
+npm run package:win  # Windows-Paket nach out\ (auf Windows, nach build + Electron-Download; --check = nur App-Dateien)
 npm run setup-media # Medien-Werkzeuge laden (fragt vorher nach)
 npm run e2e         # Browser-Durchlauf mit Screenshots (benötigt eine Playwright-Installation)
 ```
@@ -320,7 +452,15 @@ Für die Lernmodi erkennt der Mock die Aufgabe am `TASK: …` im System-Prompt u
   (Zusammenfassung), ≤ 50 Karten, ≤ 40 Fragen, ≤ 60 Konzepte/100 Beziehungen je Quelle, ≤ 400 neue Konzepte je Job, ≤ 50 wartende Jobs;
   Textlängen (Karte 2 000/4 000 Zeichen, Notiz 200 000, Antwort 4 000) per Schema. Alle neuen Abfragen parametrisiert und per
   `EXPLAIN QUERY PLAN` geprüft (Test + `npm run bench:learn`). Token/Host/Origin-Prüfung unverändert für alle neuen `/api`-Routen.
+- **Phase 4 (Sicherung/Import/Diagnose):** Wiederherstellen und Import sind als gefährliche Pfade behandelt (siehe „Datenordner &
+  Sicherung“ und „Export-Format“): keine Pfade aus Anfragen, keine Symlinks/Junctions, Inhalte per SHA-256 geprüft, manipulierte oder
+  zu neue Datenbanken verweigert, Limits gegen Zip-Bomben/Riesenzeilen, Typ aus dem Inhalt. Wiederherstellen braucht `{"confirm":true}`.
+  Export-Download akzeptiert das Token per Query (nur `GET /api/library/export`, wie Datei-Downloads); alles andere wie bisher per
+  Header + Host/Origin-Prüfung. CSV-Export schützt gegen Formel-Injektion (`=`, `+`, `-`, `@` ⇒ `'`). Diagnose-Bericht: nur Zeit,
+  Stufe, gekürzte Meldung (Text in Anführungszeichen entfernt), bei Fehlern nur Typ/Code/Stack-Zeilen; Zusatzdaten verworfen,
+  Benutzerpfade und Token anonymisiert; das Ingest-Log nennt Quellen nur noch per ID statt Dateiname.
 - Electron: `contextIsolation`, `sandbox`, kein `nodeIntegration`, keine fremde Navigation/Popups/Berechtigungen, Netzwerk nur zum lokalen Server.
+  PDF-Export lädt nur die eigene Oberfläche in einem unsichtbaren, ebenso abgesicherten Fenster. Absturz des Renderers ⇒ Dialog „Neu laden / Beenden“.
 
 ## Messwerte (Linux-Container, Node 22, Mock-Ollama; `npm run bench`)
 
@@ -388,13 +528,54 @@ Echte Werte (Sekunden pro Bild, Minuten Rechenzeit pro Audio-Minute, VRAM) misst
 
 Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der RTX 3060 typ. wenige ms; Antwort-Streaming abhängig vom Modell).
 
+## Fehlerbehebung
+
+| Problem | Abhilfe |
+|---|---|
+| „Ollama nicht erreichbar“ | Ollama über das Startmenü starten (oder `ollama serve`), dann *Diagnose → Erneut prüfen*. Import/Volltextsuche gehen auch ohne Ollama |
+| Modell „fehlt“ (Assistent/Diagnose) | angezeigten Befehl kopieren und im Terminal ausführen (`ollama pull …`, mehrere GB) – die App lädt nie selbst |
+| Antworten langsam, `ollama ps` zeigt CPU-Anteil | *Einstellungen → Kontextgröße* 4096; kleineres Modell |
+| SmartScreen-Warnung beim Paket | „Weitere Informationen → Trotzdem ausführen“ (unsigniert, siehe „Windows-Paket“) |
+| „Uni-Hotspot läuft bereits …“ | vorhandenes Fenster/Tab nutzen; nach Absturz wird die Sperre automatisch übernommen (README „Sperrdatei“) |
+| Datenordner in OneDrive (Warnung im Assistenten) | *Einstellungen → Daten → Anderer Datenordner* außerhalb von OneDrive (z. B. `C:\UniHotspotDaten`), App beenden, Ordner verschieben |
+| Etwas verkonfiguriert/gelöscht | *Sicherung & Export → Wiederherstellen* (Ist-Zustand wird vorher gesichert) |
+| Ansicht zeigt „Diese Ansicht ist abgestürzt“ | „Neu laden“; bleibt es: *Diagnose → Bericht herunterladen* und melden (enthält keine Inhalte) |
+| Import einer Export-Datei abgelehnt | Meldung nennt den Grund (z. B. `zip_bomb`, `manifest`, neuere Version); nur Dateien aus „Exportieren“ verwenden |
+| Speicherplatz knapp | *Diagnose* zeigt Größen; Aufbewahrung der Sicherungen senken oder Zielordner auf anderes Laufwerk legen |
+
+## Barrierefreiheit (Audit Phase 4)
+
+Geprüft am 30.10.2026 im Browser-E2E (Chromium) und per Code-Durchsicht:
+
+| Bereich | Methode | Ergebnis |
+|---|---|---|
+| Zugängliche Namen | Accessibility-Baum von Chromium (wie Screenreader ihn sehen) per CDP für alle Bedienelemente (Buttons, Links, Eingaben, Auswahlen, Radios, Tabs) in 13 Ansichten + Assistent | 375 Bedienelemente geprüft, 0 ohne Namen (E2E-Schritt schlägt bei jedem Fund fehl) |
+| Tastatur | E2E: Assistent mit Fokusfalle (14× Tab bleibt im Dialog), Esc schließt; Befehlspalette, Wiederholen 1–4/Leertaste, Graph-Liste (bestehend) | ok |
+| Fokus | sichtbarer Fokusrahmen global (`:focus-visible`), Dialoge setzen Fokus auf Überschrift/ersten Knopf und geben ihn zurück | ok |
+| Kontrast AA | bestehender Kontrast-Test (Token-Paare hell/dunkel); neue Ansichten verwenden nur vorhandene Tokens | ok (Test grün) |
+| Live-Regionen | Toasts `role=status`/`aria-live`, Schrittanzeige des Assistenten, „Kopiert“ beim Kopieren, Laufstatus der Sicherung, Neustart-Hinweis, Quellenzahl der Bibliothek | ok |
+| Gefunden & behoben | Skip-Link war fest Englisch („Skip to content“), Befehlspalette hatte englisches `aria-label` → beide übersetzt; Kopier-Knöpfe nennen jetzt den Befehl im Namen und melden „Kopiert“ | behoben |
+| Offen | Graph-Canvas selbst ist für Screenreader nicht bedienbar (dafür gibt es die Liste/Tabelle); Status-Auswahl in Bibliothek/Karten heißt in beiden Sprachen „Status“ | bekannt |
+
 ## Roadmap
 
 - **Phase 2 (umgesetzt, nur mit Mock getestet):** Bilder/OCR/Vision, gescannte PDFs, Audio/Video-Transkription.
 - **Phase 3 (umgesetzt, nur mit Mock getestet):** Lernmodi – Karteikarten mit Spaced Repetition, Quiz, Zusammenfassungen, Wissensgraph.
-- **Phase 4:** Installer, Auto-Backup, Politur.
+- **Phase 4 (umgesetzt, nur mit Mock getestet; Paket nur als CI-Workflow):** portables Windows-Paket, Sicherung/Wiederherstellung,
+  Export/Import, Erststart-Assistent, Diagnose, Politur.
+- **Danach (nur mit ausdrücklichem Okay, nicht im Umfang):** Code-Signing (würde SmartScreen-Warnung beseitigen), Auto-Updater,
+  per-user-Installer, FSRS statt SM-2 (sobald genug eigene Wiederholungen vorliegen), `bge-m3` als Standard (nach VRAM-Test),
+  ANN-Vektorindex erst ab gemessener Hybrid-p50 > 150 ms.
 
 ## Bekannte Grenzen
+
+- **Phase 4:** Das Windows-Paket wurde hier nie gebaut/gestartet (kein Electron-Binary, Workflow nicht ausgeführt) – erst der CI-Lauf
+  bzw. der Laptop zeigt, ob es startet. Sicherungen im Datenordner schützen nicht vor Laufwerksausfall (Zielordner auf anderem Laufwerk
+  wählen). Eine Sicherung kann einzelne Originaldateien verpassen, wenn diese genau während des Sicherns gelöscht werden (wird als
+  „fehlten“ gezählt). Export/Import übernimmt keine Chats, Vektoren, Quiz-Verläufe und keinen Graphen; Karten/Fragen verlieren beim
+  Import den Bezug auf Chats. Wiederherstellen ersetzt immer den kompletten Stand (kein Teil-Restore einzelner Fächer – dafür Export/Import).
+  PDF-Export im Browser-Modus über den Druckdialog. Startzeit wird im Entwicklungsordner (OneDrive, Virenscanner) vom Laden der Module
+  dominiert; auf dem Laptop außerhalb von OneDrive vermutlich schneller (Laptop-Messung).
 
 - **Lernmodi:** Qualität der Zusammenfassungen, Karten, Fragen, Bewertungen und Graphen ist **nur mit Mock geprüft** – kleine Modelle
   (4B) machen Fehler; Plausibilitätsprüfung und Entwurfs-Status fangen nur einen Teil ab. Bewertung an echten Unterlagen:
@@ -415,8 +596,7 @@ Mit echtem Ollama kommen die Modell-Zeiten dazu (Embedding eines Chunks auf der 
   passwortgeschützte Office-Dateien und PDFs werden gespeichert und als „passwortgeschützt“ gemeldet (ohne Passwort speichern, erneut importieren).
 - Text-/CSV-/HTML-Dateien werden bis 32 MB Text indexiert; darüber Hinweis „gekürzt“ (Datei bleibt vollständig gespeichert).
 - DOCX liefert Seitenzahlen nur, wenn Word Seitenumbruch-Hinweise gespeichert hat; sonst Abschnitt/Überschrift.
-- Verschachtelte ZIPs werden gespeichert, aber nicht weiter entpackt. Die Bibliotheksliste zeigt max. 2000 Einträge mit Hinweis „2000 von N“
-  (bewusst ohne Seitennavigation – Fach-Filter/Suche nutzen).
+- Verschachtelte ZIPs werden gespeichert, aber nicht weiter entpackt.
 - `nomic-embed-text` ist englisch-lastig; für deutsch/englisch gemischte Unterlagen `bge-m3` + Re-Index empfehlen.
 - **Bewusste Entscheidung:** Datei-Links („Öffnen“/Download) enthalten das Sitzungstoken in der URL, damit Browser und Electron die Datei
   direkt öffnen können (kein Cookie nötig). Nur lokal relevant (Server bindet 127.0.0.1), das Token gilt bis zum nächsten Neustart.
