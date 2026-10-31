@@ -317,7 +317,9 @@ ersetzen (nur mit Zustimmung des Nutzers).
 
 - Ausgaben von: `node -v`, `npm.cmd -v`, `ollama --version`, `ollama list`, `ollama ps`, Windows-Version (`winver`).
 - Modus (Desktop oder Browser), genaue Schritte, erwartetes vs. tatsächliches Verhalten, Screenshot.
-- Letzte ~100 Zeilen aus `%USERPROFILE%\Uni-Hotspot-Daten\logs\server.log` (enthält keine Dokumentinhalte, aber ggf. Dateinamen).
+- Am einfachsten: *Einstellungen → Daten → Diagnose → Bericht herunterladen* (Versionen, Status, Größen, bereinigtes Log – ohne
+  Dokumentinhalte, Dateinamen, Chat-Texte; Benutzerpfade anonymisiert). Alternativ letzte ~100 Zeilen aus
+  `%USERPROFILE%\Uni-Hotspot-Daten\logs\server.log` (seit Phase 4 ohne Dateinamen; Fehlermeldungen können Text enthalten – vor dem Weitergeben ansehen).
 - Ergebnis des VRAM-Tests (gemma3:4b @ 8k + bge-m3: beide `100% GPU`?) und ob Strg+C/Zweitstart wie beschrieben funktionierten.
 - Bei Installationsfehlern: Ende der `npm ci`-Ausgabe; bei UI-Fehlern im Browser-Modus die Konsole (F12 → Konsole).
 - Bei Modellproblemen: Chat-Modell, `num_ctx`, Ausgabe von `ollama ps` während einer Antwort.
