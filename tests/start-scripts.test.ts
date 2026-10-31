@@ -128,7 +128,7 @@ describe('Windows-Paket (Phase 4)', () => {
 
   it('K16: LIESMICH nennt, was bei einem neuen Ordner mitzukopieren ist', () => {
     const src = fs.readFileSync(path.join(PROJECT_ROOT, 'scripts', 'package-win.mjs'), 'utf8');
-    expect(src).toMatch(/resources\\\\app\\\\tools/);
+    expect(src).toMatch(/NEUEN Ordner[\s\S]*resources\\\\app\\\\tools[\s\S]*hotspot\.config\.json/);
   });
 });
 

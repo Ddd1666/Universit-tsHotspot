@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { once } from 'node:events';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { Writable } from 'node:stream';
 import { zipSync, strToU8 } from 'fflate';
 import { afterEach, describe, expect, it } from 'vitest';
 import { importLibrary, ZipWriter } from '../server/transfer.ts';
@@ -342,5 +343,15 @@ describe('Korrekturrunde 1: Import abbruchfest, Zeitstempel, Dedupe ohne Volltex
     await reader.cancel().catch(() => {});
     const tmp = a.hotspot.services.blobs.tmpDir;
     await waitFor(() => !fs.readdirSync(tmp).some((f) => f.startsWith('export-')), { message: 'Zwischendatei weg', timeout: 15_000 });
+  });
+
+  it('K9: ZipWriter wartet auf "drain" und die Ausgabe wird ohne Fehler geschlossen -> Abbruch statt ewigem Warten', async () => {
+    // Gegenstelle liest nie (Puffer voll), dann schließt sie: "drain" kommt nie
+    const out = new Writable({ highWaterMark: 16, write() {} });
+    const zw = new ZipWriter(out);
+    const pending = zw.add('a.bin', 1024, Buffer.alloc(1024));
+    setTimeout(() => out.destroy(), 50);
+    const r = await Promise.race([pending.then(() => 'fertig', (e: NodeJS.ErrnoException) => e.code ?? 'Fehler'), new Promise((res) => setTimeout(() => res('hängt'), 2000))]);
+    expect(r).toBe('ERR_STREAM_DESTROYED');
   });
 });

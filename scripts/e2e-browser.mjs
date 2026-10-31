@@ -677,6 +677,66 @@ try {
     await page.getByPlaceholder('Chats durchsuchen …').fill('');
   });
 
+  // Regressionstests der UI-Fixes aus fac53c4 (K18)
+  await step('Regression: Befehlspalette – Enter führt den obersten Treffer aus, nicht das Element unter dem Mauszeiger', async () => {
+    // 1) Position von „In Unterlagen suchen“ in der gefilterten Liste ermitteln (2. Treffer nach dem Assistenten)
+    await page.keyboard.press('Control+k');
+    await page.locator('.palette input:focus').waitFor();
+    await page.keyboard.insertText('Einrichtung');
+    const box = await page.locator('.palette-item', { hasText: 'In Unterlagen suchen' }).boundingBox();
+    await page.keyboard.press('Escape');
+    await page.locator('.palette').waitFor({ state: 'detached' });
+    // 2) Maus dorthin (echte Bewegung über der ungefilterten Liste), dann tippen: der Suchtreffer erscheint unter dem
+    //    stehenden Zeiger – vor dem Fix markierte Chromiums künstliches mouseenter ihn und Enter startete die Suche
+    await page.keyboard.press('Control+k');
+    await page.locator('.palette input:focus').waitFor();
+    await page.mouse.move(box.x + 30, box.y + box.height / 2, { steps: 5 });
+    await page.keyboard.insertText('Einrichtung');
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Enter');
+    await page.locator('.wizard').waitFor({ timeout: 5000 });
+    await page.keyboard.press('Escape');
+    await page.locator('.wizard').waitFor({ state: 'detached' });
+  });
+
+  await step('Regression: „Neuer Chat“ beginnt mit „Alle Quellen“, auch wenn der vorige Entwurf „Ohne Quellen“ hatte', async () => {
+    await page.getByRole('button', { name: 'Neuer Chat' }).click();
+    await page.getByRole('button', { name: /Alle Quellen/ }).click();
+    await page.getByLabel('Ohne Quellen (freier Chat)').check();
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /Ohne Quellen/ }).waitFor();
+    await page.locator('.chat-item').first().locator('a').click();
+    await page.locator('.msg').first().waitFor();
+    await page.getByRole('button', { name: 'Neuer Chat' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.msg').length === 0); // Entwurf ist offen
+    await page.waitForTimeout(200);
+    if (await page.getByRole('button', { name: /Ohne Quellen/ }).count()) throw new Error('Entwurf übernimmt „Ohne Quellen“');
+    await page.getByRole('button', { name: /Alle Quellen/ }).waitFor({ timeout: 2000 });
+  });
+
+  await step('Regression: Text direkt nach „Neuer Chat“ abgeschickt landet im neuen Chat, nicht im vorher offenen', async () => {
+    await page.locator('.chat-item').first().locator('a').click();
+    await page.locator('.msg').first().waitFor();
+    const before = await api('GET', '/api/chats');
+    const oldId = before[0].id;
+    const oldCount = (await api('GET', `/api/chats/${oldId}`)).messages.length;
+    await page.getByRole('button', { name: 'Neuer Chat' }).click();
+    const box = page.getByRole('textbox', { name: /Frag deine Unterlagen/ });
+    await box.fill('Sofort-Frage zur Entropie');
+    await box.press('Enter');
+    await page.waitForFunction((n) => document.querySelectorAll('.chat-item').length === n + 1, before.length, { timeout: 10_000 });
+    await page.locator('.msg.assistant:not(.is-streaming)').last().waitFor({ timeout: 15_000 });
+    if ((await api('GET', `/api/chats/${oldId}`)).messages.length !== oldCount) throw new Error('Nachricht im alten Chat gelandet');
+    const item = page.locator('.chat-item.active', { hasText: 'Sofort-Frage' }); // aktiver Chat = der neue (Auto-Titel)
+    await item.waitFor({ timeout: 10_000 });
+    await item.hover();
+    await item.getByRole('button', { name: /Löschen/ }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'Löschen' }).click();
+    await page.waitForFunction((n) => document.querySelectorAll('.chat-item').length === n, before.length);
+    await page.locator('.chat-item').first().locator('a').click(); // Ausgangslage für die folgenden Schritte
+    await page.locator('.msg').first().waitFor();
+  });
+
   await step('Stopp während des Streamings: Teiltext + "Abgebrochen", Neu generieren möglich', async () => {
     await page.getByRole('button', { name: 'Neuer Chat' }).click();
     const box = page.getByRole('textbox', { name: /Frag deine Unterlagen/ });
