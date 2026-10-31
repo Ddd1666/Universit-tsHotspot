@@ -679,24 +679,24 @@ try {
 
   // Regressionstests der UI-Fixes aus fac53c4 (K18)
   await step('Regression: Befehlspalette – Enter führt den obersten Treffer aus, nicht das Element unter dem Mauszeiger', async () => {
-    // 1) Position von „In Unterlagen suchen“ in der gefilterten Liste ermitteln (2. Treffer nach dem Assistenten)
+    // 1) Position von „In Unterlagen suchen“ in der gefilterten Liste ermitteln (2. Treffer nach „Bibliothek“)
     await page.keyboard.press('Control+k');
     await page.locator('.palette input:focus').waitFor();
-    await page.keyboard.insertText('Einrichtung');
+    await page.keyboard.insertText('Bib');
     const box = await page.locator('.palette-item', { hasText: 'In Unterlagen suchen' }).boundingBox();
     await page.keyboard.press('Escape');
     await page.locator('.palette').waitFor({ state: 'detached' });
-    // 2) Maus dorthin (echte Bewegung über der ungefilterten Liste), dann tippen: der Suchtreffer erscheint unter dem
-    //    stehenden Zeiger – vor dem Fix markierte Chromiums künstliches mouseenter ihn und Enter startete die Suche
+    // 2) Mauszeiger steht dort, BEVOR die Palette aufgeht (wie nach einem Klick in einen Dialog); dann tippen: der Suchtreffer
+    //    erscheint unter dem stehenden Zeiger – vor dem Fix markierte Chromiums künstliches mouseenter ihn, Enter startete die Suche
+    await page.mouse.move(box.x + 30, box.y + box.height / 2, { steps: 5 });
     await page.keyboard.press('Control+k');
     await page.locator('.palette input:focus').waitFor();
-    await page.mouse.move(box.x + 30, box.y + box.height / 2, { steps: 5 });
-    await page.keyboard.insertText('Einrichtung');
-    await page.waitForTimeout(300);
+    await page.keyboard.type('Bib');
+    await page.waitForTimeout(200);
     await page.keyboard.press('Enter');
-    await page.locator('.wizard').waitFor({ timeout: 5000 });
-    await page.keyboard.press('Escape');
-    await page.locator('.wizard').waitFor({ state: 'detached' });
+    await page.locator('.library-view').waitFor({ timeout: 5000 });
+    await page.goBack();
+    await page.locator('.chat-view').waitFor();
   });
 
   await step('Regression: „Neuer Chat“ beginnt mit „Alle Quellen“, auch wenn der vorige Entwurf „Ohne Quellen“ hatte', async () => {
@@ -720,10 +720,15 @@ try {
     const before = await api('GET', '/api/chats');
     const oldId = before[0].id;
     const oldCount = (await api('GET', `/api/chats/${oldId}`)).messages.length;
-    await page.getByRole('button', { name: 'Neuer Chat' }).click();
-    const box = page.getByRole('textbox', { name: /Frag deine Unterlagen/ });
-    await box.fill('Sofort-Frage zur Entropie');
-    await box.press('Enter');
+    // Klick, Tippen und Enter in EINER Aufgabe des Browsers (wie schnelles Tippen direkt nach dem Klick): vor dem Fix schaltete
+    // die Route erst beim asynchronen hashchange um, die Nachricht ging an den noch offenen Chat
+    await page.evaluate(() => {
+      document.querySelector('button.new-chat').click();
+      const ta = document.querySelector('.composer textarea');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, 'Sofort-Frage zur Entropie');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
     await page.waitForFunction((n) => document.querySelectorAll('.chat-item').length === n + 1, before.length, { timeout: 10_000 });
     await page.locator('.msg.assistant:not(.is-streaming)').last().waitFor({ timeout: 15_000 });
     if ((await api('GET', `/api/chats/${oldId}`)).messages.length !== oldCount) throw new Error('Nachricht im alten Chat gelandet');
