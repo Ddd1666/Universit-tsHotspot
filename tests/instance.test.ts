@@ -93,6 +93,42 @@ describe('Instanz-Sperre (zweiter Start)', () => {
     }
   });
 
+  it('K3: Platte voll beim Eintragen des Ports (ENOSPC) – Sperre wird nie geleert, ein zweiter Start hält sie nicht für verwaist', async () => {
+    const { loadConfig } = await import('../server/config.ts');
+    const { createHotspot } = await import('../server/app.ts');
+    const dataDir = tmpDir('lock-enospc');
+    const lockFile = path.join(dataDir, 'hotspot.lock');
+    const hs = await createHotspot(loadConfig({ dataDir, port: 0, mockOllama: true, webDir: null, logToFile: true }));
+    const before = fs.readFileSync(lockFile, 'utf8');
+    const write = fs.writeFileSync.bind(fs) as (...a: unknown[]) => void;
+    const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+    // wie eine volle Platte: Temp-Datei nicht schreibbar; ein normales Überschreiben kürzt erst und scheitert dann
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      const s = String(p);
+      if (s.startsWith(lockFile + '.')) throw enospc();
+      if (s === lockFile) {
+        fs.truncateSync(lockFile, 0);
+        throw enospc();
+      }
+      return write(p, ...rest);
+    }) as typeof fs.writeFileSync);
+    try {
+      await hs.listen();
+    } finally {
+      spy.mockRestore();
+    }
+    try {
+      expect(fs.readFileSync(lockFile, 'utf8')).toBe(before); // alter Inhalt (pid, port null) bleibt
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(lockFile, old, old); // älter als 5 s: eine leere Sperre würde jetzt übernommen
+      const r = await runCli({ HOTSPOT_DATA_DIR: dataDir, HOTSPOT_MOCK_OLLAMA: '1', HOTSPOT_PORT: '0' });
+      expect(r.out).toContain('läuft bereits');
+      expect(r.code, r.out).toBe(0);
+    } finally {
+      await hs.close();
+    }
+  }, 60_000);
+
   it('verwaiste Sperre (Prozess existiert nicht mehr) wird übernommen; Sperre wird beim Beenden entfernt', async () => {
     const dataDir = tmpDir('stale');
     fs.mkdirSync(dataDir, { recursive: true });

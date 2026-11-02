@@ -129,27 +129,38 @@ function createExclusive(file: string, content: string): boolean {
 
 /**
  * Ersetzt den Inhalt atomar (Temp-Datei + rename), mit Wiederholungen (Windows: Datei kurz von Virenscanner/Indexer
- * geöffnet; 5 × 20 ms reichten unter Last nicht – dann fehlte der Port in der Sperre). Klappt das Umbenennen gar nicht,
- * direkt überschreiben: die Datei gehört uns, ein Leser wertet unlesbaren Inhalt ohnehin als „startet gerade“.
+ * geöffnet; 5 × 20 ms reichten unter Last nicht – dann fehlte der Port in der Sperre). Nur wenn die Temp-Datei geschrieben
+ * wurde und allein das Umbenennen scheitert, wird die Sperre an Ort und Stelle überschrieben – ohne sie vorher zu kürzen.
+ * Ist schon die Temp-Datei nicht schreibbar (ENOSPC, Platte voll), bleibt der alte Inhalt stehen: eine geleerte Sperre
+ * hielte ein zweiter Start nach 5 s für verwaist und übernähme sie.
  */
 function replaceAtomic(file: string, content: string): boolean {
   const tmp = tmpName(file);
+  let written = false;
   try {
     for (let i = 0; i < 8; i++) {
       try {
-        fs.writeFileSync(tmp, content);
+        if (!written) {
+          fs.writeFileSync(tmp, content);
+          written = true;
+        }
         fs.renameSync(tmp, file);
         return true;
       } catch {
         pause(Math.min(100, 20 * (i + 1)));
       }
     }
+    if (!written) return false;
+    const fd = fs.openSync(file, 'r+'); // 'r+' kürzt nicht beim Öffnen
     try {
-      fs.writeFileSync(file, content);
+      fs.writeSync(fd, content, 0);
+      fs.ftruncateSync(fd, Buffer.byteLength(content));
       return true;
-    } catch {
-      return false;
+    } finally {
+      fs.closeSync(fd);
     }
+  } catch {
+    return false;
   } finally {
     rmQuiet(tmp);
   }

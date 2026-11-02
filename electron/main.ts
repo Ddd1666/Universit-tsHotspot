@@ -177,14 +177,14 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   installProcessGuards({
     log: (msg, extra) => (hotspot ? hotspot.app.log.error({ extra }, msg) : console.error(msg, extra)),
-    fatal: () => {
+    fatal: async () => {
       const h = hotspot;
       hotspot = null;
-      void (h ? h.close() : Promise.resolve()).finally(() => {
-        dialog.showErrorBox('Uni-Hotspot', texts().fatal);
-        app.exit(1);
-      });
+      await (h ? h.close() : Promise.resolve()).catch(() => {});
+      dialog.showErrorBox('Uni-Hotspot', texts().fatal);
+      app.exit(1);
     },
+    exit: (code) => app.exit(code), // hartes Zeitlimit, falls das Schließen hängt
   });
   app.on('second-instance', () => {
     if (win) {

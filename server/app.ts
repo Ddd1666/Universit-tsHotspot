@@ -75,26 +75,42 @@ const OPERATIONAL_CODES = new Set([
 ]);
 
 /**
- * Prozessweiter Schutz (einmal je Prozess, aus server/main.ts bzw. electron/main.ts):
- * - unhandledRejection: loggen, weiterlaufen – ein verworfenes Promise lässt keinen halben Zustand zurück.
- * - uncaughtException mit Betriebssystem-/Netz-Fehlercode (EPERM, EBUSY, ECONNRESET …): loggen, weiterlaufen – typisch eine
- *   gesperrte Datei in einem Timer; alle Daten liegen transaktional in SQLite.
- * - sonst (Programmierfehler wie TypeError): Zustand ist unklar (Node-Doku: nach uncaughtException nicht sicher fortsetzbar)
- *   -> loggen und geordnet beenden (DB schließen, Sperrdatei entfernen) statt unkontrolliert weiterzulaufen oder hart abzustürzen.
+ * Prozessweiter Schutz (einmal je Prozess, aus server/main.ts bzw. electron/main.ts), gleiche Einteilung für
+ * uncaughtException und unhandledRejection:
+ * - Betriebssystem-/Netz-Fehlercode (EPERM, EBUSY, ECONNRESET …, auch als `cause` wie bei fetch) oder Abbruch: loggen,
+ *   weiterlaufen – typisch eine gesperrte Datei in einem Timer; alle Daten liegen transaktional in SQLite.
+ * - sonst (Programmierfehler wie TypeError): Zustand ist unklar – bei einem verworfenen Promise z. B. eine still stehende
+ *   Verarbeitungs-Queue. Node beendet in beiden Fällen standardmäßig; hier stattdessen loggen und geordnet beenden (DB schließen,
+ *   Sperrdatei entfernen, Meldung). Hängt das Beenden, beendet ein hartes Zeitlimit den Prozess trotzdem mit Code 1.
+ *   Offene Jobs liegen in SQLite und laufen beim nächsten Start weiter.
  */
-export function installProcessGuards(opts: { log: (msg: string, extra?: unknown) => void; fatal: (err: Error) => void }): void {
-  process.on('unhandledRejection', (reason) => {
-    const e = reason as NodeJS.ErrnoException;
-    opts.log('Unbehandeltes Promise verworfen', { code: e?.code, type: e?.name });
-  });
-  process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
-    if (err?.code && OPERATIONAL_CODES.has(err.code)) {
-      opts.log('Unbehandelter Betriebssystemfehler (weiter)', { code: err.code, type: err.name });
+export function installProcessGuards(opts: {
+  log: (msg: string, extra?: unknown) => void;
+  fatal: (err: Error) => void | Promise<void>;
+  exit?: (code: number) => void;
+  fatalTimeoutMs?: number;
+}): void {
+  const exit = opts.exit ?? ((code: number) => process.exit(code));
+  let dying = false;
+  const handle = (kind: string, raw: unknown) => {
+    const err = raw as NodeJS.ErrnoException & { cause?: { code?: unknown } };
+    const code = typeof err?.code === 'string' ? err.code : typeof err?.cause?.code === 'string' ? err.cause.code : undefined;
+    if ((code && OPERATIONAL_CODES.has(code)) || err?.name === 'AbortError') {
+      opts.log(`Unbehandelter Betriebssystemfehler (${kind}, weiter)`, { code, type: err?.name });
       return;
     }
-    opts.log('Schwerer interner Fehler – Uni-Hotspot wird geordnet beendet', { code: err?.code, type: err?.name, stack: err?.stack?.split('\n').slice(1, 6).join('\n') });
-    opts.fatal(err);
-  });
+    if (dying) return;
+    dying = true;
+    opts.log(`Schwerer interner Fehler (${kind}) – Uni-Hotspot wird geordnet beendet`, { code, type: err?.name, stack: err?.stack?.split('\n').slice(1, 6).join('\n') });
+    setTimeout(() => exit(1), opts.fatalTimeoutMs ?? 8000);
+    try {
+      void Promise.resolve(opts.fatal(err instanceof Error ? err : new Error(String(raw)))).catch(() => exit(1));
+    } catch {
+      exit(1);
+    }
+  };
+  process.on('unhandledRejection', (reason) => handle('Promise', reason));
+  process.on('uncaughtException', (err) => handle('Ausnahme', err));
 }
 
 /**

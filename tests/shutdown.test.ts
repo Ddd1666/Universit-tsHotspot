@@ -165,12 +165,56 @@ describe('Korrekturrunde 1: Prozessweiter Schutz (uncaughtException/unhandledRej
     let out = '';
     child.stdout.on('data', (d: Buffer) => (out += d.toString()));
     const code = await new Promise<number | null>((r) => child.once('exit', r));
-    expect(out).toContain('Unbehandelter Betriebssystemfehler (weiter)');
-    expect(out).toContain('Unbehandeltes Promise verworfen');
+    expect(out).toContain('Unbehandelter Betriebssystemfehler (Ausnahme, weiter)');
+    expect(out).toContain('Unbehandelter Betriebssystemfehler (Promise, weiter)');
     expect(out).toContain('LEBT');
     expect(out).toContain('Schwerer interner Fehler');
     expect(out).toContain('FATAL');
     expect(out).not.toContain('NICHT ERREICHT');
     expect(code).toBe(1);
+  });
+
+  /** Kindprozess mit Wächter; gibt Ausgabe, Exit-Code und Laufzeit zurück */
+  async function runGuarded(body: string, guardOpts: string) {
+    const { spawn } = await import('node:child_process');
+    const { pathToFileURL } = await import('node:url');
+    const { PROJECT_ROOT } = await import('../server/config.ts');
+    const script = path.join(tmpDir('guard2'), 'guard.ts');
+    fs.writeFileSync(
+      script,
+      `import { installProcessGuards } from ${JSON.stringify(pathToFileURL(path.join(PROJECT_ROOT, 'server', 'app.ts')).href)};
+       installProcessGuards({ log: (m) => console.log('LOG', m), ${guardOpts} });
+       setInterval(() => {}, 1000); // hält den Prozess am Leben wie ein Server
+       ${body}`,
+    );
+    const t0 = Date.now();
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+    const kill = setTimeout(() => child.kill(), 20_000);
+    const code = await new Promise<number | null>((r) => child.once('exit', r));
+    clearTimeout(kill);
+    return { out, code, ms: Date.now() - t0 };
+  }
+
+  it('K2: verworfenes Promise ohne Betriebssystem-Code (Programmierfehler) beendet geordnet; fetch-Fehler mit cause.code nicht', async () => {
+    const r = await runGuarded(
+      `setTimeout(() => { void Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })); }, 10);
+       setTimeout(() => console.log('LEBT'), 60);
+       setTimeout(() => { void Promise.reject(new TypeError('x ist undefined')); }, 100);`,
+      `fatal: () => { console.log('FATAL'); process.exit(1); }`,
+    );
+    expect(r.out).toContain('Betriebssystemfehler (Promise, weiter)');
+    expect(r.out).toContain('LEBT');
+    expect(r.out).toContain('Schwerer interner Fehler (Promise)');
+    expect(r.out).toContain('FATAL');
+    expect(r.code).toBe(1);
+  });
+
+  it('K1: hängt das geordnete Beenden, beendet das harte Zeitlimit den Prozess (Exit 1)', async () => {
+    const r = await runGuarded(`setTimeout(() => { (null as unknown as { x: number }).x; }, 10);`, `fatal: () => new Promise(() => {}), fatalTimeoutMs: 500`);
+    expect(r.out).toContain('Schwerer interner Fehler');
+    expect(r.code).toBe(1);
+    expect(r.ms).toBeLessThan(15_000);
   });
 });

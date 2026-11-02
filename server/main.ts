@@ -55,12 +55,13 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown());
   installProcessGuards({
     log: (msg, extra) => (hotspot ? hotspot.app.log.error({ extra }, msg) : console.error(msg, extra)),
-    fatal: () => {
+    fatal: async () => {
       console.error('Schwerer interner Fehler – Uni-Hotspot wird beendet (Details im Log).');
       const h = hotspot;
       hotspot = undefined;
-      void (h ? h.close() : Promise.resolve()).finally(() => process.exit(1));
-    },
+      await (h ? h.close() : Promise.resolve()).catch(() => {});
+      process.exit(1);
+    }, // hängt close(), beendet das Zeitlimit des Wächters (8 s) den Prozess
   });
 
   try {
