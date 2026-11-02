@@ -498,7 +498,8 @@ describe('Korrekturrunde 1: Robustheit, Einstellungen, Neustart, Zielordner', ()
     fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(d, 'manifest.json'), JSON.stringify({ format: 'uni-hotspot-snapshot', formatVersion: 1, createdAt: Date.now() + 10 * 365 * 86_400_000 }));
     const svc = a.hotspot.services.backup;
-    expect(svc.list()[0]!.createdAt).toBeLessThanOrEqual(Date.now());
+    // Dateizeit statt 2099 (nicht "<= Date.now()": mtimeMs hat Nachkommastellen, im selben ms ist sie größer als Date.now())
+    expect(svc.list()[0]!.createdAt).toBeLessThan(Date.now() + 60_000);
     expect(svc.autoTick()).toBe(false); // Dateizeit = gerade eben -> noch nicht fällig
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 25 * 3_600_000); // ein Tag später
     expect(svc.autoTick()).toBe(true);
