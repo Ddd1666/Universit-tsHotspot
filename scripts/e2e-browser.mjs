@@ -565,9 +565,8 @@ try {
     await audit('Diagnose');
     await shot('phase4-diagnose.png');
     const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Bericht herunterladen' }).click()]);
-    const p = path.join(ROOT, '.tmp', 'e2e', 'diagnose.txt');
-    await dl.saveAs(p);
-    const report = fs.readFileSync(p, 'utf8');
+    // direkt aus Playwrights Download-Datei lesen: eine Kopie nach .tmp (im OneDrive-Ordner) war einmal kurz gesperrt (EPERM)
+    const report = fs.readFileSync(await dl.path(), 'utf8');
     if (!report.includes('--- Log (bereinigt')) throw new Error('Bericht ohne Log');
     for (const bad of ['Thermodynamik-Skript', 'Hausarbeit', 'Entropie', 'Carnot', 'Wärmekraftmaschine']) if (report.includes(bad)) throw new Error('Bericht enthält Nutzerinhalt: ' + bad);
   });
