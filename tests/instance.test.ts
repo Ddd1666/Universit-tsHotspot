@@ -3,7 +3,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROJECT_ROOT } from '../server/config.ts';
 import { AlreadyRunningError } from '../server/lock.ts';
 import { startTestApp, tmpDir, waitFor, type TestApp } from './helpers.ts';
@@ -61,6 +61,36 @@ describe('Instanz-Sperre (zweiter Start)', () => {
     const msg = first.hotspot.services.db.prepare("SELECT status FROM chat_messages WHERE content = 'teil'").get() as { status: string };
     expect(msg.status).toBe('streaming');
     expect((await first.api('GET', '/api/health')).status).toBe(200);
+  });
+
+  it('Sperre kurz von Virenscanner/Indexer gesperrt (EPERM beim Umbenennen, EBUSY beim Lesen): Port steht trotzdem drin und wird gemeldet', async () => {
+    // 30x-Schleife: zweimal fehlte der Port (zweiter Start meldete keine URL) – Schreiben gab nach 5 × 20 ms auf, Lesen gar nicht wiederholt
+    const dataDir = tmpDir('lock-busy');
+    const lockFile = path.join(dataDir, 'hotspot.lock');
+    const busy = (code: string) => Object.assign(new Error(code), { code });
+    const rename = fs.renameSync.bind(fs);
+    const read = fs.readFileSync.bind(fs) as (...a: unknown[]) => unknown;
+    let renameFails = 12;
+    let readFails = 0;
+    const r1 = vi.spyOn(fs, 'renameSync').mockImplementation((a, b) => {
+      if (path.resolve(String(b)) === path.resolve(lockFile) && renameFails-- > 0) throw busy('EPERM');
+      return rename(a, b);
+    });
+    const r2 = vi.spyOn(fs, 'readFileSync').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (typeof p === 'string' && path.resolve(p) === path.resolve(lockFile) && readFails-- > 0) throw busy('EBUSY');
+      return read(p, ...rest);
+    }) as typeof fs.readFileSync);
+    try {
+      const first = await startTestApp({ dataDir });
+      apps.push(first);
+      expect(JSON.parse(read(lockFile, 'utf8') as string)).toMatchObject({ pid: process.pid, port: first.port });
+      readFails = 3;
+      const err = await startTestApp({ dataDir }).then(() => null, (e: unknown) => e);
+      expect((err as AlreadyRunningError).port).toBe(first.port);
+    } finally {
+      r1.mockRestore();
+      r2.mockRestore();
+    }
   });
 
   it('verwaiste Sperre (Prozess existiert nicht mehr) wird übernommen; Sperre wird beim Beenden entfernt', async () => {

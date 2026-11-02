@@ -92,6 +92,8 @@ describe('Export/Import einer Bibliothek bzw. eines Fachs', () => {
     const m = (await a.upload('analysis.txt', 'Folgen und Reihen.', { subjectId: other.id })).data.source;
     for (const s of [s1, z, m]) await waitForSource(a, s.id);
     const db = a.hotspot.services.db;
+    // das ZIP ist schon bei "archive" fertig, seine Datei wird danach verarbeitet (sonst zählt stats() zwischen zwei Messungen weiter)
+    await waitFor(() => (db.prepare("SELECT count(*) AS n FROM sources WHERE status IN ('queued', 'processing')").get() as { n: number }).n === 0 || null, { message: 'ZIP-Inhalt verarbeitet' });
     const chunk = db.prepare('SELECT id, text FROM chunks WHERE source_id = ? ORDER BY ord LIMIT 1').get(s1.id) as { id: number; text: string };
     db.prepare(
       "INSERT INTO cards(type, front, back, status, ai, subject_id, source_id, chunk_id, source_name, reps, ease, interval_days, due, created_at, updated_at) VALUES ('qa', 'Was ist Entropie?', 'Maß für Unordnung', 'active', 1, ?, ?, ?, 'thermo.md', 2, 2.6, 6, 123, 1, 1)",

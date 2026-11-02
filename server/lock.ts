@@ -57,11 +57,18 @@ function isAlive(pid: number): boolean {
   }
 }
 
+const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** Windows: Virenscanner/Indexer halten eine frisch geschriebene Datei kurz offen -> EPERM/EBUSY/EACCES, kurz wiederholen */
+const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
 function readRaw(file: string): string | null {
-  try {
-    return fs.readFileSync(file, 'utf8');
-  } catch {
-    return null;
+  for (let i = 0; ; i++) {
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch (err) {
+      if (i >= 5 || !TRANSIENT.has((err as NodeJS.ErrnoException).code ?? '')) return null;
+      pause(20);
+    }
   }
 }
 
@@ -120,20 +127,32 @@ function createExclusive(file: string, content: string): boolean {
   }
 }
 
-/** Ersetzt den Inhalt atomar (Temp-Datei + rename), mit kurzen Wiederholungen (Windows: Datei kurz geöffnet). */
+/**
+ * Ersetzt den Inhalt atomar (Temp-Datei + rename), mit Wiederholungen (Windows: Datei kurz von Virenscanner/Indexer
+ * geöffnet; 5 × 20 ms reichten unter Last nicht – dann fehlte der Port in der Sperre). Klappt das Umbenennen gar nicht,
+ * direkt überschreiben: die Datei gehört uns, ein Leser wertet unlesbaren Inhalt ohnehin als „startet gerade“.
+ */
 function replaceAtomic(file: string, content: string): boolean {
   const tmp = tmpName(file);
-  for (let i = 0; i < 5; i++) {
+  try {
+    for (let i = 0; i < 8; i++) {
+      try {
+        fs.writeFileSync(tmp, content);
+        fs.renameSync(tmp, file);
+        return true;
+      } catch {
+        pause(Math.min(100, 20 * (i + 1)));
+      }
+    }
     try {
-      fs.writeFileSync(tmp, content);
-      fs.renameSync(tmp, file);
+      fs.writeFileSync(file, content);
       return true;
     } catch {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      return false;
     }
+  } finally {
+    rmQuiet(tmp);
   }
-  rmQuiet(tmp);
-  return false;
 }
 
 /** Antwortet auf dem Port ein Uni-Hotspot? `/api/health` ohne Token muss 401 invalid_token liefern. */
