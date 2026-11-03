@@ -291,9 +291,13 @@ export class Library {
     const hashes = await this.blobs.listHashes();
     // Liste der bekannten Hashes erst NACH dem Einlesen der Dateien: eine inzwischen importierte Datei ist dann bekannt
     const known = new Set((this.db.prepare('SELECT sha256 FROM sources').all() as { sha256: string }[]).map((r) => r.sha256));
+    const stillUsed = this.db.prepare('SELECT 1 FROM sources WHERE sha256 = ?');
     let removed = 0;
     for (const h of hashes) {
       if (known.has(h) || this.blobs.ageMs(h) < minAgeMs) continue;
+      // direkt vor dem Löschen erneut prüfen: ein Import (z. B. Export-Datei mit alter Originaldatei) kann seit dem
+      // Einlesen der Liste eine Quelle mit diesem Inhalt angelegt haben
+      if (stillUsed.get(h)) continue;
       if (await this.blobs.delete(h)) removed++;
     }
     return removed;

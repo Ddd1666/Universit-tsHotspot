@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { makeZip } from './fixtures.ts';
 import { startTestApp, waitForEmbeddings, waitForSource, type TestApp } from './helpers.ts';
 
@@ -103,6 +103,30 @@ describe('Löschkonsistenz', () => {
     fs.writeFileSync(fresh, 'Upload läuft gerade');
     expect(await app.hotspot.services.library.gcOrphanBlobs()).toBe(0);
     expect(fs.existsSync(fresh)).toBe(true);
+  });
+
+  it('K8 (Runde 2): Quelle mit diesem Inhalt entsteht, während die GC läuft (nach dem Einlesen der Liste) -> Datei bleibt', async () => {
+    const h = 'c'.repeat(64);
+    const file = app.hotspot.services.blobs.pathFor(h);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'alte Originaldatei');
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(file, old, old);
+    const { blobs, db } = app.hotspot.services;
+    const ageMs = blobs.ageMs.bind(blobs);
+    // Import legt genau jetzt die Quelle an (nach "bekannte Hashes", vor dem Löschen)
+    const spy = vi.spyOn(blobs, 'ageMs').mockImplementation((x: string) => {
+      if (x === h) db.prepare("INSERT OR IGNORE INTO sources(sha256, name, size, mime, kind, status, imported_at) VALUES (?, 'neu.txt', 1, 'text/plain', 'text', 'queued', 0)").run(h);
+      return ageMs(x);
+    });
+    try {
+      await app.hotspot.services.library.gcOrphanBlobs();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.existsSync(file)).toBe(true);
+    db.prepare('DELETE FROM sources WHERE sha256 = ?').run(h);
+    fs.rmSync(file, { force: true });
   });
 });
 

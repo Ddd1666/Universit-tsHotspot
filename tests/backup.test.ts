@@ -471,6 +471,22 @@ describe('Korrekturrunde 1: Robustheit, Einstellungen, Neustart, Zielordner', ()
     expect(fs.existsSync(path.join(dir, 'restore-pending.json'))).toBe(false);
   });
 
+  it('K6 (Runde 2): Schreibsperre gilt schon während der Sicherung des Ist-Zustands und fällt weg, wenn das Vormerken scheitert', async () => {
+    const a = await app();
+    const snap = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    const svc = a.hotspot.services.backup;
+    let during = 0;
+    svc.onStep = async (step) => {
+      if (step === 'db') during = (await a.api('POST', '/api/subjects', { name: 'Währenddessen', color: '#39e6ff' })).status;
+      if (step === 'files') throw Object.assign(new Error('Platte voll'), { code: 'ENOSPC' }); // Vormerken scheitert
+    };
+    const r = await a.api('POST', `/api/backups/${snap}/restore`, { confirm: true });
+    svc.onStep = null;
+    expect(during).toBe(503); // vorher 200: Fach wäre weder in „vor Wiederherstellung“ noch nach dem Austausch vorhanden
+    expect(r.status).toBeGreaterThanOrEqual(400);
+    expect((await a.api('POST', '/api/subjects', { name: 'Danach', color: '#39e6ff' })).status).toBe(200);
+  });
+
   it('K4: nach dem Vormerken werden schreibende Anfragen mit 503 restoring abgewiesen; /api/health meldet startedAt', async () => {
     const a = await app();
     const h0 = (await a.api<{ startedAt: number; restoring: boolean }>('GET', '/api/health')).data;

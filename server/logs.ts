@@ -115,8 +115,10 @@ export function redactText(s: string): string {
     .replace(/(\/home\/|\/Users\/)[^/"'\r\n]+/g, '$1<USER>')
     .replace(/\b[0-9a-f]{64}\b/gi, '<HASH>')
     .replace(/([?&]t=)[^&\s"]+/g, '$1<TOKEN>');
-  // jeder weitere Treffer des Benutzernamens (z. B. D:\parsi-daten, OneDrive-Ordner), ohne Groß/Klein
-  for (const n of userNames()) out = out.replace(new RegExp(escapeRe(n), 'gi'), '<USER>');
+  // weitere Treffer des Benutzernamens (z. B. D:\parsi-daten, OneDrive-Ordner), ohne Groß/Klein – nur innerhalb von Pfaden
+  // und nur als ganzes Wort darin: ein Name wie „uni“ oder „app“ darf Text wie „Uni-Hotspot“ oder „Wrapper“ nicht verstümmeln
+  const names = userNames().map((n) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(n)}(?![\\p{L}\\p{N}])`, 'giu'));
+  if (names.length) out = out.replace(/(?:[A-Za-z]:)?[\\/][^\s"'<>|,;]*/g, (p) => names.reduce((acc, re) => acc.replace(re, '<USER>'), p));
   return out;
 }
 

@@ -115,6 +115,15 @@ describe('Korrekturrunde 1: Diagnose ohne Dateinamen, Altformat-Logs, Benutzerna
     if (user.length >= 3) expect(text.toLowerCase()).not.toContain(user.toLowerCase());
   });
 
+  it('K10 (Runde 2): Benutzername „uni“ wird nur in Pfaden ersetzt – „Uni-Hotspot“ und andere Wörter bleiben heil', () => {
+    vi.spyOn(os, 'userInfo').mockReturnValue({ username: 'uni', uid: -1, gid: -1, shell: null, homedir: os.homedir() });
+    const out = redactText('Uni-Hotspot gestartet, Universität ok; Daten D:\\uni\\daten und E:\\uni-sicherung\\x sowie /mnt/uni/y');
+    expect(out).toContain('Uni-Hotspot gestartet, Universität ok');
+    expect(out).toContain('D:\\<USER>\\daten');
+    expect(out).toContain('E:\\<USER>-sicherung\\x');
+    expect(out).toContain('/mnt/<USER>/y');
+  });
+
   it('T8: Rotation scheitert (Datei nicht umbenennbar) -> Historie bleibt unverändert, kein Versuch je Zeile', () => {
     const dir = tmpDir('logrot');
     const file = path.join(dir, 'server.log');

@@ -67,9 +67,17 @@ export function registerMaintenanceRoutes(app: FastifyInstance, s: Services): vo
     { schema: { params: snapParam, body: { type: 'object', properties: { confirm: { const: true } }, required: ['confirm'], additionalProperties: false } } },
     async (req) => {
       if (s.backup.isBusy) throw new HttpError(409, 'backup_busy', 'Es läuft gerade eine Sicherung');
-      const r = await s.backup.stageRestore((req.params as { id: string }).id);
-      // ab jetzt: Schreibzugriffe abweisen, Hintergrundarbeit anhalten (Ergebnisse würden mit dem Austausch verworfen)
+      // Schreibzugriffe schon während der Sicherung des Ist-Zustands abweisen: was danach geschrieben würde, fehlte in
+      // „vor Wiederherstellung“ und ginge mit dem Austausch verloren. Scheitert das Vormerken, wieder freigeben.
       s.restoring = true;
+      let r: Awaited<ReturnType<typeof s.backup.stageRestore>>;
+      try {
+        r = await s.backup.stageRestore((req.params as { id: string }).id);
+      } catch (err) {
+        s.restoring = false;
+        throw err;
+      }
+      // ab jetzt zusätzlich Hintergrundarbeit anhalten (Ergebnisse würden mit dem Austausch verworfen)
       void Promise.allSettled([s.ingest.stop(), s.embed.stop(), s.media.stop(), s.learn.stop(), s.backup.stop()]);
       const restarting = !!s.config.requestRestart;
       // Antwort erst senden, dann neu starten (Austausch der DB passiert beim Start)
