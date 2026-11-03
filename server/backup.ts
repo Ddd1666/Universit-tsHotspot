@@ -168,27 +168,49 @@ function rmLogged(p: string, log: (msg: string, extra?: unknown) => void): boole
 }
 
 const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+/** Längster Pfad unterhalb des Zielordners: \snapshot-JJJJMMTT-hhmmss-999-pre-restore.partial\files\ab\<sha256> (123 Zeichen) */
+const LONGEST_REL = '\\snapshot-20261030-120000-999-pre-restore.partial\\files\\ab\\'.length + 64;
+/** Zielordner + längster Pfad darin < 240 (Reserve zum Windows-Limit 260) -> Zielordner höchstens 117 Zeichen */
+export const BACKUP_DIR_MAX = 240 - LONGEST_REL;
 
 /**
- * Zielordner prüfen (null = ok, sonst Grund): absolut, nicht zu lang (Windows-Pfadlimit inkl. Snapshot-Unterordner),
- * kein UNC-/Gerätepfad (\\server\share, \\localhost\c$, \\?\…), keine reservierten Namen (CON, NUL, COM1 …) und nicht in
- * <Datenordner>/files bzw. /tmp (würde beim Aufräumen/als Originaldatei behandelt). Vergleich unter Windows ohne Groß/Klein.
+ * Zielordner prüfen (null = ok, sonst Grund): absolut, nicht zu lang (s. BACKUP_DIR_MAX), kein UNC-/Gerätepfad
+ * (\\server\share, \\localhost\c$, \\?\…), keine reservierten Namen (CON, NUL, COM1 …) und nicht in <Datenordner>/files
+ * bzw. /tmp (würde beim Aufräumen/als Originaldatei behandelt). Der Vergleich läuft nach dem Anlegen über den echten Pfad
+ * (realpath): Junctions, 8.3-Kurznamen, Punkt/Leerzeichen am Ende, subst-Laufwerke. Unter Windows ohne Groß/Klein.
  */
 export function backupDirProblem(dir: string, dataDir: string): string | null {
   const raw = dir.trim();
   if (!raw) return null;
   if (!path.isAbsolute(raw)) return 'not_absolute';
   if (/^[\\/]{2}/.test(raw)) return 'unc';
-  if (raw.length > 240) return 'too_long';
+  if (raw.length > BACKUP_DIR_MAX) return 'too_long';
   if (raw.split(/[\\/]/).some((seg) => RESERVED.test(seg.trim()))) return 'reserved_name';
+  const win = process.platform === 'win32';
+  // Punkt/Leerzeichen am Ende: Node legt "files." über \\?\ als eigenen Ordner an, Explorer & Co. kürzen es zu "files"
+  if (win && path.resolve(raw).split(path.sep).some((seg) => /[. ]$/.test(seg) && seg !== '.' && seg !== '..')) return 'reserved_name';
+  const inside = (d: string, s: string) => d === s || d.startsWith(s + path.sep);
   const norm = (p: string) => {
     const r = path.resolve(p).replace(/[\\/]+$/, '');
-    return process.platform === 'win32' ? r.toLowerCase() : r;
+    return win ? r.toLowerCase() : r;
   };
-  const d = norm(raw);
-  for (const sub of ['files', 'tmp']) {
-    const s = norm(path.join(dataDir, sub));
-    if (d === s || d.startsWith(s + path.sep)) return 'inside_data';
+  const subs = ['files', 'tmp'].map((sub) => path.join(dataDir, sub));
+  if (subs.some((s) => inside(norm(raw), norm(s)))) return 'inside_data';
+  let created: string | undefined;
+  try {
+    created = fs.mkdirSync(raw, { recursive: true });
+  } catch {
+    return null; // (noch) nicht anlegbar, z. B. Stick nicht eingesteckt: doCreate prüft beim Sichern erneut
+  }
+  try {
+    const real = (p: string) => (win ? fs.realpathSync.native(p).toLowerCase() : fs.realpathSync.native(p));
+    const d = real(raw);
+    if (subs.some((s) => fs.existsSync(s) && inside(d, real(s)))) {
+      if (created) fs.rmSync(created, { recursive: true, force: true }); // nur eben angelegte (leere) Ordner wieder weg
+      return 'inside_data';
+    }
+  } catch {
+    /* realpath nicht ermittelbar: Zeichenkettenprüfung oben gilt */
   }
   return null;
 }

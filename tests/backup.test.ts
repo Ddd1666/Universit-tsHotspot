@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fsp from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROJECT_ROOT } from '../server/config.ts';
-import { applyPendingRestore, backupDirProblem, inspectDbFile } from '../server/backup.ts';
+import { applyPendingRestore, BACKUP_DIR_MAX, backupDirProblem, inspectDbFile } from '../server/backup.ts';
 import { SCHEMA_VERSION } from '../server/db.ts';
 import { startTestApp, tmpDir, waitFor, waitForSource, type TestApp } from './helpers.ts';
 
@@ -489,6 +489,31 @@ describe('Korrekturrunde 1: Robustheit, Einstellungen, Neustart, Zielordner', ()
     expect(backupDirProblem('', a.dataDir)).toBeNull();
     expect(backupDirProblem(path.join(a.dataDir, 'backups'), a.dataDir)).toBeNull();
     expect(a.hotspot.services.settings.get().backupDir).toBe('');
+  });
+
+  it('K4/T2 (Runde 2): Zielordner über Junction bzw. mit Punkt am Ende zeigt in <Daten>/files -> abgelehnt (echter Pfad); Länge so, dass die tiefste Datei < 240 bleibt', async () => {
+    const a = await app();
+    const link = path.join(tmpDir('bkjunction'), 'sicherung');
+    fs.symlinkSync(path.join(a.dataDir, 'files'), link, 'junction'); // Junction: ohne Admin-Rechte
+    const bad: string[][] = [
+      [link, 'inside_data'],
+      [path.join(link, 'unter'), 'inside_data'],
+    ];
+    if (process.platform === 'win32') bad.push([path.join(a.dataDir, 'files.'), 'reserved_name'], [path.join(a.dataDir, 'tmp ', 'x'), 'reserved_name']);
+    for (const [dir, reason] of bad) {
+      const r = await a.api<{ error: string; detail: string }>('PUT', '/api/settings', { backupDir: dir });
+      expect([r.status, r.data.error, r.data.detail], dir).toEqual([400, 'backup_dir_invalid', reason]);
+    }
+    expect(fs.existsSync(path.join(a.dataDir, 'files', 'unter'))).toBe(false); // beim Prüfen angelegte Ordner wieder entfernt
+    // auch wenn die Einstellung schon (z. B. per Hand in der DB) steht: Sichern verweigert
+    a.hotspot.services.settings.update({ backupDir: link });
+    expect((await a.api<{ error: string }>('POST', '/api/backups')).data.error).toBe('backup_dir_invalid');
+    // Länge: Zielordner + "\snapshot-…-999-pre-restore.partial\files\ab\<sha256>" < 240
+    const base = tmpDir('bklen');
+    const at = (n: number) => base + path.sep + 'x'.repeat(n - base.length - 1);
+    expect(BACKUP_DIR_MAX + '\\snapshot-20261030-120000-999-pre-restore.partial\\files\\ab\\'.length + 64).toBe(240);
+    expect(backupDirProblem(at(BACKUP_DIR_MAX), a.dataDir)).toBeNull();
+    expect(backupDirProblem(at(BACKUP_DIR_MAX + 1), a.dataDir)).toBe('too_long');
   });
 
   it('K12: Sicherung mit Zeitpunkt in der Zukunft blockiert die Automatik nicht', async () => {
