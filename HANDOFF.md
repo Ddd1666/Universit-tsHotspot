@@ -263,7 +263,8 @@ Ohne diese Kopie **nicht** weitermachen. Phase 4 ändert das DB-Schema nicht (bl
 **3c.3 Bestehende Daten (Migration/Kompatibilität)**
 - [ ] Bibliothek, Chats, Karten (Wiederholen-Zähler), Notizen, Quiz-Verlauf, Graph wie vorher. `backups\` enthält ggf. `hotspot-v…sqlite` (nur bei Schema < 4).
 - [ ] Suche + Chat mit Zitat funktionieren im Paket genauso wie mit `start.bat`.
-- [ ] Bibliothek mit „Alle Quellen“: Scrollen bis ganz unten flüssig, Fach-Auswahl einer Zeile öffnet sich normal.
+- [ ] Bibliothek mit „Alle Quellen“: Scrollen bis ganz unten flüssig, die **letzte** Quelle ist sichtbar (auch mit Browser-Zoom 110 %
+      und geöffnetem Vorschau-Panel), Fach-Auswahl einer Zeile öffnet sich normal.
 - [ ] Messung für die Entscheidung über eine schnellere Vektorsuche (Projektordner, App beendet, Rechner ruhig, Netzbetrieb; ~3 min,
       ~0,5 GB vorübergehend in `.tmp\bench4`, wird danach gelöscht): `npm run bench:phase4 -- --only search --rounds 5` → alle Zeilen
       melden (inkl. „Rechnerlast“) plus Energiesparplan (`powercfg /getactivescheme`). Synthetisch, 100k Abschnitte, hier gemessen:
@@ -279,7 +280,8 @@ Ohne diese Kopie **nicht** weitermachen. Phase 4 ändert das DB-Schema nicht (bl
 - [ ] Optional Zielordner auf USB-Stick/zweitem Laufwerk setzen → „Jetzt sichern“ → Dateien werden kopiert (dauert länger) → zweite Sicherung
       deutlich schneller (nur neue Dateien). Stick abziehen → Seite zeigt „Zielordner nicht lesbar“, App läuft weiter; „Jetzt sichern“
       meldet einen Fehler statt abzustürzen. Danach Zielordner wieder leeren (= Standard).
-- [ ] Zielordner `\\irgendwas\freigabe` oder `C:\x\CON` eintragen → wird abgelehnt (Meldung), nichts gespeichert.
+- [ ] Zielordner `\\irgendwas\freigabe`, `C:\x\CON` oder `C:\x.` eintragen → wird abgelehnt (Meldung), nichts gespeichert. Ein Pfad
+      über 117 Zeichen ebenso (Meldung nennt die Grenze).
 - [ ] Nach einer Wiederherstellung stehen Zielordner/Intervall/Aufbewahrung noch auf den Werten von vorher (nicht auf denen der Sicherung).
 - [ ] Automatik: Intervall „alle 6 Stunden“ einstellen, App > 2 min laufen lassen → Eintrag „automatisch“ erscheint; danach wieder 24 h.
 

@@ -261,19 +261,26 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
     const col = colRef.current;
     const list = listRef.current;
     if (!col || !list) return;
-    const first = list.querySelector<HTMLElement>('.source-row');
-    const h = first ? first.getBoundingClientRect().height + ROW_GAP : rowH;
-    if (Math.abs(h - rowH) > 1) setRowH(h);
+    const rows = list.querySelectorAll<HTMLElement>('.source-row');
+    // Zeilenabstand als Kommazahl aus allen gerenderten Zeilen (z. B. 58,19 px): gerundet wanderte das Fenster bei 20 000
+    // Zeilen um 3,8k px und die letzten Zeilen waren unerreichbar
+    const h = rows.length ? (rows[rows.length - 1]!.getBoundingClientRect().bottom - rows[0]!.getBoundingClientRect().top + ROW_GAP) / rows.length : rowH;
+    if (Math.abs(h - rowH) > 0.01) setRowH(h);
     const top = col.getBoundingClientRect().top - list.getBoundingClientRect().top;
     const n = shownRef.current;
     const start = Math.max(0, Math.min(n, Math.floor(top / h) - OVERSCAN));
     const end = Math.min(n, Math.max(start, Math.ceil((top + col.clientHeight) / h)) + OVERSCAN);
+    // fokussierte Zeile fällt aus dem Fenster: Fokus an die Liste geben statt an <body> zu verlieren
+    const row = document.activeElement instanceof HTMLElement && list.contains(document.activeElement) ? document.activeElement.closest('.source-row') : null;
+    const idx = row ? Number(row.getAttribute('aria-posinset')) - 1 : -1;
+    if (row && (idx < start || idx >= end)) list.focus({ preventScroll: true });
     setWin((w) => (w.start === start && w.end === end ? w : { start, end }));
   }, [rowH]);
   useLayoutEffect(() => {
     shownRef.current = sources?.length ?? 0;
     recompute();
   }, [sources, recompute]);
+  const hasList = sources !== null;
   useEffect(() => {
     const col = colRef.current;
     if (!col) return;
@@ -283,13 +290,16 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
       raf = requestAnimationFrame(recompute);
     };
     col.addEventListener('scroll', on, { passive: true });
-    window.addEventListener('resize', on);
+    // Größe der Spalte (Fenster, Vorschau-Panel auf/zu) und der Liste (Zeilenhöhe ändert sich mit der Breite) beobachten
+    const ro = new ResizeObserver(on);
+    ro.observe(col);
+    if (listRef.current) ro.observe(listRef.current);
     return () => {
       cancelAnimationFrame(raf);
       col.removeEventListener('scroll', on);
-      window.removeEventListener('resize', on);
+      ro.disconnect();
     };
-  }, [recompute]);
+  }, [recompute, hasList]);
 
   /** Entprellt neu laden: erst nach einer Ruhephase, bei Dauer-Ereignissen spätestens alle 5 s. */
   const scheduleReload = useCallback((delay: number) => {
@@ -466,6 +476,7 @@ export function LibraryView({ subject, sourceId }: { subject: 'all' | 'none' | n
             <ul
               className="source-list"
               ref={listRef}
+              tabIndex={-1}
               aria-label={title}
               style={{ paddingTop: win.start * rowH, paddingBottom: Math.max(0, sources.length - win.end) * rowH }}
             >

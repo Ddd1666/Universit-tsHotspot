@@ -945,6 +945,85 @@ try {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (overflow > 1) throw new Error(`horizontaler Überlauf ${overflow}px`);
   });
+
+  // Runde 2 (T1): große Bibliothek. Zeilenhöhe mit Nachkommastellen fest vorgeben (wie 58,19 px bei manchen Schriften/Zoomstufen),
+  // damit der Test unabhängig von der Umgebung rot wird, wenn das Fenster mit gerundeter Höhe rechnet
+  {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addStyleTag({ content: '.source-row{height:52.19px!important;min-height:0!important;box-sizing:border-box!important;overflow:hidden!important}' });
+    const { DatabaseSync } = await import('node:sqlite');
+    const raw = new DatabaseSync(path.join(DATA, 'hotspot.sqlite'));
+    raw.exec('PRAGMA busy_timeout = 10000');
+    const col = '.library-view .source-col';
+    const openAll = async () => {
+      await page.evaluate(() => (location.hash = '#/chat'));
+      await page.locator('.chat-view').waitFor();
+      await page.evaluate(() => (location.hash = '#/library'));
+      await page.getByRole('link', { name: 'Alle Quellen' }).click();
+      await page.locator('.source-row').first().waitFor();
+    };
+    const toBottom = async () => {
+      for (let i = 0; i < 400; i++) {
+        const more = await page.evaluate((sel) => {
+          const c = document.querySelector(sel);
+          c.scrollTop = c.scrollHeight;
+          return !!document.querySelector('.source-more');
+        }, col);
+        if (!more) break;
+        await page.waitForTimeout(80);
+      }
+      await page.evaluate((sel) => (document.querySelector(sel).scrollTop = 1e9), col);
+      await page.waitForTimeout(400);
+    };
+    /** sichtbarer Bereich der Spalte vollständig mit Zeilen belegt? Liefert Lücke oben/unten in px */
+    const coverage = () =>
+      page.evaluate((sel) => {
+        const c = document.querySelector(sel).getBoundingClientRect();
+        const rows = [...document.querySelectorAll('.source-row')].map((r) => r.getBoundingClientRect());
+        return { top: Math.max(0, rows[0].top - c.top), bottom: Math.max(0, c.bottom - rows[rows.length - 1].bottom) };
+      }, col);
+    await step('Runde 2: Bibliothek mit 5 200 und 20 000 Quellen – letzte Zeile erreichbar (Zeilenabstand 58,19 px)', async () => {
+    for (const target of [5200, 20_000]) {
+      const have = raw.prepare('SELECT count(*) AS n FROM sources').get().n;
+      raw.exec('BEGIN');
+      const ins = raw.prepare("INSERT INTO sources(sha256, name, size, mime, kind, status, imported_at, chunk_count) VALUES (?, ?, 1000, 'application/pdf', 'pdf', 'ready', ?, 0)");
+      for (let i = have; i < target; i++) ins.run(String(i).padStart(64, '0'), `Last-${i}.pdf`, 1000 + i);
+      raw.exec('COMMIT');
+      await openAll();
+      await toBottom();
+      const last = await page.evaluate((sel) => {
+        const c = document.querySelector(sel).getBoundingClientRect();
+        const rows = [...document.querySelectorAll('.source-row')];
+        const r = rows[rows.length - 1];
+        const b = r.getBoundingClientRect();
+        return { pos: Number(r.getAttribute('aria-posinset')), size: Number(r.getAttribute('aria-setsize')), visible: b.top >= c.top - 1 && b.bottom <= c.bottom + 1 };
+      }, col);
+      if (last.size !== target || last.pos !== target || !last.visible) throw new Error(`${target} Quellen: letzte gerenderte Zeile ${last.pos}/${last.size}, sichtbar ${last.visible}`);
+    }
+    });
+    // Zeilenhöhe ändert sich (z. B. Vorschau-Panel macht die Liste schmaler): Fenster passt sich ohne Scrollen an
+    await step('Runde 2: Zeilenhöhe ändert sich ohne Scrollen -> Fenster passt sich an (ResizeObserver)', async () => {
+    await openAll();
+    await page.evaluate((sel) => (document.querySelector(sel).scrollTop = document.querySelector(sel).scrollHeight / 2), col);
+    await page.waitForTimeout(300);
+    const shrink = await page.addStyleTag({ content: '.source-row{height:30px!important}' });
+    await page.waitForTimeout(500);
+    const gap = await coverage();
+    if (gap.top > 1 || gap.bottom > 1) throw new Error(`nach Höhenänderung ohne Scrollen Lücke oben ${gap.top}px / unten ${gap.bottom}px`);
+    await shrink.evaluate((el) => el.remove());
+    });
+    // Fokus: Zeile fokussieren, weit wegscrollen -> Fokus bleibt in der Liste (nicht <body>)
+    await step('Runde 2: fokussierte Zeile scrollt aus dem Fenster -> Fokus bleibt in der Liste', async () => {
+    await page.evaluate((sel) => (document.querySelector(sel).scrollTop = 0), col);
+    await page.waitForTimeout(300);
+    await page.locator('.source-row .source-main').first().focus();
+    await page.evaluate((sel) => (document.querySelector(sel).scrollTop = 1e9), col);
+    await page.waitForTimeout(500);
+    const focus = await page.evaluate(() => (document.activeElement?.closest('.source-list') ? 'liste' : document.activeElement?.tagName));
+    if (focus !== 'liste') throw new Error('Fokus verloren an ' + focus);
+    });
+    raw.close();
+  }
 } finally {
   await browser.close();
   server.kill('SIGTERM');

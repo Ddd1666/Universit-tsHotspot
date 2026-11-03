@@ -64,7 +64,8 @@ Kopie unter `backups\` an. **Vor dem ersten Start einer neuen Version empfohlen:
   OneDrive), Medien-Werkzeuge (optional), erstes Fach, Kurzanleitung. Überspringbar, jederzeit über *Einstellungen → Daten* oder `Strg+K`.
 - **Diagnose:** Versionen (App, Schema, Node, Electron, SQLite), Ollama-Status und Modelle, Werkzeuge, Datenordner-Größen und freier
   Platz, Sicherungen; **Bericht herunterladen** = Diagnose + bereinigtes Log **ohne Dokumentinhalte, Dateinamen, Chat-Texte**
-  (Benutzerpfade und der Windows-Benutzername auch außerhalb von Pfaden anonymisiert; Log-Meldungen nur bis zum ersten „:“) – zum
+  (Benutzerpfade und der Windows-Benutzername in jedem Pfad anonymisiert – als ganzes Wort, ein Name wie „uni“ lässt „Uni-Hotspot“
+  im Text stehen; Log-Meldungen nur bis zum ersten „:“) – zum
   Weitergeben bei Problemen. Größen kommen aus der DB bzw. den Sicherungs-Manifesten (kein Durchlaufen aller Dateien, auch nicht bei
   einem langsamen USB-Zielordner); ein fehlschlagender Teil (z. B. Zielordner nicht lesbar) wird als Fehler gelistet, der Rest erscheint.
 - **Import „alles aufnehmen“:** Drag & Drop (auch Ordner), Datei-/Ordnerdialog, Fortschritt pro Datei, abbrechbar, Fehler pro Datei
@@ -148,6 +149,9 @@ Kopie unter `backups\` an. **Vor dem ersten Start einer neuen Version empfohlen:
   Lange Listen werden seitenweise beim Scrollen nachgeladen (je 200; früher fest „2000 von N“) und nur der sichtbare Ausschnitt
   (+ 15 Zeilen Puffer) wird gerendert; die Fach-Auswahl je Zeile baut ihre Optionen erst beim Öffnen. Bei 5 200 Quellen in 3 Fächern
   (Chromium, alle geladen): DOM-Knoten 114 575 → 1 075, Laden aller Seiten 23,5 s → 4,6 s, Scrollen 8 → 29 fps (längster Frame 217 → 50 ms).
+  Der Zeilenabstand wird als Kommazahl aus den gerenderten Zeilen gemessen (gerundet fehlten bei 20 000 Quellen die letzten ~50 Zeilen),
+  Größenänderungen von Spalte und Liste (Vorschau-Panel, Fensterbreite) beobachtet ein `ResizeObserver`; scrollt eine fokussierte
+  Zeile aus dem Fenster, geht der Fokus an die Liste statt verloren. E2E prüft 5 200 und 20 000 Quellen mit 58,19 px Zeilenabstand.
   Chunks überschreiten nie Seiten-/Folien-/Blattgrenzen; „In Bibliothek zeigen“ springt zur zitierten Stelle.
 - **Einstellungen → Medien:** Werkzeug-Status, Download erst nach Bestätigung (Größen + Zielordner), Schalter je Typ, Sprache (auto/de/en),
   Whisper-Modell, Vision-Modell, max. Aufnahmedauer.
@@ -264,23 +268,34 @@ Uni-Hotspot-Daten/
   Snapshot nur neue, der Rest wird vom vorigen Snapshot im Zielordner verlinkt; auf FAT/exFAT-Sticks ohne Hardlinks immer kopiert).
   Im Datenordner selbst schützt die Sicherung vor Bedienfehlern und DB-Schäden, nicht vor einem defekten Laufwerk.
   **Zielordner-Regeln** (beim Speichern geprüft, `backup_dir_invalid`): absoluter Pfad, kein UNC-/Netzwerkpfad (`\\server\…`),
-  höchstens 240 Zeichen, keine reservierten Windows-Namen (`CON`, `NUL`, `COM1` …), nicht in `<Datenordner>\files` oder `\tmp`.
+  höchstens 117 Zeichen (die tiefste Datei `\snapshot-…-999-pre-restore.partial\files\ab\<sha256>` liegt 123 Zeichen tiefer; zusammen
+  < 240, Reserve zum Windows-Limit 260), keine reservierten Windows-Namen (`CON`, `NUL`, `COM1` …) und keine Namen mit Punkt/Leerzeichen
+  am Ende, nicht in `<Datenordner>\files` oder `\tmp` – verglichen über den **echten Pfad** nach dem Anlegen (`realpath`: Junctions,
+  8.3-Kurznamen, `subst`-Laufwerke), beim Speichern und vor jeder Sicherung.
   Ist der Ordner später nicht lesbar (USB-Stick abgezogen), zeigt die Seite einen Hinweis statt einer leeren Liste.
 - Fehler beim Sichern (gesperrte Datei, voller Stick, Virenscanner) beenden nie den Server: der Lauf wird abgebrochen, der
   `.partial`-Rest geloggt entfernt, die Meldung erscheint auf der Seite. Zusätzlich fangen Prozess-Wächter unerwartete
-  Dateisystem-/Netzfehler (`EPERM`, `EBUSY`, `ECONNRESET` …) ab und loggen sie; alles andere beendet den Prozess geordnet mit Meldung.
+  Dateisystem-/Netzfehler (`EPERM`, `EBUSY`, `ECONNRESET` …, auch als `cause` wie bei `fetch`) ab und loggen sie – für
+  Ausnahmen und verworfene Promises gleich. Alles andere (Programmierfehler) beendet den Prozess geordnet mit Meldung, wie es Node
+  standardmäßig auch täte, statt mit still stehender Verarbeitungs-Queue weiterzulaufen; offene Jobs liegen in SQLite und laufen beim
+  nächsten Start weiter. Hängt das Beenden, greift nach 8 s ein hartes Zeitlimit (Exit-Code 1).
+- Instanz-Sperre: Port-Eintrag mit Wiederholungen (Virenscanner hält frische Dateien kurz offen); bei voller Platte bleibt der alte
+  Inhalt stehen – eine geleerte Sperre würde ein zweiter Start nach 5 s für verwaist halten und übernehmen.
 - **Wiederherstellen** (gefährlicher Pfad, daher streng): nur Snapshots aus dem Zielordner (ID = Ordnername, keine Pfade aus der Anfrage,
   keine Symlinks/Junctions), DB-Kopf „SQLite format 3“, Schema-Version nicht neuer als die App (sonst `restore_too_new`), `quick_check`,
   **Schema muss exakt dem entsprechen, das die eigenen Migrationen für diese Version erzeugen** (zusätzliche Trigger/Views/Spalten ⇒
   verweigert), fehlende Originaldateien werden übernommen und **SHA-256-geprüft** (Inhalt muss zum Namen passen). Danach: Ist-Zustand
   als `pre-restore`-Snapshot sichern, `restore-pending.json` schreiben, Server im selben Prozess neu starten (Desktop und Browser-Modus;
   gleicher Port/Token, die Oberfläche lädt neu). Beim Start – unter der Instanz-Sperre, vor dem Öffnen der DB – wird die DB ausgetauscht:
-  Kopie nach `hotspot.sqlite.restore-tmp` → umbenennen → `-wal`/`-shm` der alten DB löschen → Vormerkung löschen. Bricht das an
-  irgendeiner Stelle ab, wiederholt der nächste Start alles (die neue DB wird nie mit dem WAL der alten geöffnet). Ältere Snapshots
-  (Schema v2/v3) werden danach normal migriert (mit Auto-Backup). Die **Sicherungs-Einstellungen** (Zielordner, Intervall,
-  Aufbewahrung) bleiben dabei die aktuellen – sonst würde ein alter Snapshot z. B. den Zielordner auf einen nicht mehr vorhandenen
-  Stick zurückstellen. Ab dem Vormerken bis zum Neustart beantwortet der Server schreibende Anfragen mit `503 restoring`
-  (Hintergrund-Jobs sind gestoppt); die Oberfläche wartet, bis `/api/health` ein neues `startedAt` meldet (statt fester Wartezeit).
+  Kopie nach `hotspot.sqlite.restore-tmp` → umbenennen → `-wal`/`-shm` der alten DB löschen → Vormerkung als „DB getauscht“
+  markieren → DB öffnen, behaltene Einstellungen setzen → Vormerkung löschen. Bricht das vor dem Markieren ab, wiederholt der nächste
+  Start alles (die neue DB wird nie mit dem WAL der alten geöffnet); danach nur noch das Setzen der Einstellungen (die DB wird nicht
+  erneut überschrieben). Ältere Snapshots (Schema v2/v3) werden danach normal migriert (mit Auto-Backup). Die
+  **Sicherungs-Einstellungen** (Zielordner, Intervall, Aufbewahrung) bleiben dabei die aktuellen – sonst würde ein alter Snapshot
+  z. B. den Zielordner auf einen nicht mehr vorhandenen Stick zurückstellen. Schon während der Sicherung des Ist-Zustands und bis
+  zum Neustart beantwortet der Server schreibende Anfragen mit `503 restoring` (sonst fehlten sie in „vor Wiederherstellung“;
+  scheitert das Vormerken, ist die Sperre sofort wieder weg); nach dem Vormerken sind auch die Hintergrund-Jobs gestoppt. Die
+  Oberfläche wartet, bis `/api/health` ein neues `startedAt` meldet (statt fester Wartezeit).
 - **Manuell (Notfall, App beendet):** Datenordner umbenennen, neuen leeren Datenordner anlegen, `hotspot.sqlite` und `files\` aus einem
   Snapshot hineinkopieren. Alternativ weiterhin: **Ordner kopieren, während die App beendet ist.**
 
@@ -316,8 +331,10 @@ passt der erkannte Typ nicht zum Export, wird die Quelle neu verarbeitet statt f
 und gekürzt, keine IDs der Ursprungs-DB übernommen, SQL parametrisiert, Pakete à 150 Datensätze je Transaktion mit `setImmediate`
 dazwischen (20 000 Karten: 2,8 s, längste Event-Loop-Blockade 49 ms).
 **Abbruch-/Absturzfest:** neue Quellen stehen bis zum Ende ihres Pakets auf „in Arbeit“ und werden bei einem Fehler/Abbruch auf
-„wartend“ gesetzt (die Verarbeitungs-Queue erzeugt die Abschnitte dann selbst); ein erneuter Import desselben Exports ergänzt nur
-Fehlendes. Dubletten-Prüfung für Karten/Notizen über einen Hash-Schlüssel (seitenweise geladen, kein Volltabellen-Scan je Datensatz).
+„wartend“ gesetzt (die Verarbeitungs-Queue wird auch nach einem Fehler sofort geweckt und erzeugt die Abschnitte selbst); ein erneuter
+Import desselben Exports ergänzt nur Fehlendes. Die Aufräum-Routine für verwaiste Originaldateien prüft direkt vor jedem Löschen
+erneut, ob inzwischen eine Quelle mit diesem Inhalt existiert (Import parallel zum Aufräumen). Gegendruck beim Export-Download
+lässt keine Listener liegen. Dubletten-Prüfung für Karten/Notizen über einen Hash-Schlüssel (seitenweise geladen, kein Volltabellen-Scan je Datensatz).
 **Konflikte:** Quelle mit gleichem Inhalt existiert ⇒ vorhandene bleibt (inkl. Fach), Verweise zeigen auf sie; Fach mit gleichem Namen ⇒
 zusammengeführt; Karte (Typ+Vorder-+Rückseite), Notiz (Titel+Text), Frage (Fingerabdruck) schon vorhanden ⇒ übersprungen.
 
