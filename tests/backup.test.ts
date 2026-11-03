@@ -450,6 +450,27 @@ describe('Korrekturrunde 1: Robustheit, Einstellungen, Neustart, Zielordner', ()
     expect(st.language).toBe('de'); // alles andere ist der gesicherte Stand
   });
 
+  it('K5 (Runde 2): Absturz nach dem DB-Tausch, vor dem Übernehmen der Einstellungen -> nächster Start holt die Einstellungen nach, DB nicht erneut getauscht', async () => {
+    const dir = tmpDir('bkset2');
+    const a = await app(dir);
+    const target = tmpDir('bkset2target');
+    await a.api('PUT', '/api/settings', { backupKeep: 3, backupIntervalHours: 6 });
+    const snap = (await a.api<{ snapshot: { id: string } }>('POST', '/api/backups')).data.snapshot.id;
+    fs.cpSync(path.join(dir, 'backups', snap), path.join(target, snap), { recursive: true });
+    await a.api('PUT', '/api/settings', { backupKeep: 9, backupIntervalHours: 12, backupDir: target });
+    expect((await a.api('POST', `/api/backups/${snap}/restore`, { confirm: true })).status).toBe(200);
+    await a.close();
+    expect(applyPendingRestore(dir)?.ok).toBe(true); // DB getauscht – danach "Absturz" (build läuft nie)
+    const raw = new DatabaseSync(path.join(dir, 'hotspot.sqlite'));
+    raw.exec("INSERT INTO subjects(name, color, created_at) VALUES ('NachDemTausch', '#ffffff', 1)"); // darf nicht überschrieben werden
+    raw.close();
+    const b = await app(dir);
+    const st = b.hotspot.services.settings.get();
+    expect([st.backupKeep, st.backupIntervalHours, st.backupDir]).toEqual([9, 12, target]);
+    expect(b.hotspot.services.db.prepare("SELECT count(*) AS n FROM subjects WHERE name = 'NachDemTausch'").get()).toEqual({ n: 1 });
+    expect(fs.existsSync(path.join(dir, 'restore-pending.json'))).toBe(false);
+  });
+
   it('K4: nach dem Vormerken werden schreibende Anfragen mit 503 restoring abgewiesen; /api/health meldet startedAt', async () => {
     const a = await app();
     const h0 = (await a.api<{ startedAt: number; restoring: boolean }>('GET', '/api/health')).data;

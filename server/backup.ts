@@ -286,7 +286,7 @@ const KEEP_SETTINGS = ['backupDir', 'backupKeep', 'backupIntervalHours'] as cons
 export function applyPendingRestore(dataDir: string, onStep?: (step: 'copied' | 'renamed' | 'cleaned') => void): PendingRestoreResult | null {
   const pendingFile = path.join(dataDir, PENDING);
   if (!fs.existsSync(pendingFile)) return null;
-  let p: { db?: unknown; id?: unknown; settings?: unknown };
+  let p: { db?: unknown; id?: unknown; settings?: unknown; dbDone?: unknown };
   try {
     p = JSON.parse(fs.readFileSync(pendingFile, 'utf8')) as typeof p;
   } catch {
@@ -295,6 +295,8 @@ export function applyPendingRestore(dataDir: string, onStep?: (step: 'copied' | 
   const keepSettings: Record<string, unknown> = {};
   if (p.settings && typeof p.settings === 'object') for (const k of KEEP_SETTINGS) if (k in p.settings) keepSettings[k] = (p.settings as Record<string, unknown>)[k];
   const id = typeof p.id === 'string' && SNAPSHOT_RE.test(p.id) ? p.id : null;
+  // DB schon getauscht, Absturz vor dem Übernehmen der Einstellungen: nur noch Einstellungen (finishPendingRestore)
+  if (p.dbDone === true && id) return { ok: true, id, keepSettings };
   const src = typeof p.db === 'string' && path.isAbsolute(p.db) && path.basename(p.db) === 'hotspot.sqlite' ? p.db : null;
   try {
     if (!src || !id) throw new HttpError(400, 'restore_invalid', 'Vormerkung ungültig');
@@ -316,8 +318,17 @@ export function applyPendingRestore(dataDir: string, onStep?: (step: 'copied' | 
   onStep?.('renamed');
   dropWal(); // idempotent (falls ein abgebrochener Vorlauf dazwischen lag)
   onStep?.('cleaned');
-  fs.rmSync(pendingFile, { force: true });
+  // Vormerkung erst löschen, wenn auch die Einstellungen übernommen sind (finishPendingRestore nach settings.update) –
+  // bis dahin nur als "DB getauscht" markieren, damit ein Neustart die DB nicht erneut überschreibt
+  const marked = pendingFile + '.tmp';
+  fs.writeFileSync(marked, JSON.stringify({ ...p, dbDone: true }));
+  retrySync(() => fs.renameSync(marked, pendingFile));
   return { ok: true, id, keepSettings };
+}
+
+/** Nach dem Übernehmen der behaltenen Einstellungen: Vormerkung entfernen (Wiederherstellung abgeschlossen). */
+export function finishPendingRestore(dataDir: string): void {
+  retrySync(() => fs.rmSync(path.join(dataDir, PENDING), { force: true }));
 }
 
 export class BackupService {

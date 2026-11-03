@@ -25,7 +25,7 @@ import { Scheduler } from './scheduler.ts';
 import { MediaService } from './media/media-service.ts';
 import { MediaSetup } from './media/setup.ts';
 import { LearnService } from './learn/jobs.ts';
-import { applyPendingRestore, BackupService, type PendingRestoreResult } from './backup.ts';
+import { applyPendingRestore, BackupService, finishPendingRestore, type PendingRestoreResult } from './backup.ts';
 import { RotatingLog } from './logs.ts';
 
 export interface Services {
@@ -145,6 +145,7 @@ async function build(config: AppConfig, lock: InstanceLock, lastRestore: Pending
       keepProblem = (err as Error).message.split(':')[0] ?? 'invalid';
     }
   }
+  if (lastRestore?.ok) finishPendingRestore(config.dataDir); // erst jetzt: ein Absturz davor wiederholt nur die Einstellungen
   const bus = new EventBus();
   const blobs = new BlobStore(config.dataDir);
   const tmpProblem = blobs.init();
