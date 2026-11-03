@@ -49,6 +49,20 @@ function dosTime(d: Date): { time: number; date: number } {
   };
 }
 
+/**
+ * Auf "drain" ODER "close" warten: bricht der Download ab, käme "drain" nie und der Export hinge für immer. Den Listener
+ * des nicht eingetretenen Ereignisses wieder entfernen – sonst sammeln sich bei Gegendruck je Schreibvorgang Listener
+ * (MaxListenersExceededWarning).
+ */
+async function drainOrClose(s: Writable): Promise<void> {
+  const ac = new AbortController();
+  try {
+    await Promise.race([once(s, 'drain', { signal: ac.signal }), once(s, 'close', { signal: ac.signal })]);
+  } finally {
+    ac.abort();
+  }
+}
+
 export class ZipWriter {
   private offset = 0;
   private readonly entries: CdEntry[] = [];
@@ -65,8 +79,7 @@ export class ZipWriter {
   private async write(buf: Buffer): Promise<void> {
     if (this.out.destroyed) throw Object.assign(new Error('Ausgabe geschlossen'), { code: 'ERR_STREAM_DESTROYED' });
     this.offset += buf.length;
-    // auf "drain" ODER "close" warten: bricht der Download ab, käme "drain" nie und der Export hinge für immer
-    if (!this.out.write(buf)) await Promise.race([once(this.out, 'drain'), once(this.out, 'close')]);
+    if (!this.out.write(buf)) await drainOrClose(this.out);
     if (this.out.destroyed) throw Object.assign(new Error('Ausgabe geschlossen'), { code: 'ERR_STREAM_DESTROYED' });
   }
 
@@ -184,7 +197,7 @@ async function writeJsonl(file: string, produce: (emit: (rec: object) => Promise
   ws.on('error', (err) => (failed = err));
   const emit = async (rec: object) => {
     if (failed) throw failed;
-    if (!ws.write(JSON.stringify(rec) + '\n')) await Promise.race([once(ws, 'drain'), once(ws, 'close')]);
+    if (!ws.write(JSON.stringify(rec) + '\n')) await drainOrClose(ws);
   };
   try {
     await produce(emit);

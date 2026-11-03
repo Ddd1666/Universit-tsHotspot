@@ -294,6 +294,39 @@ describe('Korrekturrunde 1: Import abbruchfest, Zeitstempel, Dedupe ohne Volltex
     expect(st).toEqual([{ status: 'queued', n: 5 }]);
   });
 
+  it('K7 (Runde 2): Import bricht über die API nach Paket 1 ab -> angelegte Quellen werden trotzdem verarbeitet (Queue geweckt)', async () => {
+    const a = await app();
+    const file = Buffer.from('Abbruch-Datei über Optik und Linsen');
+    const lines = [
+      JSON.stringify({ t: 'source', key: 1, sha256: sha(file), name: 'abbruch.txt', kind: 'text', status: 'ready' }),
+      ...Array.from({ length: 200 }, (_, i) => JSON.stringify({ t: 'card', type: 'qa', front: `F${i}`, back: `B${i}`, status: 'active' })),
+      '{"t":"note","title":"' + 'x'.repeat(9 * 1024 * 1024), // Riesenzeile nach dem ersten Paket -> import_invalid
+    ];
+    const zip = makeZip({ 'manifest.json': manifest(), [`files/${sha(file)}`]: file, 'library.jsonl': lines.join('\n') }, 6);
+    const r = await importFile(a, zip);
+    expect([r.status, r.data.detail]).toEqual([400, 'line']);
+    const id = (a.hotspot.services.db.prepare("SELECT id FROM sources WHERE name = 'abbruch.txt'").get() as { id: number }).id;
+    await waitForSource(a, id, ['ready']); // vorher: blieb "queued", bis zufällig etwas anderes die Verarbeitung weckte
+  });
+
+  it('T3 (Runde 2): Export mit Gegendruck lässt keine Listener liegen (keine MaxListenersExceededWarning)', async () => {
+    const warnings: string[] = [];
+    const onWarn = (w: Error) => warnings.push(w.name);
+    process.on('warning', onWarn);
+    try {
+      const out = new Writable({ highWaterMark: 16, write: (_c, _e, cb) => setImmediate(cb) }); // langsamer Leser
+      const zw = new ZipWriter(out);
+      for (let i = 0; i < 40; i++) await zw.add(`e${i}.bin`, 256, Buffer.alloc(256, i));
+      await zw.finish();
+      expect(out.listenerCount('close')).toBeLessThanOrEqual(1);
+      expect(out.listenerCount('drain')).toBe(0);
+      await new Promise((res) => setImmediate(res));
+      expect(warnings).not.toContain('MaxListenersExceededWarning');
+    } finally {
+      process.off('warning', onWarn);
+    }
+  });
+
   it('K11: unsinnige Zeitstempel (1e20, negativ) werden auf jetzt gekappt bzw. verworfen', async () => {
     const a = await app();
     const t0 = Date.now();

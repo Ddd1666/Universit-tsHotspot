@@ -124,13 +124,13 @@ export function registerMaintenanceRoutes(app: FastifyInstance, s: Services): vo
         },
         fs.createWriteStream(tmp, { flags: 'wx' }),
       );
-      const report = await importLibrary({ db: s.db, blobs: s.blobs }, tmp);
+      return await importLibrary({ db: s.db, blobs: s.blobs }, tmp);
+    } finally {
+      // auch nach Fehler/Abbruch: schon angelegte Quellen stehen auf "queued" -> Verarbeitung wecken, Oberfläche aktualisieren
       s.bus.emit({ type: 'subjects' });
-      if (report.sources.requeued) s.ingest.wakeUp();
+      s.ingest.wakeUp();
       s.embed.notify();
       s.notifyQueue();
-      return report;
-    } finally {
       fs.rmSync(tmp, { force: true });
     }
   });
