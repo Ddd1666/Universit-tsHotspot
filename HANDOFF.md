@@ -301,6 +301,8 @@ Dauer „Jetzt sichern“ und Wiederherstellen bei der echten Datenmenge, Größ
 (Screenshot), letzte 100 Zeilen `logs\server.log`. **Bei Problemen mit den echten Daten:** App beenden, Datenordner durch die Kopie vom Anfang
 ersetzen (nur mit Zustimmung des Nutzers).
 
+**3d. Desktop-Icon:** `Desktop-Icon-erstellen.bat` doppelklicken, Icon anklicken → Uni-Hotspot öffnet sich als Chrome-App-Fenster (zweiter Klick: nur Chrome, kein zweiter Server); Ergebnis melden.
+
 ## 4. Bekannte Windows-Risiken & Abhilfe
 
 | Risiko | Symptom | Abhilfe (reversibel) |

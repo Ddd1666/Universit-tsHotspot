@@ -6,6 +6,7 @@
 *.ps1 -text
 *.sh text eol=lf
 *.png binary
+*.ico binary
 *.jpg binary
 *.pdf binary
 *.zip binary

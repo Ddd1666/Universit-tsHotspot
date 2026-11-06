@@ -8,6 +8,7 @@ rem ---------------------------------------------------------------------
 rem  Uni-Hotspot starten (ohne Admin-Rechte).
 rem    start.bat           -> Desktop-App (Electron)
 rem    start.bat browser   -> nur lokaler Server + Standardbrowser
+rem    start.bat server    -> nur lokaler Server, kein Browser (fuer das Desktop-Icon)
 rem  Alle Caches bleiben im Projektordner (.cache), Nutzerdaten im Datenordner.
 rem ---------------------------------------------------------------------
 
@@ -47,6 +48,7 @@ if errorlevel 1 (
 
 set "MODE=--desktop"
 if /i "%~1"=="browser" set "MODE=--browser --open"
+if /i "%~1"=="server" set "MODE=--browser"
 
 node scripts\start.mjs %MODE%
 if errorlevel 1 pause

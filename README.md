@@ -200,6 +200,13 @@ bzw. Dateieigenschaften → „Zulassen“ freigeben. In PowerShell ggf. `npm.cm
 Port durch ein anderes Programm belegt? Die Konsole sagt es ohne Stacktrace; dann `set HOTSPOT_PORT=4318` (cmd) bzw.
 `$env:HOTSPOT_PORT="4318"` (PowerShell) vor dem Start.
 
+### Desktop-Icon (Chrome, ein Klick)
+**Einrichten:** `Desktop-Icon-erstellen.bat` doppelklicken → `Uni-Hotspot.lnk` auf dem Benutzer-Desktop (kein Admin; erneut ausführen überschreibt sie, z. B. nach Verschieben des Projektordners). **Rückgängig:** Verknüpfung löschen.
+**Klick:** läuft Uni-Hotspot schon, öffnet sich nur Chrome als App-Fenster (`--app=http://127.0.0.1:<Port>`); sonst startet der Server minimiert (`start.bat server`, Erststart bis ~3 Min.), danach Chrome. Ohne Chrome: Standardbrowser.
+**Port:** wie der Server (`HOTSPOT_PORT`, Standard 4317; läuft die Desktop-App, gilt ihr Port aus `hotspot.lock`). Antwortet dort ein anderes Programm, kommt eine Meldung statt Chrome.
+**Aus Internet/ZIP geladen:** Rechtsklick → Eigenschaften → „Zulassen“ bzw. `Get-ChildItem -Recurse | Unblock-File`; SmartScreen: *Weitere Informationen → Trotzdem ausführen*.
+**Fehlersuche:** Meldung lesen, minimiertes Fenster „Uni-Hotspot“ in der Taskleiste öffnen, Protokoll `<Datenordner>\logs\server.log`; zum Vergleich `start-browser.bat`.
+
 ### Medien-Werkzeuge (optional, ohne Admin)
 
 Bilder und Scans brauchen nur das Vision-Modell in Ollama. Für **Audio/Video** werden whisper.cpp, ffmpeg und ein Whisper-Modell
