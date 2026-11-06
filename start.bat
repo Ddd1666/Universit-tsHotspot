@@ -47,8 +47,6 @@ if errorlevel 1 (
 
 set "MODE=--desktop"
 if /i "%~1"=="browser" set "MODE=--browser --open"
-rem "server" = nur Server ohne Browser (fuer scripts\launch-chrome.cmd)
-if /i "%~1"=="server" set "MODE=--browser"
 
 node scripts\start.mjs %MODE%
 if errorlevel 1 pause
